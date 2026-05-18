@@ -229,8 +229,15 @@ function isValidConnection(c: Connection): boolean {
         mask-color="rgba(0, 0, 0, 0.78)"
       />
     </VueFlow>
-    <div v-if="!graph.activeFunction?.nodes.length" class="empty-hint">
-      Drag a node from the palette to begin.
+    <div
+      v-if="(graph.activeFunction?.nodes.length ?? 0) <= 1 && (graph.activeFunction?.edges.length ?? 0) === 0"
+      class="empty-hint"
+    >
+      <div class="hint-title">Empty function body</div>
+      <div class="hint-body">
+        Drag a node from the <strong>Nodes</strong> palette on the left,<br />
+        or load a sample workflow from the <strong>Samples</strong> menu in the toolbar.
+      </div>
     </div>
   </div>
 </template>
@@ -244,13 +251,26 @@ function isValidConnection(c: Connection): boolean {
 }
 .empty-hint {
   position: absolute;
-  top: 50%;
+  top: 55%;
   left: 50%;
   transform: translate(-50%, -50%);
   color: var(--sf-text-3);
-  font-size: 0.75rem;
   pointer-events: none;
+  text-align: center;
+}
+.hint-title {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--sf-text-2);
+  margin-bottom: 8px;
   font-family: var(--sf-font-mono);
-  letter-spacing: 0.5px;
+}
+.hint-body {
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+.hint-body strong {
+  color: var(--sf-text-1);
+  font-weight: 500;
 }
 </style>
