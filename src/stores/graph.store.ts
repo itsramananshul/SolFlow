@@ -370,17 +370,72 @@ export const useGraphStore = defineStore('graph', () => {
 
   /**
    * Insert a saved (or built-in) block as a fresh cluster of nodes at
-   * the given flow position. Used by the BlocksPanel drag-drop and any
-   * future Quick-Add block-insertion path. Behaves exactly like
-   * pasteAt() but takes the snapshot directly instead of from the
-   * clipboard, so block insertion doesn't disturb the user's
-   * copy/paste workflow.
+   * the given flow position. Used by the BlocksPanel drag-drop and the
+   * Quick-Add block-insertion path. Behaves like pasteAt() but takes
+   * the snapshot directly instead of from the clipboard, so block
+   * insertion doesn't disturb the user's copy/paste workflow.
+   *
+   * Visual language: when the block has more than one node AND a
+   * meaningful name, the inserted cluster is automatically wrapped in
+   * a Frame titled after the block. Gives users on-canvas grouping +
+   * provenance without a schema change. The frame is a regular node
+   * they can resize, rename, or delete like any other.
+   *
+   * Single-node patterns (e.g. "Extract from payload") drop bare so
+   * we don't over-decorate one-shots.
    */
   function insertBlock(
-    block: { nodes: GraphNode[]; edges: GraphEdge[]; centroid: { x: number; y: number } },
+    block: {
+      name?: string;
+      nodes: GraphNode[];
+      edges: GraphEdge[];
+      centroid: { x: number; y: number };
+    },
     flowPos: { x: number; y: number },
   ): string[] {
-    return insertSnapshot(block, flowPos);
+    const newIds = insertSnapshot(block, flowPos);
+    const shouldWrap = newIds.length >= 2 && !!block.name && block.name.trim() !== '';
+    if (!shouldWrap) return newIds;
+
+    const fn = activeFunction.value;
+    if (!fn) return newIds;
+    const inserted = fn.nodes.filter((n) => newIds.includes(n.id));
+    if (inserted.length < 2) return newIds;
+
+    // Tight bounding box around the just-inserted nodes. We use a
+    // conservative node footprint (220x60) — actual nodes vary, but
+    // the frame is decorative so an estimate is fine; the user can
+    // resize via the SE corner handle.
+    const NODE_W = 220;
+    const NODE_H = 60;
+    const PAD = 32;
+    const xs = inserted.map((n) => n.position.x);
+    const ys = inserted.map((n) => n.position.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const maxX = Math.max(...xs) + NODE_W;
+    const maxY = Math.max(...ys) + NODE_H * 1.5;
+    const framePos = { x: minX - PAD, y: minY - PAD - 16 };
+    const frameW = maxX - minX + PAD * 2;
+    const frameH = maxY - minY + PAD * 2 + 16;
+
+    const frame = createNode(
+      'frame',
+      framePos,
+      ctx.value,
+      {
+        kind: 'frame',
+        title: block.name!,
+        width: Math.max(220, Math.round(frameW)),
+        height: Math.max(160, Math.round(frameH)),
+      } as Partial<NodeData>,
+    );
+    fn.nodes.push(frame);
+    touch();
+    // Return the original ids — callers (Canvas) select the first new
+    // content node, not the frame, so the Inspector opens with the
+    // most relevant context.
+    return newIds;
   }
 
   /**

@@ -212,6 +212,103 @@ const PATTERNS: BuiltinPatternDef[] = [
       };
     },
   },
+
+  {
+    patternId: 'approval-gate',
+    name: 'Approval gate',
+    description:
+      'If not approved, log a reason and return early. Otherwise continue.',
+    build(): SavedBlock {
+      const branch = createNode(
+        'branch',
+        { x: 0, y: 0 },
+        EMPTY_CTX,
+        { kind: 'branch', hasElse: true } as Partial<NodeData>,
+      );
+      setInline(branch, 'cond', 'approved == true');
+
+      const log = createNode('print', { x: -180, y: 140 }, EMPTY_CTX);
+      setInline(log, 'value', '"rejected — not approved"');
+
+      const ret = createNode(
+        'return',
+        { x: -180, y: 260 },
+        EMPTY_CTX,
+        { kind: 'return', hasValue: false } as Partial<NodeData>,
+      );
+
+      const nodes = [branch, log, ret];
+      const edges = [
+        ctl(branch, 'else', log, 'prev'),
+        ctl(log, 'next', ret, 'prev'),
+      ];
+      return {
+        id: nanoid(8),
+        name: 'Approval gate',
+        description:
+          'If not approved, log a reason and return early. Otherwise continue.',
+        origin: 'builtin',
+        patternId: 'approval-gate',
+        nodes,
+        edges,
+        centroid: centroidOf(nodes),
+        createdAt: new Date().toISOString(),
+      };
+    },
+  },
+
+  {
+    patternId: 'timeout-check',
+    name: 'Timeout check',
+    description:
+      'Track elapsed time and return early once a threshold is exceeded.',
+    build(): SavedBlock {
+      const letElapsed = createNode(
+        'let',
+        { x: 0, y: 0 },
+        EMPTY_CTX,
+        { kind: 'let', varName: 'elapsed', varType: { kind: 'int' } } as Partial<NodeData>,
+      );
+      setInline(letElapsed, 'value', '0');
+
+      const branch = createNode(
+        'branch',
+        { x: 0, y: 140 },
+        EMPTY_CTX,
+        { kind: 'branch', hasElse: false } as Partial<NodeData>,
+      );
+      setInline(branch, 'cond', 'elapsed > 30');
+
+      const log = createNode('print', { x: 180, y: 220 }, EMPTY_CTX);
+      setInline(log, 'value', '"timeout exceeded"');
+
+      const ret = createNode(
+        'return',
+        { x: 180, y: 340 },
+        EMPTY_CTX,
+        { kind: 'return', hasValue: false } as Partial<NodeData>,
+      );
+
+      const nodes = [letElapsed, branch, log, ret];
+      const edges = [
+        ctl(letElapsed, 'next', branch, 'prev'),
+        ctl(branch, 'then', log, 'prev'),
+        ctl(log, 'next', ret, 'prev'),
+      ];
+      return {
+        id: nanoid(8),
+        name: 'Timeout check',
+        description:
+          'Track elapsed time and return early once a threshold is exceeded.',
+        origin: 'builtin',
+        patternId: 'timeout-check',
+        nodes,
+        edges,
+        centroid: centroidOf(nodes),
+        createdAt: new Date().toISOString(),
+      };
+    },
+  },
 ];
 
 export function listBuiltinPatterns(): BuiltinPatternDef[] {

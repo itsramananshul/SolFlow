@@ -703,6 +703,23 @@ function onQuickAddSelect(
   if (node) ui.selectNode(node.id);
 }
 
+/**
+ * Quick-Add selected a reusable block (built-in pattern or user-saved).
+ * Builds the snapshot from the right source and inserts at the cursor
+ * via graph.insertBlock — which auto-wraps multi-node blocks in a
+ * named Frame. Selects the first content node so the Inspector opens
+ * with useful context.
+ */
+function onQuickAddSelectBlock(meta: { origin: 'user' | 'builtin'; id: string }) {
+  const snapshot =
+    meta.origin === 'builtin'
+      ? buildBuiltinPattern(meta.id)
+      : blocks.findById(meta.id) ?? null;
+  if (!snapshot) return;
+  const newIds = graph.insertBlock(snapshot, qaFlowPos.value);
+  if (newIds.length > 0) ui.selectNode(newIds[0]);
+}
+
 // Double-click on pane opens Quick-Add at the clicked spot.
 function onPaneDoubleClick(event: MouseEvent) {
   const flow = screenToFlowCoordinate({ x: event.clientX, y: event.clientY });
@@ -890,6 +907,7 @@ onBeforeUnmount(() => {
       :y="qaScreenPos.y"
       :source-context="qaSourceContext"
       @select="onQuickAddSelect"
+      @select-block="onQuickAddSelectBlock"
       @close="closeQuickAdd"
     />
     <NodeSearchPalette

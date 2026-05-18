@@ -28,6 +28,8 @@ import {
   type PaletteEntry,
 } from '@/graph/kinds';
 import type { NodeData, NodeKind, SolType } from '@/graph/schema';
+import { listBuiltinPatterns } from '@/graph/blocks';
+import { useBlocksStore } from '@/stores/blocks.store';
 
 export interface SourceContext {
   nodeId: string;
@@ -51,41 +53,113 @@ const emit = defineEmits<{
     ctx?: SourceContext,
     initialData?: Partial<NodeData>,
   ): void;
+  (e: 'select-block', payload: { origin: 'user' | 'builtin'; id: string }): void;
   (e: 'close'): void;
 }>();
+
+const blocks = useBlocksStore();
 
 const query = ref('');
 const activeIdx = ref(0);
 const inputRef = ref<HTMLInputElement | null>(null);
 const listRef = ref<HTMLDivElement | null>(null);
 
-// All draggable palette entries (Start is not user-insertable). Advanced
-// categories are filtered out when the user hasn't typed a query yet —
-// the empty-query list should bias toward common, human-friendly nodes.
-// As soon as the user types anything, every kind becomes searchable so
-// no one is gated from finding what they need.
-const baseEntries = computed(() => PALETTE.filter((p) => p.draggable));
-const visibleEntries = computed<PaletteEntry[]>(() => {
+// Unified entry shape — palette node kinds AND reusable blocks (built-in
+// patterns + user-saved blocks) share one list so the user can search
+// "retry" or "branch" without thinking about which kind of thing they
+// want. Block entries are suppressed when a sourceContext is present
+// (auto-connect into a multi-node cluster isn't well-defined).
+type QuickEntry =
+  | {
+      kind: 'node';
+      label: string;
+      description: string;
+      searchKey: string; // node-kind id, used for stable Vue keys
+      categoryLabel: string;
+      categoryColor: string;
+      node: PaletteEntry;
+    }
+  | {
+      kind: 'block';
+      label: string;
+      description: string;
+      searchKey: string;
+      categoryLabel: string;
+      categoryColor: string;
+      block: { origin: 'user' | 'builtin'; id: string; name: string };
+    };
+
+const nodeEntries = computed<QuickEntry[]>(() => {
+  return PALETTE.filter((p) => p.draggable).map<QuickEntry>((p) => ({
+    kind: 'node',
+    label: p.label,
+    description: p.description,
+    searchKey: `node:${p.kind}`,
+    categoryLabel: CATEGORY_LABELS[p.category],
+    categoryColor: categoryColor(p.category),
+    node: p,
+  }));
+});
+
+const blockEntries = computed<QuickEntry[]>(() => {
+  // Blocks land as multi-node clusters — they can't be auto-connected
+  // to a single source port. Hide them in port-drag flows; show in all
+  // others (Space, ⌘K, double-click on empty).
+  if (props.sourceContext) return [];
+  const builtin: QuickEntry[] = listBuiltinPatterns().map((p) => ({
+    kind: 'block',
+    label: p.name,
+    description: p.description,
+    searchKey: `block:builtin:${p.patternId}`,
+    categoryLabel: 'Pattern',
+    categoryColor: 'var(--sf-cat-flow)',
+    block: { origin: 'builtin', id: p.patternId, name: p.name },
+  }));
+  const user: QuickEntry[] = blocks.userBlocks.map((b) => ({
+    kind: 'block',
+    label: b.name,
+    description: b.description || 'Saved reusable block',
+    searchKey: `block:user:${b.id}`,
+    categoryLabel: 'Your block',
+    categoryColor: 'var(--sf-cat-trigger)',
+    block: { origin: 'user', id: b.id, name: b.name },
+  }));
+  return [...user, ...builtin];
+});
+
+// Empty-query view: keep the common path tidy. Advanced node categories
+// (operator/literal/access) are filtered out unless the user types
+// something — they're searchable but not on display by default.
+const visibleEntries = computed<QuickEntry[]>(() => {
   const q = query.value.trim();
-  if (q !== '') return baseEntries.value;
-  return baseEntries.value.filter((p) => !isAdvancedCategory(p.category));
+  if (q !== '') {
+    return [...blockEntries.value, ...nodeEntries.value];
+  }
+  return [
+    ...blockEntries.value,
+    ...nodeEntries.value.filter(
+      (e) => e.kind !== 'node' || !isAdvancedCategory(e.node.category),
+    ),
+  ];
 });
 
 // Score each entry against the query. 0 means "doesn't match".
-function score(q: string, entry: PaletteEntry): number {
-  if (!q) return 1; // everything passes with neutral score when empty
+function score(q: string, entry: QuickEntry): number {
+  if (!q) {
+    // No query: blocks float to the top of the list as they're more
+    // valuable "starting points" than individual nodes.
+    return entry.kind === 'block' ? 2 : 1;
+  }
   const ql = q.toLowerCase();
   const label = entry.label.toLowerCase();
-  const kind = entry.kind.toLowerCase();
+  const id = entry.searchKey.toLowerCase();
   const desc = entry.description.toLowerCase();
   if (label === ql) return 10000;
-  if (kind === ql) return 9000;
+  if (id.endsWith(`:${ql}`)) return 9000;
   if (label.startsWith(ql)) return 5000 + (100 - label.length);
-  if (kind.startsWith(ql)) return 4500 + (100 - kind.length);
+  if (id.includes(ql)) return 4500;
   if (label.includes(ql)) return 3000 + (100 - label.length);
-  if (kind.includes(ql)) return 2500;
   if (desc.includes(ql)) return 1000;
-  // subsequence fallback (qchars must appear in order in label)
   let qi = 0;
   for (let i = 0; i < label.length && qi < ql.length; i++) {
     if (label[i] === ql[qi]) qi++;
@@ -94,7 +168,7 @@ function score(q: string, entry: PaletteEntry): number {
   return 0;
 }
 
-const filtered = computed<PaletteEntry[]>(() => {
+const filtered = computed<QuickEntry[]>(() => {
   const q = query.value.trim();
   const scored = visibleEntries.value
     .map((e) => ({ e, s: score(q, e) }))
@@ -134,7 +208,11 @@ watch(filtered, () => {
 function pickIndex(i: number) {
   const entry = filtered.value[i];
   if (!entry) return;
-  emit('select', entry.kind, props.sourceContext, entry.initialData);
+  if (entry.kind === 'block') {
+    emit('select-block', { origin: entry.block.origin, id: entry.block.id });
+  } else {
+    emit('select', entry.node.kind, props.sourceContext, entry.node.initialData);
+  }
   emit('close');
 }
 
@@ -254,20 +332,23 @@ const headline = computed(() => {
         </div>
         <button
           v-for="(entry, i) in filtered"
-          :key="entry.kind"
+          :key="entry.searchKey"
           :data-i="i"
           class="item"
-          :class="{ active: i === activeIdx }"
+          :class="[{ active: i === activeIdx }, `kind-${entry.kind}`]"
           @mousedown.prevent
           @click="pickIndex(i)"
           @mouseenter="activeIdx = i"
         >
-          <span class="dot" :style="{ background: categoryColor(entry.category) }" />
+          <span class="dot" :style="{ background: entry.categoryColor }" />
           <div class="item-body">
-            <div class="item-label">{{ entry.label }}</div>
+            <div class="item-label">
+              <span v-if="entry.kind === 'block'" class="block-glyph">▩</span>
+              {{ entry.label }}
+            </div>
             <div class="item-desc">{{ entry.description }}</div>
           </div>
-          <span class="cat-tag">{{ CATEGORY_LABELS[entry.category] }}</span>
+          <span class="cat-tag">{{ entry.categoryLabel }}</span>
         </button>
       </div>
     </div>
@@ -390,5 +471,23 @@ const headline = computed(() => {
   background: var(--sf-bg-3);
   border-radius: 2px;
   flex-shrink: 0;
+}
+.item.kind-block .cat-tag {
+  color: var(--sf-cat-trigger);
+  background: rgba(232, 166, 87, 0.12);
+}
+.item.kind-block .item-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.block-glyph {
+  font-family: var(--sf-font-mono);
+  font-size: 0.625rem;
+  color: var(--sf-cat-flow);
+  flex-shrink: 0;
+}
+.item.kind-block .block-glyph {
+  color: var(--sf-cat-trigger);
 }
 </style>
