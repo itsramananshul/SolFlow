@@ -745,6 +745,124 @@ function getCurrentSelectionIds(): string[] {
   return ui.selectedNodeId ? [ui.selectedNodeId] : [];
 }
 
+// =============================================================
+//  Alignment + distribution
+// =============================================================
+// Figma-style floating toolbar that appears when ≥2 nodes are
+// selected. All operations write through graph.updateNodePosition so
+// they participate in the same debounced history snapshot as drag-
+// stops — one undo step covers the entire alignment.
+
+const selectedCount = computed(() => getSelectedNodes.value.length);
+
+interface DimRef {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+function selectedDims(): DimRef[] {
+  return getSelectedNodes.value.map((n) => ({
+    id: n.id,
+    x: n.position.x,
+    y: n.position.y,
+    // Vue Flow measures node dimensions after mount; fall back to a
+    // standard estimate (matches SolNode min-width / typical height)
+    // so alignment math still produces sensible results before the
+    // first measurement.
+    w: n.dimensions?.width ?? 220,
+    h: n.dimensions?.height ?? 60,
+  }));
+}
+
+type AlignMode = 'left' | 'right' | 'top' | 'bottom' | 'centerH' | 'centerV';
+function alignSelected(mode: AlignMode) {
+  const dims = selectedDims();
+  if (dims.length < 2) return;
+  let updates: { id: string; x: number; y: number }[] = [];
+  switch (mode) {
+    case 'left': {
+      const x = Math.min(...dims.map((d) => d.x));
+      updates = dims.map((d) => ({ id: d.id, x, y: d.y }));
+      break;
+    }
+    case 'right': {
+      const rightEdge = Math.max(...dims.map((d) => d.x + d.w));
+      updates = dims.map((d) => ({ id: d.id, x: rightEdge - d.w, y: d.y }));
+      break;
+    }
+    case 'top': {
+      const y = Math.min(...dims.map((d) => d.y));
+      updates = dims.map((d) => ({ id: d.id, x: d.x, y }));
+      break;
+    }
+    case 'bottom': {
+      const bottomEdge = Math.max(...dims.map((d) => d.y + d.h));
+      updates = dims.map((d) => ({ id: d.id, x: d.x, y: bottomEdge - d.h }));
+      break;
+    }
+    case 'centerH': {
+      const avgCenter =
+        dims.reduce((s, d) => s + (d.x + d.w / 2), 0) / dims.length;
+      updates = dims.map((d) => ({
+        id: d.id,
+        x: avgCenter - d.w / 2,
+        y: d.y,
+      }));
+      break;
+    }
+    case 'centerV': {
+      const avgCenter =
+        dims.reduce((s, d) => s + (d.y + d.h / 2), 0) / dims.length;
+      updates = dims.map((d) => ({
+        id: d.id,
+        x: d.x,
+        y: avgCenter - d.h / 2,
+      }));
+      break;
+    }
+  }
+  for (const u of updates) {
+    graph.updateNodePosition(u.id, { x: Math.round(u.x), y: Math.round(u.y) });
+  }
+}
+
+type DistributeMode = 'horizontal' | 'vertical';
+function distributeSelected(mode: DistributeMode) {
+  const dims = selectedDims();
+  if (dims.length < 3) return;
+  if (mode === 'horizontal') {
+    // Keep leftmost + rightmost in place; space the rest evenly between
+    // their centers so the gap LOOKS uniform regardless of node widths.
+    const sorted = [...dims].sort((a, b) => a.x + a.w / 2 - (b.x + b.w / 2));
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    const firstC = first.x + first.w / 2;
+    const lastC = last.x + last.w / 2;
+    const step = (lastC - firstC) / (sorted.length - 1);
+    for (let i = 1; i < sorted.length - 1; i++) {
+      const d = sorted[i];
+      const targetCenter = firstC + step * i;
+      const x = Math.round(targetCenter - d.w / 2);
+      graph.updateNodePosition(d.id, { x, y: d.y });
+    }
+  } else {
+    const sorted = [...dims].sort((a, b) => a.y + a.h / 2 - (b.y + b.h / 2));
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    const firstC = first.y + first.h / 2;
+    const lastC = last.y + last.h / 2;
+    const step = (lastC - firstC) / (sorted.length - 1);
+    for (let i = 1; i < sorted.length - 1; i++) {
+      const d = sorted[i];
+      const targetCenter = firstC + step * i;
+      const y = Math.round(targetCenter - d.h / 2);
+      graph.updateNodePosition(d.id, { x: d.x, y });
+    }
+  }
+}
+
 // Empty-state hint visibility: only when the function contains just the
 // auto-placed Start node and zero edges. Hides the moment any real node
 // or edge appears so it never overlaps graph content.
@@ -942,6 +1060,63 @@ onBeforeUnmount(() => {
     />
     <ExecutionTimeline />
     <ExecutionControls />
+
+    <!--
+      Alignment + distribution toolbar. Visible only when 2+ nodes are
+      selected. Anchored top-center of the canvas so it doesn't fight
+      the minimap (top-right) or the execution controls (bottom-center).
+      Each press writes a batch of updateNodePosition calls; the
+      debounced snapshot collapses them into one undo step.
+    -->
+    <Transition name="align-fade">
+      <div v-if="selectedCount >= 2" class="align-toolbar">
+        <button
+          v-for="b in [
+            { mode: 'left',    label: 'Align left',           icon: '⫷' },
+            { mode: 'centerH', label: 'Center horizontally',  icon: '↔' },
+            { mode: 'right',   label: 'Align right',          icon: '⫸' },
+          ]"
+          :key="`h:${b.mode}`"
+          type="button"
+          class="align-btn"
+          :title="b.label"
+          :aria-label="b.label"
+          @click="alignSelected(b.mode as AlignMode)"
+        >{{ b.icon }}</button>
+        <div class="align-sep" />
+        <button
+          v-for="b in [
+            { mode: 'top',     label: 'Align top',            icon: '⤒' },
+            { mode: 'centerV', label: 'Center vertically',    icon: '↕' },
+            { mode: 'bottom',  label: 'Align bottom',         icon: '⤓' },
+          ]"
+          :key="`v:${b.mode}`"
+          type="button"
+          class="align-btn"
+          :title="b.label"
+          :aria-label="b.label"
+          @click="alignSelected(b.mode as AlignMode)"
+        >{{ b.icon }}</button>
+        <div class="align-sep" />
+        <button
+          type="button"
+          class="align-btn"
+          :disabled="selectedCount < 3"
+          title="Distribute horizontally (≥3 nodes)"
+          aria-label="Distribute horizontally"
+          @click="distributeSelected('horizontal')"
+        >⇆</button>
+        <button
+          type="button"
+          class="align-btn"
+          :disabled="selectedCount < 3"
+          title="Distribute vertically (≥3 nodes)"
+          aria-label="Distribute vertically"
+          @click="distributeSelected('vertical')"
+        >⇅</button>
+        <span class="align-count">{{ selectedCount }} selected</span>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -1020,6 +1195,83 @@ onBeforeUnmount(() => {
 .empty-hint .alt-label {
   color: var(--sf-text-2);
   font-size: 0.625rem;
+}
+
+/*
+ * Alignment toolbar — floating pill at the top-center of the canvas
+ * while a multi-selection is active. Visual density similar to the
+ * ExecutionControls bar so the two share an interaction vocabulary.
+ */
+.align-toolbar {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 6px;
+  background: rgba(17, 17, 17, 0.92);
+  border: 1px solid var(--sf-border-strong);
+  border-radius: 999px;
+  box-shadow: var(--sf-shadow-3);
+  backdrop-filter: blur(8px);
+  z-index: var(--sf-z-popover);
+  font-size: 0.6875rem;
+  color: var(--sf-text-1);
+}
+.align-fade-enter-active,
+.align-fade-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.align-fade-enter-from,
+.align-fade-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -6px);
+}
+.align-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  color: var(--sf-text-1);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.875rem;
+  font-family: var(--sf-font-mono);
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.align-btn:hover:not(:disabled) {
+  background: var(--sf-bg-3);
+  color: var(--sf-text-0);
+  border-color: var(--sf-border);
+}
+.align-btn:focus-visible {
+  outline: none;
+  border-color: var(--sf-accent);
+  box-shadow: 0 0 0 1px var(--sf-accent-dim);
+}
+.align-btn:disabled {
+  opacity: 0.34;
+  cursor: not-allowed;
+}
+.align-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--sf-border);
+  margin: 0 2px;
+}
+.align-count {
+  font-family: var(--sf-font-mono);
+  font-size: 0.5625rem;
+  letter-spacing: 0.4px;
+  color: var(--sf-text-3);
+  padding: 0 6px 0 4px;
+  text-transform: uppercase;
 }
 .empty-hint .alt-sep {
   font-size: 0.625rem;
