@@ -12,9 +12,11 @@ import DiagnosticsDrawer from '@/components/DiagnosticsDrawer.vue';
 import RunModal from '@/components/RunModal.vue';
 import StatusBar from '@/components/StatusBar.vue';
 import HelpModal from '@/components/HelpModal.vue';
+import { useSimulationStore } from '@/stores/simulation.store';
 
 const graph = useGraphStore();
 const ui = useUIStore();
+const sim = useSimulationStore();
 const runOpen = ref(false);
 const helpOpen = ref(false);
 
@@ -70,8 +72,12 @@ function onKey(e: KeyboardEvent) {
       return;
     }
   }
-  // Esc → close any open modal / drawer
+  // Esc → cancel sim → close modal → close drawer → deselect
   if (e.key === 'Escape') {
+    if (sim.isPlaying) {
+      sim.cancel();
+      return;
+    }
     if (helpOpen.value) {
       helpOpen.value = false;
       return;

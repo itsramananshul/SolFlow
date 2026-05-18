@@ -35,6 +35,20 @@ export interface RunResult {
   durationMs: number;
 }
 
+/**
+ * Optional execution hooks. Used by the simulation layer to record a
+ * step trace for visual playback; see src/runtime/simulate.ts.
+ * Hooks fire only for statement-form nodes (let/assign/print/return/
+ * branch/while/forEach/call/fieldSet/indexSet plus the implicit start),
+ * not for transient expression evaluation.
+ */
+export interface RunHooks {
+  onNodeEnter?: (nodeId: string) => void;
+  onNodeExit?: (nodeId: string) => void;
+  onEdgeTraverse?: (edgeId: string) => void;
+  onError?: (nodeId: string, message: string) => void;
+}
+
 const MAX_STEPS = 100_000;
 const MAX_CALL_DEPTH = 1000;
 const MAX_DURATION_MS = 60_000;
@@ -47,6 +61,7 @@ interface RunCtx {
   steps: number;
   started: number;
   callDepth: number;
+  hooks?: RunHooks;
 }
 
 class ReturnSignal {
@@ -55,13 +70,14 @@ class ReturnSignal {
 
 class RuntimeError extends Error {}
 
-export function run(workflow: SolWorkflow): RunResult {
+export function run(workflow: SolWorkflow, hooks?: RunHooks): RunResult {
   const ctx: RunCtx = {
     workflow,
     output: [],
     steps: 0,
     started: Date.now(),
     callDepth: 0,
+    hooks,
   };
 
   const start = workflow.functions.find((f) => f.name === 'start');
@@ -117,6 +133,9 @@ function callFunction(ctx: RunCtx, fn: FunctionGraph, args: unknown[]): unknown 
     return undefined;
   }
 
+  ctx.hooks?.onNodeEnter?.(start.id);
+  ctx.hooks?.onNodeExit?.(start.id);
+
   try {
     walkChain(ctx, fn, scope, start.id, 'next');
   } catch (e) {
@@ -147,6 +166,7 @@ function walkChain(
 
   while (edge) {
     tick(ctx);
+    ctx.hooks?.onEdgeTraverse?.(edge.id);
 
     const next = fn.nodes.find((n) => n.id === edge!.target.node);
     if (!next) break;
@@ -157,7 +177,19 @@ function walkChain(
     }
     visitedThisStep.add(next.id);
 
-    executeStatement(ctx, fn, scope, next);
+    ctx.hooks?.onNodeEnter?.(next.id);
+    try {
+      executeStatement(ctx, fn, scope, next);
+    } catch (e) {
+      if (e instanceof ReturnSignal) {
+        ctx.hooks?.onNodeExit?.(next.id);
+        throw e;
+      }
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.hooks?.onError?.(next.id, msg);
+      throw e;
+    }
+    ctx.hooks?.onNodeExit?.(next.id);
 
     if (next.data.kind === 'return') {
       const hasVal = next.data.hasValue;

@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
-import { run } from '@/runtime/interpret';
+import { useSimulationStore } from '@/stores/simulation.store';
+import { recordTrace, type Trace } from '@/runtime/simulate';
 
 const graph = useGraphStore();
+const sim = useSimulationStore();
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-const result = ref<ReturnType<typeof run> | null>(null);
+const trace = ref<Trace | null>(null);
 const isRunning = ref(false);
+const result = computed(() => trace.value?.result ?? null);
 
 const tabs = ['output', 'sol'] as const;
 type Tab = (typeof tabs)[number];
@@ -20,11 +23,17 @@ function execute() {
   // Defer so the UI updates before the synchronous interpreter runs.
   setTimeout(() => {
     try {
-      result.value = run(graph.workflow);
+      trace.value = recordTrace(graph.workflow);
+      // Kick off canvas playback alongside the modal display.
+      if (trace.value) sim.play(trace.value);
     } finally {
       isRunning.value = false;
     }
   }, 50);
+}
+
+function replay() {
+  if (trace.value) sim.play(trace.value);
 }
 
 const copyState = ref<'idle' | 'copied'>('idle');
@@ -51,13 +60,17 @@ async function copySource() {
   }
 }
 
-// Auto-run on first open.
+// Auto-run each time the modal opens; cancel canvas playback on close.
 watch(
   () => props.open,
-  (now) => {
-    if (now && !result.value) execute();
+  (now, prev) => {
+    if (now && !prev) {
+      trace.value = null;
+      execute();
+    } else if (!now) {
+      sim.cancel();
+    }
   },
-  { immediate: true },
 );
 
 const sourceLines = computed(() => graph.emitted.source.split('\n'));
@@ -81,6 +94,14 @@ function onBackdrop(e: MouseEvent) {
             <span class="subtle">in-browser interpreter · Phase A</span>
           </div>
           <div class="header-right">
+            <button
+              class="ghost"
+              @click="replay"
+              :disabled="isRunning || !trace || sim.isPlaying"
+              title="Replay simulation animation on canvas"
+            >
+              ▷ Replay
+            </button>
             <button class="ghost" @click="execute" :disabled="isRunning">
               {{ isRunning ? 'Running…' : 'Re-run' }}
             </button>

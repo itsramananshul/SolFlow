@@ -15,6 +15,7 @@ import { MiniMap } from '@vue-flow/minimap';
 
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
+import { useSimulationStore } from '@/stores/simulation.store';
 import { typeCssClass } from '@/graph/schema';
 import type { GraphEdge, NodeKind, SolType } from '@/graph/schema';
 import SolNode from './SolNode.vue';
@@ -24,6 +25,7 @@ import { onMounted, onBeforeUnmount } from 'vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
+const sim = useSimulationStore();
 const { fitView, screenToFlowCoordinate, getSelectedNodes, onConnectStart, onConnectEnd } =
   useVueFlow();
 const flowContainerRef = ref<HTMLDivElement | null>(null);
@@ -91,6 +93,7 @@ const flowEdges = computed<Edge[]>(() => {
       const cls = typeCssClass(port?.type);
       strokeColor = cssVarForType(cls);
     }
+    const active = sim.isEdgeActive(e.id);
     return {
       id: e.id,
       source: e.source.node,
@@ -98,6 +101,7 @@ const flowEdges = computed<Edge[]>(() => {
       sourceHandle: e.source.port,
       targetHandle: e.target.port,
       type: 'smoothstep',
+      class: active ? 'sf-edge-active' : '',
       style: {
         stroke: strokeColor,
         strokeWidth: isControl ? 2.4 : 1.8,

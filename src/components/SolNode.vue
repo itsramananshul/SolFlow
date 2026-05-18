@@ -16,6 +16,7 @@ import { typeCssClass, typeLabel } from '@/graph/schema';
 import { categoryColor, categoryForKind } from '@/graph/kinds';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
+import { useSimulationStore } from '@/stores/simulation.store';
 
 interface Props {
   id: string;
@@ -26,12 +27,13 @@ interface Props {
 const props = defineProps<Props>();
 const graph = useGraphStore();
 const ui = useUIStore();
+const sim = useSimulationStore();
 
 const node = computed(() => props.data);
+const category = computed(() => categoryForKind(node.value.data.kind));
 const kindLabel = computed(() => labelForKind(node.value.data));
-const categoryDot = computed(() =>
-  categoryColor(categoryForKind(node.value.data.kind)),
-);
+const categoryDot = computed(() => categoryColor(category.value));
+const simStatus = computed(() => sim.getNodeStatus(node.value.id));
 
 const dataIns = computed<Port[]>(() =>
   node.value.ports.in.filter((p) => p.kind === 'data'),
@@ -153,7 +155,13 @@ function formatLiteralPreview(t: string, v: string): string {
 </script>
 
 <template>
-  <div :class="['sf-node', { selected }]">
+  <div
+    :class="[
+      'sf-node',
+      `cat-${category}`,
+      { selected, 'is-running': simStatus === 'running', 'is-visited': simStatus === 'visited', 'is-failed': simStatus === 'failed' },
+    ]"
+  >
     <div class="header">
       <span class="cat-dot" :style="{ background: categoryDot }" />
       <span class="title" :title="kindLabel">{{ kindLabel }}</span>

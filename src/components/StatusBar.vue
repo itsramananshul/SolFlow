@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
+import { useSimulationStore } from '@/stores/simulation.store';
 
 const graph = useGraphStore();
+const sim = useSimulationStore();
 
 const fn = computed(() => graph.activeFunction);
 const nodeCount = computed(() => fn.value?.nodes.length ?? 0);
@@ -60,15 +62,20 @@ const warningCount = computed(
       </span>
     </div>
     <div class="right">
-      <span v-if="errorCount > 0" class="cell err">
+      <span v-if="sim.isPlaying" class="cell sim">
+        <span class="dot acc" />
+        simulating
+        <span class="time">step {{ sim.stepIndex }} / {{ sim.totalSteps }}</span>
+      </span>
+      <span v-else-if="errorCount > 0" class="cell err">
         <span class="dot err-dot" />
         {{ errorCount }} error{{ errorCount === 1 ? '' : 's' }}
       </span>
-      <span v-if="warningCount > 0" class="cell warn">
+      <span v-else-if="warningCount > 0" class="cell warn">
         <span class="dot warn-dot" />
         {{ warningCount }} warning{{ warningCount === 1 ? '' : 's' }}
       </span>
-      <span v-if="errorCount === 0 && warningCount === 0" class="cell ok">
+      <span v-else class="cell ok">
         <span class="dot ok-dot" />
         clean
       </span>

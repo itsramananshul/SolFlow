@@ -160,6 +160,20 @@ button.ghost:hover {
   stroke-width: 2.5;
   filter: drop-shadow(0 0 4px rgba(50, 145, 255, 0.4));
 }
+/* Simulation playback: the currently-traversed edge animates a dashed
+   stroke flowing along its length. */
+@keyframes sf-edge-flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+.vue-flow__edge.sf-edge-active .vue-flow__edge-path {
+  stroke: var(--sf-accent) !important;
+  stroke-width: 2.6 !important;
+  stroke-dasharray: 6 4;
+  animation: sf-edge-flow 0.5s linear infinite;
+  filter: drop-shadow(0 0 6px rgba(50, 145, 255, 0.6));
+}
 .vue-flow__node.selected {
   /* SolNode already styles its own selected state; this is just for the
      outer Vue Flow wrapper used during multi-select / marquee drag. */
@@ -169,6 +183,100 @@ button.ghost:hover {
   background: rgba(50, 145, 255, 0.08);
   border: 1px solid var(--sf-accent);
   border-radius: 3px;
+}
+
+/* =================================================================
+ *  Node simulation states
+ * Applied as classes on .sf-node from SolNode.vue.
+ * ================================================================= */
+@keyframes sf-running-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px var(--sf-accent),
+      0 0 0 6px rgba(50, 145, 255, 0.16),
+      0 0 16px rgba(50, 145, 255, 0.32);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px var(--sf-accent),
+      0 0 0 8px rgba(50, 145, 255, 0.08),
+      0 0 24px rgba(50, 145, 255, 0.55);
+  }
+}
+.sf-node.is-running {
+  border-color: var(--sf-accent) !important;
+  animation: sf-running-pulse 1s ease-in-out infinite;
+}
+.sf-node.is-visited {
+  border-color: rgba(0, 204, 136, 0.45) !important;
+  box-shadow: 0 0 0 1px rgba(0, 204, 136, 0.18);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.sf-node.is-failed {
+  border-color: var(--sf-error) !important;
+  box-shadow: 0 0 0 1px rgba(255, 77, 79, 0.18), 0 0 12px rgba(255, 77, 79, 0.4);
+}
+
+/* =================================================================
+ *  Per-category node treatments (subtle)
+ * Triggered by .cat-{name} class on .sf-node from SolNode.vue.
+ * ================================================================= */
+/* Flow nodes: 2px left accent strip — workflow-control nodes feel
+   directional and stand out from data plumbing. */
+.sf-node.cat-flow {
+  border-left: 2px solid var(--sf-cat-flow);
+}
+.sf-node.cat-flow .header {
+  font-weight: 600;
+}
+/* Entry (Start): strong green strip + bold title. Terminal anchor. */
+.sf-node.cat-entry {
+  border-left: 2px solid var(--sf-cat-entry);
+  background: linear-gradient(
+    90deg,
+    rgba(0, 204, 136, 0.05) 0%,
+    var(--sf-bg-2) 24%
+  );
+}
+.sf-node.cat-entry .title {
+  font-weight: 600;
+  color: var(--sf-success);
+}
+/* Variable nodes: slightly lighter background — they're data plumbing,
+   not action. */
+.sf-node.cat-variable {
+  background: var(--sf-bg-1);
+}
+.sf-node.cat-variable .title {
+  color: var(--sf-text-1);
+}
+/* Operator nodes: dense, mono-emphasized header. */
+.sf-node.cat-operator {
+  min-width: 140px;
+}
+.sf-node.cat-operator .title {
+  font-size: 0.8125rem;
+  letter-spacing: 0.5px;
+}
+/* Literal nodes: code-block feel. */
+.sf-node.cat-literal {
+  min-width: 120px;
+  background: var(--sf-bg-1);
+}
+.sf-node.cat-literal .title {
+  font-family: var(--sf-font-mono);
+}
+/* I/O (Print) + Call: solid action node. */
+.sf-node.cat-io,
+.sf-node.cat-call {
+  border-left: 2px solid var(--sf-cat-io);
+}
+.sf-node.cat-call {
+  border-left-color: var(--sf-cat-call);
+}
+/* Access (FieldAccess, EnumVariant, etc.): light, expression-y. */
+.sf-node.cat-access {
+  background: var(--sf-bg-1);
 }
 .vue-flow__handle {
   width: 9px;
