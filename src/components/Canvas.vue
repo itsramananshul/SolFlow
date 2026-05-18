@@ -18,6 +18,7 @@ import { useUIStore } from '@/stores/ui.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { typeCssClass } from '@/graph/schema';
 import type { GraphEdge, NodeData, NodeKind, SolType } from '@/graph/schema';
+import { PALETTE } from '@/graph/kinds';
 import SolNode from './SolNode.vue';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import QuickAddPalette, { type SourceContext } from './QuickAddPalette.vue';
@@ -56,16 +57,14 @@ watch(
 );
 
 const SolNodeRaw = markRaw(SolNode);
-const kindList = [
-  'start', 'let', 'assign', 'print', 'return', 'branch', 'while', 'forEach',
-  'binaryOp', 'unaryOp', 'varGet', 'literal', 'arrayLiteral', 'structLiteral',
-  'fieldAccess', 'fieldSet', 'indexRead', 'indexSet', 'enumVariant', 'call',
-];
-// Vue Flow's strict typing of NodeComponent doesn't accept generic component
-// instances cleanly — we cast at the boundary since SolNode legitimately
-// renders for every kind. Acceptable adapter boundary.
+// Derive Vue Flow's node-type registry from PALETTE so adding a new kind to
+// the palette is enough to make it render through our custom SolNode renderer.
+// Previously this was a hand-maintained list; `trigger` was added to the
+// palette but missed here, and Vue Flow rendered triggers as default white
+// rectangles. Single source of truth eliminates that whole class of bug.
+const ALL_KINDS = Array.from(new Set(PALETTE.map((p) => p.kind)));
 const nodeTypes = Object.fromEntries(
-  kindList.map((k) => [k, SolNodeRaw]),
+  ALL_KINDS.map((k) => [k, SolNodeRaw]),
 ) as unknown as NodeTypesObject;
 
 const flowNodes = computed<VueFlowNode[]>(() => {
