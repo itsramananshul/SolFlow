@@ -42,6 +42,8 @@ const {
   setCenter,
   getNode,
   getViewport,
+  setViewport,
+  nodes: vueFlowNodes,
 } = useVueFlow();
 const flowContainerRef = ref<HTMLDivElement | null>(null);
 
@@ -773,7 +775,30 @@ function onGlobalKey(e: KeyboardEvent) {
     openSearch();
     return;
   }
-  // Shift+1 (or just '1') → Fit selection (or fit view when nothing selected)
+  // Cmd/Ctrl+A → Select all nodes in active function. Vue Flow's
+  // internal selection state is the source of truth for multi-select,
+  // so we flip `selected` on every node it knows about.
+  if (mod && e.key.toLowerCase() === 'a' && !isTypingInInput()) {
+    e.preventDefault();
+    for (const n of vueFlowNodes.value) {
+      n.selected = true;
+    }
+    return;
+  }
+  // Cmd/Ctrl+0 → reset zoom to 100% at the current pan center
+  if (mod && (e.key === '0') && !isTypingInInput()) {
+    e.preventDefault();
+    const vp = getViewport();
+    setViewport({ x: vp.x, y: vp.y, zoom: 1 }, { duration: 220 });
+    return;
+  }
+  // Home → fit whole graph (no-selection fitView)
+  if (!mod && e.key === 'Home' && !isTypingInInput()) {
+    e.preventDefault();
+    fitView({ padding: 0.2, duration: 300 });
+    return;
+  }
+  // '1' (no modifier) → Fit selection (or fit whole graph when nothing selected)
   if (!mod && e.key === '1' && !isTypingInInput()) {
     e.preventDefault();
     fitSelection();

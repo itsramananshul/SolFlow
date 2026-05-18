@@ -48,6 +48,14 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Show this help</span><kbd>?</kbd></div>
           </section>
           <section>
+            <div class="section-title">Navigation</div>
+            <div class="row"><span>Search nodes in this function</span><kbd>{{ modKey }}</kbd><kbd>F</kbd></div>
+            <div class="row"><span>Fit selection (or whole graph)</span><kbd>1</kbd></div>
+            <div class="row"><span>Fit whole graph</span><kbd>Home</kbd></div>
+            <div class="row"><span>Reset zoom to 100%</span><kbd>{{ modKey }}</kbd><kbd>0</kbd></div>
+            <div class="row"><span>Select all nodes</span><kbd>{{ modKey }}</kbd><kbd>A</kbd></div>
+          </section>
+          <section>
             <div class="section-title">Entry points</div>
             <div class="row">
               <span><strong>Start</strong> = classic function entry (manual run). <strong>Trigger</strong> = event-driven entry (webhook / timer / event / HTTP).</span>
@@ -71,16 +79,28 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Quick-add (alt)</span><kbd>{{ modKey }}</kbd><kbd>K</kbd></div>
             <div class="row"><span>Quick-add at click</span><kbd>Double-click</kbd></div>
             <div class="row"><span>Add node + auto-connect</span><kbd>Drag edge to empty</kbd></div>
-            <div class="row"><span>Duplicate selection</span><kbd>{{ modKey }}</kbd><kbd>D</kbd></div>
+            <div class="row"><span>Duplicate selection (keeps wiring)</span><kbd>{{ modKey }}</kbd><kbd>D</kbd></div>
             <div class="row"><span>Copy selection</span><kbd>{{ modKey }}</kbd><kbd>C</kbd></div>
             <div class="row"><span>Paste at cursor</span><kbd>{{ modKey }}</kbd><kbd>V</kbd></div>
             <div class="row"><span>Drag node from palette</span><kbd>Click + Drag</kbd></div>
             <div class="row"><span>Multi-select</span><kbd>⇧</kbd><kbd>Click</kbd></div>
             <div class="row"><span>Marquee select</span><kbd>⇧</kbd><kbd>Drag</kbd></div>
             <div class="row"><span>Pan canvas</span><kbd>Drag empty canvas</kbd></div>
-            <div class="row"><span>Delete selection</span><kbd>Del</kbd></div>
+            <div class="row"><span>Delete selection (nodes / edges)</span><kbd>Del</kbd></div>
             <div class="row"><span>Right-click for actions</span><kbd>R-Click</kbd></div>
             <div class="row"><span>Drop workflow JSON</span><kbd>Drag from desktop</kbd></div>
+          </section>
+          <section>
+            <div class="section-title">Reusable blocks</div>
+            <div class="row">
+              <span>Drag built-in patterns or your saved blocks from the <code>Blocks</code> sidebar tab. Multi-node blocks auto-wrap in a Frame named after the block.</span>
+            </div>
+            <div class="row">
+              <span>Save a marquee selection as a reusable block via right-click → <strong>Save N nodes as reusable block…</strong>.</span>
+            </div>
+            <div class="row">
+              <span>Quick Add (Space / {{ modKey }}K) searches blocks + nodes together. Block entries land at the top when the query is empty.</span>
+            </div>
           </section>
         </div>
       </div>
