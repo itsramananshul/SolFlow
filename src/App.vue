@@ -112,7 +112,11 @@ function downloadSol() {
 
 <template>
   <div class="app">
-    <Toolbar :run-open="runOpen" @open-run="runOpen = true" />
+    <Toolbar
+      :run-open="runOpen"
+      @open-run="runOpen = true"
+      @open-help="helpOpen = true"
+    />
     <FunctionTabs />
     <div class="workspace">
       <Sidebar />
