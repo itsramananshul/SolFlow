@@ -129,12 +129,14 @@ function deleteBlock(id: string) {
                 type="button"
                 class="row-btn"
                 title="Rename"
+                :aria-label="`Rename block ${row.name}`"
                 @click.stop="renameBlock(row.id)"
               >✎</button>
               <button
                 type="button"
                 class="row-btn danger"
                 title="Delete"
+                :aria-label="`Delete block ${row.name}`"
                 @click.stop="deleteBlock(row.id)"
               >✕</button>
             </div>

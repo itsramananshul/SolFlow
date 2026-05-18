@@ -161,6 +161,7 @@ function toggleSampleMenu() {
         :disabled="!graph.canUndo()"
         @click="graph.undo()"
         :title="`Undo (${modKey}+Z)`"
+        aria-label="Undo"
       >
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none">
           <path d="M3 8 L8 8 A4 4 0 1 1 4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -172,6 +173,7 @@ function toggleSampleMenu() {
         :disabled="!graph.canRedo()"
         @click="graph.redo()"
         :title="`Redo (${modKey}+Shift+Z)`"
+        aria-label="Redo"
       >
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none">
           <path d="M13 8 L8 8 A4 4 0 1 0 12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -228,7 +230,7 @@ function toggleSampleMenu() {
         Run
       </button>
 
-      <button class="ghost icon-btn help-btn" @click="openHelp" title="Keyboard shortcuts (?)">
+      <button class="ghost icon-btn help-btn" @click="openHelp" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none">
           <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4" />
           <path d="M6 6.5a2 2 0 1 1 3 1.6c-.7.4-1 .8-1 1.4M8 12v.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />

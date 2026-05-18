@@ -199,6 +199,7 @@ function jumpToFrame(f: GraphNode | undefined) {
             v-if="g.isFrame"
             class="frame-jump"
             title="Jump to this section on the canvas"
+            :aria-label="`Jump to ${g.title}`"
             @click.stop="jumpToFrame(g.frameNode)"
           >→</button>
         </button>

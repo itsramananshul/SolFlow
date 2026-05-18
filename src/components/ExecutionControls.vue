@@ -52,6 +52,7 @@ function onDismiss() {
         type="button"
         class="ctl-btn primary"
         :title="atEnd ? 'Restart from the beginning' : sim.isPaused || !sim.isPlaying ? 'Resume' : 'Pause'"
+        :aria-label="atEnd ? 'Restart simulation' : sim.isPaused || !sim.isPlaying ? 'Resume simulation' : 'Pause simulation'"
         @click="onTogglePlay"
       >
         <span v-if="atEnd">↻</span>
@@ -62,7 +63,8 @@ function onDismiss() {
         type="button"
         class="ctl-btn"
         :disabled="atEnd"
-        title="Step one event (Space-bar)"
+        title="Step one event"
+        aria-label="Step one event"
         @click="onStep"
       >
         ⏵|
@@ -71,6 +73,7 @@ function onDismiss() {
         type="button"
         class="ctl-btn"
         title="Restart from the beginning"
+        aria-label="Restart simulation"
         @click="onReset"
       >
         ↻
@@ -89,6 +92,7 @@ function onDismiss() {
         type="button"
         class="ctl-btn close"
         title="Dismiss / cancel simulation"
+        aria-label="Dismiss simulation"
         @click="onDismiss"
       >
         ✕

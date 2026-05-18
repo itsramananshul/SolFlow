@@ -390,6 +390,44 @@ button.ghost:hover {
   stroke-dasharray: 4 4;
 }
 
+/* =================================================================
+ *  Pane cursor semantics
+ *  Vue Flow's pane (empty canvas) is pannable but doesn't change
+ *  cursor by default. Surface the affordance with grab / grabbing
+ *  so users immediately read it as draggable.
+ *  ================================================================= */
+.vue-flow__pane {
+  cursor: grab;
+}
+.vue-flow__pane.dragging,
+.vue-flow.vue-flow--panning .vue-flow__pane {
+  cursor: grabbing;
+}
+/* While the user is mid-connection (dragging a port out), the cursor
+   should read as "you're wiring" — crosshair beats grab. */
+.vue-flow.vue-flow--connecting .vue-flow__pane {
+  cursor: crosshair;
+}
+
+/* =================================================================
+ *  Universal focus-visible ring
+ *  Tab-keyboard nav across panels (outline rows, block rows, palette
+ *  items, etc.) needs a consistent ring. Each component still owns
+ *  its own active/selected style; this just ensures keyboard-only
+ *  users can SEE where focus lives.
+ *  ================================================================= */
+button:focus-visible,
+[role='button']:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:not([tabindex='-1']):focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--sf-accent),
+    0 0 0 3px var(--sf-accent-dim);
+}
+
 /* shared utility classes */
 .muted {
   color: var(--sf-text-2);

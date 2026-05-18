@@ -168,7 +168,12 @@ function iconFor(kind: TimelineRow['kind']): string {
       <div class="timeline-header" @click="collapsed = !collapsed">
         <span class="timeline-title">Trace</span>
         <span class="timeline-count">{{ rows.length }} steps</span>
-        <button class="collapse-btn" type="button" @click.stop="collapsed = !collapsed">
+        <button
+          class="collapse-btn"
+          type="button"
+          :aria-label="collapsed ? 'Expand execution timeline' : 'Collapse execution timeline'"
+          @click.stop="collapsed = !collapsed"
+        >
           {{ collapsed ? '◂' : '▸' }}
         </button>
       </div>

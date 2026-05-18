@@ -507,10 +507,11 @@ function formatLiteralPreview(t: string, v: string): string {
           v-if="canDuplicate"
           class="qa-btn"
           title="Duplicate"
+          aria-label="Duplicate node"
           @click.stop="handleDuplicate"
           @mousedown.stop
         >
-          <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+          <svg viewBox="0 0 12 12" width="10" height="10" fill="none" aria-hidden="true">
             <rect x="2.5" y="2.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2" />
             <rect x="4.5" y="4.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2" />
           </svg>
@@ -519,10 +520,11 @@ function formatLiteralPreview(t: string, v: string): string {
           class="qa-btn"
           :disabled="!canDelete"
           :title="deleteTooltip"
+          :aria-label="canDelete ? 'Delete node' : deleteTooltip"
           @click.stop="handleDelete"
           @mousedown.stop
         >
-          <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+          <svg viewBox="0 0 12 12" width="10" height="10" fill="none" aria-hidden="true">
             <path
               d="M3 3 9 9 M9 3 3 9"
               stroke="currentColor"

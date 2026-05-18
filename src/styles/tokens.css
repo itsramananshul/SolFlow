@@ -19,7 +19,10 @@
   --sf-text-0: #ededed;
   --sf-text-1: #a1a1a1;
   --sf-text-2: #707070;
-  --sf-text-3: #4a4a4a;
+  /* --sf-text-3 bumped from #4a4a4a → #5a5a5a so muted-but-real text
+     (helper blurbs, placeholders, secondary labels) meets WCAG AA
+     against the canvas-bg / bg-0 surfaces. */
+  --sf-text-3: #5a5a5a;
 
   /* borders */
   --sf-border: rgba(255, 255, 255, 0.08);
