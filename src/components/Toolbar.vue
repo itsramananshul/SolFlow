@@ -11,6 +11,7 @@ const emit = defineEmits<{
   (e: 'open-help'): void;
   (e: 'open-sol-man'): void;
   (e: 'open-welcome'): void;
+  (e: 'toggle-presentation'): void;
 }>();
 
 const graph = useGraphStore();
@@ -47,6 +48,9 @@ function openSolMan() {
 }
 function openWelcome() {
   emit('open-welcome');
+}
+function togglePresentation() {
+  emit('toggle-presentation');
 }
 
 function newWorkflow() {
@@ -252,6 +256,17 @@ function toggleSampleMenu() {
         Run
       </button>
 
+      <button
+        class="ghost icon-btn"
+        @click="togglePresentation"
+        title="Presentation mode (P) — hide chrome for demos"
+        aria-label="Toggle presentation mode"
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+          <rect x="2" y="3" width="12" height="9" rx="1" stroke="currentColor" stroke-width="1.4" />
+          <path d="M5 14 H11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+      </button>
       <button class="ghost icon-btn help-btn" @click="openHelp" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none">
           <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4" />

@@ -30,6 +30,22 @@ const solManOpen = ref(false);
 const welcomeOpen = ref(false);
 
 /**
+ * Presentation mode hides every piece of chrome (toolbar, tabs,
+ * sidebar, inspector + source pane, splitters, status bar) so the
+ * canvas fills the viewport for clean screenshots, screencasts, or
+ * conference-room demos. A tiny floating "Exit" pill stays visible
+ * so the user can never get stuck. Session-only — a reload returns
+ * to the standard layout.
+ *
+ * Triggered by P (no modifier, not in an input) or the projector
+ * icon in the toolbar.
+ */
+const presentationMode = ref(false);
+function togglePresentation() {
+  presentationMode.value = !presentationMode.value;
+}
+
+/**
  * First-run welcome / gallery visibility.
  *
  * Auto-shown if localStorage doesn't yet contain
@@ -200,6 +216,22 @@ function onKey(e: KeyboardEvent) {
     solManOpen.value = true;
     return;
   }
+  // P (no modifier) → toggle presentation mode. Bare-key shortcut
+  // matches the existing 1 / Home / ? pattern. Suppressed while a
+  // text input has focus so typing "p" in the Inspector / Sol Man /
+  // workflow name doesn't toggle the layout.
+  if (!mod && (e.key === 'p' || e.key === 'P')) {
+    const t = e.target as HTMLElement;
+    if (
+      t.tagName !== 'INPUT' &&
+      t.tagName !== 'TEXTAREA' &&
+      !t.isContentEditable
+    ) {
+      e.preventDefault();
+      togglePresentation();
+      return;
+    }
+  }
   if (e.key === '?' && !mod) {
     const t = e.target as HTMLElement;
     if (
@@ -215,6 +247,10 @@ function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     if (sim.isPlaying) {
       sim.cancel();
+      return;
+    }
+    if (presentationMode.value) {
+      presentationMode.value = false;
       return;
     }
     if (welcomeOpen.value) {
@@ -264,68 +300,95 @@ function downloadSol() {
 </script>
 
 <template>
-  <div class="app">
+  <div class="app" :class="{ 'presentation-mode': presentationMode }">
     <Toolbar
+      v-if="!presentationMode"
       :run-open="runOpen"
       @open-run="runOpen = true"
       @open-help="helpOpen = true"
       @open-sol-man="solManOpen = true"
       @open-welcome="welcomeOpen = true"
+      @toggle-presentation="togglePresentation"
     />
-    <FunctionTabs />
+    <FunctionTabs v-if="!presentationMode" />
     <div
       class="workspace"
-      :style="{
-        gridTemplateColumns: `${clampedLeft}px auto 1fr auto ${clampedRight}px`,
-      }"
+      :style="presentationMode
+        ? { gridTemplateColumns: '1fr' }
+        : { gridTemplateColumns: `${clampedLeft}px auto 1fr auto ${clampedRight}px` }"
     >
-      <Sidebar />
-      <Splitter
-        orientation="vertical"
-        :size="leftWidth"
-        :min="LEFT_MIN"
-        :max="effectiveLeftMax"
-        :default-size="LEFT_DEFAULT"
-        @update:size="(v) => (leftWidth = v)"
-      />
+      <template v-if="!presentationMode">
+        <Sidebar />
+        <Splitter
+          orientation="vertical"
+          :size="leftWidth"
+          :min="LEFT_MIN"
+          :max="effectiveLeftMax"
+          :default-size="LEFT_DEFAULT"
+          @update:size="(v) => (leftWidth = v)"
+        />
+      </template>
       <div class="canvas-region">
         <Canvas />
-        <DiagnosticsDrawer v-if="ui.drawerOpen" />
+        <DiagnosticsDrawer v-if="ui.drawerOpen && !presentationMode" />
       </div>
-      <Splitter
-        orientation="vertical"
-        :size="rightWidth"
-        :min="RIGHT_MIN"
-        :max="effectiveRightMax"
-        :default-size="RIGHT_DEFAULT"
-        @update:size="(v) => (rightWidth = v)"
-      />
-      <div class="right-pane" ref="rightPaneRef">
-        <div
-          class="inspector-slot"
-          :style="{ flexBasis: `${inspectorRatio * 100}%` }"
-        >
-          <Inspector />
-        </div>
+      <template v-if="!presentationMode">
         <Splitter
-          orientation="horizontal"
-          :size="inspectorRatio"
-          :min="INS_MIN"
-          :max="INS_MAX"
-          :default-size="INS_DEFAULT"
-          :fraction="true"
-          :container-px="rightPaneHeight"
-          @update:size="(v) => (inspectorRatio = v)"
+          orientation="vertical"
+          :size="rightWidth"
+          :min="RIGHT_MIN"
+          :max="effectiveRightMax"
+          :default-size="RIGHT_DEFAULT"
+          @update:size="(v) => (rightWidth = v)"
         />
-        <div
-          class="source-slot"
-          :style="{ flexBasis: `${(1 - inspectorRatio) * 100}%` }"
-        >
-          <SourcePreview />
+        <div class="right-pane" ref="rightPaneRef">
+          <div
+            class="inspector-slot"
+            :style="{ flexBasis: `${inspectorRatio * 100}%` }"
+          >
+            <Inspector />
+          </div>
+          <Splitter
+            orientation="horizontal"
+            :size="inspectorRatio"
+            :min="INS_MIN"
+            :max="INS_MAX"
+            :default-size="INS_DEFAULT"
+            :fraction="true"
+            :container-px="rightPaneHeight"
+            @update:size="(v) => (inspectorRatio = v)"
+          />
+          <div
+            class="source-slot"
+            :style="{ flexBasis: `${(1 - inspectorRatio) * 100}%` }"
+          >
+            <SourcePreview />
+          </div>
         </div>
-      </div>
+      </template>
     </div>
-    <StatusBar />
+    <StatusBar v-if="!presentationMode" />
+
+    <!--
+      Floating Exit button — the only chrome we leave on screen in
+      presentation mode so the user can always get back. Bottom-right
+      so it doesn't fight the canvas controls (which are bottom-left).
+    -->
+    <Transition name="exit-fade">
+      <button
+        v-if="presentationMode"
+        type="button"
+        class="exit-presentation"
+        title="Exit presentation mode (P or Esc)"
+        aria-label="Exit presentation mode"
+        @click="togglePresentation"
+      >
+        <svg viewBox="0 0 16 16" width="11" height="11" fill="none" aria-hidden="true">
+          <path d="M5 5 L11 11 M11 5 L5 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <span>Exit presentation</span>
+      </button>
+    </Transition>
     <RunModal :open="runOpen" @close="runOpen = false" />
     <HelpModal :open="helpOpen" @close="helpOpen = false" />
     <SolManModal :open="solManOpen" @close="solManOpen = false" />
@@ -345,6 +408,45 @@ function downloadSol() {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
+}
+.app.presentation-mode {
+  background: var(--sf-canvas-bg);
+}
+
+/* Exit-presentation pill — bottom-right, subtle pill that scales in
+   so the canvas keeps maximum visual real estate. */
+.exit-presentation {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  background: rgba(17, 17, 17, 0.85);
+  color: var(--sf-text-1);
+  border: 1px solid var(--sf-border-strong);
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  box-shadow: var(--sf-shadow-2);
+  z-index: var(--sf-z-popover);
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+.exit-presentation:hover {
+  background: rgba(34, 34, 34, 0.95);
+  color: var(--sf-text-0);
+  border-color: var(--sf-border-bright);
+}
+.exit-fade-enter-active,
+.exit-fade-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.exit-fade-enter-from,
+.exit-fade-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 .workspace {
   display: grid;
