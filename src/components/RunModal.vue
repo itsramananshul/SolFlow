@@ -27,6 +27,30 @@ function execute() {
   }, 50);
 }
 
+const copyState = ref<'idle' | 'copied'>('idle');
+
+async function copyOutput() {
+  if (!result.value) return;
+  const text = result.value.output.join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    copyState.value = 'copied';
+    setTimeout(() => (copyState.value = 'idle'), 1200);
+  } catch {
+    /* clipboard refused */
+  }
+}
+
+async function copySource() {
+  try {
+    await navigator.clipboard.writeText(graph.emitted.source);
+    copyState.value = 'copied';
+    setTimeout(() => (copyState.value = 'idle'), 1200);
+  } catch {
+    /* clipboard refused */
+  }
+}
+
 // Auto-run on first open.
 watch(
   () => props.open,
@@ -99,20 +123,31 @@ function onBackdrop(e: MouseEvent) {
         <main class="body">
           <!-- Output tab -->
           <section v-if="activeTab === 'output'" class="pane">
-            <div v-if="isRunning" class="empty">
-              Running…
-            </div>
+            <div v-if="isRunning" class="empty">Running…</div>
             <template v-else-if="result">
               <div v-if="result.error" class="error">
                 <strong>Runtime error</strong>
                 <div class="error-msg">{{ result.error }}</div>
               </div>
-              <div v-if="result.output.length === 0" class="empty">
-                (no print output)
+              <div v-if="result.output.length === 0 && !result.error" class="empty">
+                Program ran with no print output.
               </div>
-              <pre v-else class="output-pre">{{ result.output.join('\n') }}</pre>
+              <div v-if="result.output.length > 0" class="output-block">
+                <div class="output-toolbar">
+                  <span class="output-label">stdout · {{ result.output.length }} {{ result.output.length === 1 ? 'line' : 'lines' }}</span>
+                  <button class="ghost" @click="copyOutput">
+                    {{ copyState === 'copied' ? '✓ Copied' : 'Copy' }}
+                  </button>
+                </div>
+                <div class="output-rows">
+                  <div v-for="(line, i) in result.output" :key="i" class="output-row">
+                    <span class="row-num">{{ String(i + 1).padStart(2, ' ') }}</span>
+                    <span class="row-text">{{ line }}</span>
+                  </div>
+                </div>
+              </div>
               <div v-if="result.returnValue !== undefined" class="return-row">
-                <span class="subtle">return value:</span>
+                <span class="subtle">return:</span>
                 <code>{{ formatReturn(result.returnValue) }}</code>
               </div>
             </template>
@@ -120,6 +155,12 @@ function onBackdrop(e: MouseEvent) {
 
           <!-- SOL preview -->
           <section v-if="activeTab === 'sol'" class="pane">
+            <div class="output-toolbar">
+              <span class="output-label">{{ sourceLines.length }} lines</span>
+              <button class="ghost" @click="copySource">
+                {{ copyState === 'copied' ? '✓ Copied' : 'Copy SOL' }}
+              </button>
+            </div>
             <pre class="sol-pre"><span
               v-for="(line, i) in sourceLines"
               :key="i"
@@ -269,17 +310,53 @@ function formatReturn(v: unknown): string {
   font-size: 0.75rem;
   font-style: italic;
 }
-.output-pre {
-  margin: 0;
+.output-block {
+  background: var(--sf-bg-2);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+  overflow: hidden;
+}
+.output-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--sf-bg-1);
+  border-bottom: 1px solid var(--sf-border);
+}
+.output-label {
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--sf-text-2);
+}
+.output-rows {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+}
+.output-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 2px 12px;
   font-family: var(--sf-font-mono);
   font-size: 0.75rem;
   color: var(--sf-text-0);
+}
+.output-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.row-num {
+  color: var(--sf-text-3);
+  font-size: 0.625rem;
+  flex-shrink: 0;
+  user-select: none;
+  padding-top: 1px;
+}
+.row-text {
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--sf-bg-2);
-  padding: 10px 12px;
-  border-radius: var(--sf-radius-sm);
-  border: 1px solid var(--sf-border);
 }
 .error {
   background: rgba(255, 77, 79, 0.08);
