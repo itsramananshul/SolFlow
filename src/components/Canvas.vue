@@ -386,6 +386,12 @@ function isTypingInInput(): boolean {
   return false;
 }
 
+function getCurrentSelectionIds(): string[] {
+  const selectedIds = getSelectedNodes.value.map((n) => n.id);
+  if (selectedIds.length > 0) return selectedIds;
+  return ui.selectedNodeId ? [ui.selectedNodeId] : [];
+}
+
 function onGlobalKey(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
   // Cmd/Ctrl+K → Quick-Add at cursor
@@ -398,11 +404,26 @@ function onGlobalKey(e: KeyboardEvent) {
   // Cmd/Ctrl+D → duplicate current selection
   if (mod && e.key.toLowerCase() === 'd' && !isTypingInInput()) {
     e.preventDefault();
-    const selectedIds = getSelectedNodes.value.map((n) => n.id);
-    const fallbackId = ui.selectedNodeId ? [ui.selectedNodeId] : [];
-    const ids = selectedIds.length > 0 ? selectedIds : fallbackId;
+    const ids = getCurrentSelectionIds();
     if (ids.length === 0) return;
     const newIds = graph.duplicateNodes(ids);
+    if (newIds.length > 0) ui.selectNode(newIds[newIds.length - 1]);
+    return;
+  }
+  // Cmd/Ctrl+C → copy selection to internal clipboard
+  if (mod && e.key.toLowerCase() === 'c' && !isTypingInInput()) {
+    const ids = getCurrentSelectionIds();
+    if (ids.length === 0) return;
+    e.preventDefault();
+    graph.copyNodes(ids);
+    return;
+  }
+  // Cmd/Ctrl+V → paste at cursor (or canvas center)
+  if (mod && e.key.toLowerCase() === 'v' && !isTypingInInput()) {
+    if (!graph.hasClipboard()) return;
+    e.preventDefault();
+    const flow = screenToFlowCoordinate(lastCursor.value);
+    const newIds = graph.pasteAt(flow);
     if (newIds.length > 0) ui.selectNode(newIds[newIds.length - 1]);
     return;
   }

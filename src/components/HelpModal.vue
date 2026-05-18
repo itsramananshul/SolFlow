@@ -54,6 +54,8 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Quick-add at click</span><kbd>Double-click</kbd></div>
             <div class="row"><span>Add node + auto-connect</span><kbd>Drag edge to empty</kbd></div>
             <div class="row"><span>Duplicate selection</span><kbd>{{ modKey }}</kbd><kbd>D</kbd></div>
+            <div class="row"><span>Copy selection</span><kbd>{{ modKey }}</kbd><kbd>C</kbd></div>
+            <div class="row"><span>Paste at cursor</span><kbd>{{ modKey }}</kbd><kbd>V</kbd></div>
             <div class="row"><span>Drag node from palette</span><kbd>Click + Drag</kbd></div>
             <div class="row"><span>Multi-select</span><kbd>⇧</kbd><kbd>Click</kbd></div>
             <div class="row"><span>Marquee select</span><kbd>⇧</kbd><kbd>Drag</kbd></div>

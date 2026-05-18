@@ -233,6 +233,79 @@ export const useGraphStore = defineStore('graph', () => {
     return newIds;
   }
 
+  // -----------------------------------------------------------
+  // Copy / paste
+  // -----------------------------------------------------------
+  // In-memory clipboard. Survives across selections + paste-many.
+  // Edges are only copied when BOTH endpoints are in the copied set
+  // (so pasting reconstructs internal wiring but not dangling refs).
+  interface ClipboardPayload {
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+    centroid: { x: number; y: number };
+  }
+  const clipboard = ref<ClipboardPayload | null>(null);
+
+  function copyNodes(nodeIds: string[]): number {
+    const fn = activeFunction.value;
+    if (!fn) return 0;
+    const set = new Set(nodeIds);
+    const nodes = fn.nodes.filter(
+      (n) => set.has(n.id) && n.data.kind !== 'start',
+    );
+    if (nodes.length === 0) return 0;
+    const edges = fn.edges.filter(
+      (e) => set.has(e.source.node) && set.has(e.target.node),
+    );
+    const cx = nodes.reduce((s, n) => s + n.position.x, 0) / nodes.length;
+    const cy = nodes.reduce((s, n) => s + n.position.y, 0) / nodes.length;
+    clipboard.value = {
+      nodes: JSON.parse(JSON.stringify(nodes)),
+      edges: JSON.parse(JSON.stringify(edges)),
+      centroid: { x: cx, y: cy },
+    };
+    return nodes.length;
+  }
+
+  function hasClipboard(): boolean {
+    return clipboard.value !== null && clipboard.value.nodes.length > 0;
+  }
+
+  function pasteAt(flowPos: { x: number; y: number }): string[] {
+    const fn = activeFunction.value;
+    const c = clipboard.value;
+    if (!fn || !c) return [];
+    const idMap = new Map<string, string>();
+    const newIds: string[] = [];
+    for (const n of c.nodes) {
+      const newId = nanoid(8);
+      idMap.set(n.id, newId);
+      const dx = n.position.x - c.centroid.x;
+      const dy = n.position.y - c.centroid.y;
+      const pos = findFreePosition(
+        { x: flowPos.x + dx, y: flowPos.y + dy },
+        fn.nodes,
+      );
+      const clone = JSON.parse(JSON.stringify(n)) as GraphNode;
+      clone.id = newId;
+      clone.position = pos;
+      fn.nodes.push(clone);
+      newIds.push(newId);
+    }
+    for (const e of c.edges) {
+      const sn = idMap.get(e.source.node);
+      const tn = idMap.get(e.target.node);
+      if (!sn || !tn) continue;
+      const clone = JSON.parse(JSON.stringify(e)) as GraphEdge;
+      clone.id = nanoid(8);
+      clone.source = { node: sn, port: e.source.port };
+      clone.target = { node: tn, port: e.target.port };
+      fn.edges.push(clone);
+    }
+    touch();
+    return newIds;
+  }
+
   /**
    * Find a free position near `preferred` that doesn't overlap any
    * existing node within ~48px. Walks a small spiral if needed.
@@ -721,6 +794,9 @@ export const useGraphStore = defineStore('graph', () => {
     updateNodeExpression,
     duplicateNode,
     duplicateNodes,
+    copyNodes,
+    pasteAt,
+    hasClipboard,
     removeNode,
     addEdge,
     removeEdge,
