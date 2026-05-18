@@ -42,6 +42,7 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Save workflow JSON</span><kbd>{{ modKey }}</kbd><kbd>S</kbd></div>
             <div class="row"><span>Export .sol</span><kbd>{{ modKey }}</kbd><kbd>E</kbd></div>
             <div class="row"><span>Run workflow</span><kbd>{{ modKey }}</kbd><kbd>↵</kbd></div>
+            <div class="row"><span>Open Sol Man (AI)</span><kbd>{{ modKey }}</kbd><kbd>J</kbd></div>
             <div class="row"><span>Undo</span><kbd>{{ modKey }}</kbd><kbd>Z</kbd></div>
             <div class="row"><span>Redo</span><kbd>{{ modKey }}</kbd><kbd>⇧</kbd><kbd>Z</kbd></div>
             <div class="row"><span>Close modal / drawer / deselect</span><kbd>Esc</kbd></div>

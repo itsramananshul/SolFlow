@@ -9,6 +9,7 @@ defineProps<{ runOpen: boolean }>();
 const emit = defineEmits<{
   (e: 'open-run'): void;
   (e: 'open-help'): void;
+  (e: 'open-sol-man'): void;
 }>();
 
 const graph = useGraphStore();
@@ -39,6 +40,9 @@ function openRun() {
 }
 function openHelp() {
   emit('open-help');
+}
+function openSolMan() {
+  emit('open-sol-man');
 }
 
 function newWorkflow() {
@@ -218,6 +222,14 @@ function toggleSampleMenu() {
 
       <button class="ghost" @click="downloadSol" :title="`Export .sol (${modKey}+E)`">
         Export .sol
+      </button>
+      <button
+        class="ghost sol-man-btn"
+        @click="openSolMan"
+        :title="`Sol Man — AI workflow generation (${modKey}+J)`"
+      >
+        <span class="sm-sparkle" aria-hidden="true">✨</span>
+        Sol Man
       </button>
       <button
         class="primary run-btn"
@@ -402,6 +414,21 @@ function toggleSampleMenu() {
   display: inline-flex;
   align-items: center;
   font-weight: 600;
+}
+.sol-man-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--sf-text-0);
+  border-color: rgba(232, 166, 87, 0.32);
+  background: rgba(232, 166, 87, 0.06);
+}
+.sol-man-btn:hover {
+  background: rgba(232, 166, 87, 0.14);
+  border-color: rgba(232, 166, 87, 0.5);
+}
+.sm-sparkle {
+  font-size: 0.6875rem;
 }
 .diag-btn.active {
   background: var(--sf-bg-3);

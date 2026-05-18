@@ -13,6 +13,7 @@ import RunModal from '@/components/RunModal.vue';
 import StatusBar from '@/components/StatusBar.vue';
 import HelpModal from '@/components/HelpModal.vue';
 import Splitter from '@/components/Splitter.vue';
+import SolManModal from '@/components/SolManModal.vue';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useBlocksStore } from '@/stores/blocks.store';
 
@@ -22,6 +23,7 @@ const sim = useSimulationStore();
 const blocks = useBlocksStore();
 const runOpen = ref(false);
 const helpOpen = ref(false);
+const solManOpen = ref(false);
 
 // =============================================================
 //  Resizable layout — left sidebar / right panel / inspector split
@@ -168,6 +170,12 @@ function onKey(e: KeyboardEvent) {
     downloadSol();
     return;
   }
+  // Cmd/Ctrl+J → open Sol Man (AI workflow generation)
+  if (mod && e.key.toLowerCase() === 'j') {
+    e.preventDefault();
+    solManOpen.value = true;
+    return;
+  }
   if (e.key === '?' && !mod) {
     const t = e.target as HTMLElement;
     if (
@@ -183,6 +191,10 @@ function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     if (sim.isPlaying) {
       sim.cancel();
+      return;
+    }
+    if (solManOpen.value) {
+      solManOpen.value = false;
       return;
     }
     if (helpOpen.value) {
@@ -229,6 +241,7 @@ function downloadSol() {
       :run-open="runOpen"
       @open-run="runOpen = true"
       @open-help="helpOpen = true"
+      @open-sol-man="solManOpen = true"
     />
     <FunctionTabs />
     <div
@@ -286,6 +299,7 @@ function downloadSol() {
     <StatusBar />
     <RunModal :open="runOpen" @close="runOpen = false" />
     <HelpModal :open="helpOpen" @close="helpOpen = false" />
+    <SolManModal :open="solManOpen" @close="solManOpen = false" />
   </div>
 </template>
 
