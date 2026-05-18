@@ -10,6 +10,7 @@ const emit = defineEmits<{
   (e: 'open-run'): void;
   (e: 'open-help'): void;
   (e: 'open-sol-man'): void;
+  (e: 'open-welcome'): void;
 }>();
 
 const graph = useGraphStore();
@@ -43,6 +44,9 @@ function openHelp() {
 }
 function openSolMan() {
   emit('open-sol-man');
+}
+function openWelcome() {
+  emit('open-welcome');
 }
 
 function newWorkflow() {
@@ -114,8 +118,14 @@ function toggleSampleMenu() {
 
 <template>
   <header class="toolbar">
-    <div class="brand">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+    <button
+      class="brand"
+      type="button"
+      title="Open the welcome / gallery screen"
+      aria-label="Open welcome screen"
+      @click="openWelcome"
+    >
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path
           d="M6 6h8a4 4 0 010 8h-4a4 4 0 000 8h0"
           stroke="currentColor"
@@ -127,7 +137,7 @@ function toggleSampleMenu() {
       </svg>
       <span class="name">SolFlow</span>
       <span class="version">v0.1</span>
-    </div>
+    </button>
 
     <!--
       Workflow header — editable name + optional one-line description.
@@ -276,6 +286,16 @@ function toggleSampleMenu() {
   align-items: center;
   gap: 8px;
   color: var(--sf-text-0);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--sf-radius-sm);
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.brand:hover {
+  background: var(--sf-bg-2);
+  border-color: var(--sf-border);
 }
 .brand svg {
   color: var(--sf-text-0);

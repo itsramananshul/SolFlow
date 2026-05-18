@@ -14,6 +14,7 @@ import StatusBar from '@/components/StatusBar.vue';
 import HelpModal from '@/components/HelpModal.vue';
 import Splitter from '@/components/Splitter.vue';
 import SolManModal from '@/components/SolManModal.vue';
+import WelcomeScreen from '@/components/WelcomeScreen.vue';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useBlocksStore } from '@/stores/blocks.store';
 import { useSolManConfigStore } from '@/stores/sol-man-config.store';
@@ -26,6 +27,23 @@ const solManConfig = useSolManConfigStore();
 const runOpen = ref(false);
 const helpOpen = ref(false);
 const solManOpen = ref(false);
+const welcomeOpen = ref(false);
+
+/**
+ * First-run welcome / gallery visibility.
+ *
+ * Auto-shown if localStorage doesn't yet contain
+ * `solflow.welcome.dismissed`. Once dismissed, only re-opens via the
+ * toolbar (Brand button → Show welcome). Stored as a string so the
+ * presence of the key is the source of truth — its value is ignored.
+ */
+function maybeShowWelcomeOnMount() {
+  if (typeof localStorage === 'undefined') return;
+  const dismissed = localStorage.getItem('solflow.welcome.dismissed');
+  if (!dismissed) {
+    welcomeOpen.value = true;
+  }
+}
 
 // =============================================================
 //  Resizable layout — left sidebar / right panel / inspector split
@@ -107,6 +125,9 @@ onMounted(() => {
   window.addEventListener('resize', onResize);
   // Initial measure after the layout has settled.
   requestAnimationFrame(measureRightPane);
+  // Welcome screen check runs AFTER bootstrap so the localStorage read
+  // and dismissed-flag both have the same lifecycle.
+  maybeShowWelcomeOnMount();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey);
@@ -196,6 +217,10 @@ function onKey(e: KeyboardEvent) {
       sim.cancel();
       return;
     }
+    if (welcomeOpen.value) {
+      welcomeOpen.value = false;
+      return;
+    }
     if (solManOpen.value) {
       solManOpen.value = false;
       return;
@@ -245,6 +270,7 @@ function downloadSol() {
       @open-run="runOpen = true"
       @open-help="helpOpen = true"
       @open-sol-man="solManOpen = true"
+      @open-welcome="welcomeOpen = true"
     />
     <FunctionTabs />
     <div
@@ -303,6 +329,12 @@ function downloadSol() {
     <RunModal :open="runOpen" @close="runOpen = false" />
     <HelpModal :open="helpOpen" @close="helpOpen = false" />
     <SolManModal :open="solManOpen" @close="solManOpen = false" />
+    <WelcomeScreen
+      :open="welcomeOpen"
+      @close="welcomeOpen = false"
+      @open-sol-man="solManOpen = true"
+      @open-file="welcomeOpen = false"
+    />
   </div>
 </template>
 
