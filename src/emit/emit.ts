@@ -355,7 +355,9 @@ function emitExpression(ctx: EmitCtx, node: GraphNode, outPort: string): string 
       return '/* invalid */';
     }
     case 'let': {
-      if (outPort.startsWith('var:')) return data.varName;
+      // Reading the variable bound by this let via its data-out port.
+      // Stable 'var' is the current id; 'var:<name>' is preserved for old saved graphs.
+      if (outPort === 'var' || outPort.startsWith('var:')) return data.varName;
       return '/* invalid */';
     }
     default:

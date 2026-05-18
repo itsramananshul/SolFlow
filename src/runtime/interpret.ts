@@ -398,11 +398,10 @@ function evalNode(
       if (outPort === 'item') return scope[data.iteratorName];
       return undefined;
     case 'let':
-      // var:<name> data-out: returns the variable's current value.
-      if (outPort.startsWith('var:')) {
-        const varName = outPort.slice(4);
-        return scope[varName];
-      }
+      // Stable port id 'var' reads the variable's current value;
+      // 'var:<name>' kept for older saved graphs.
+      if (outPort === 'var') return scope[data.varName];
+      if (outPort.startsWith('var:')) return scope[outPort.slice(4)];
       return undefined;
     default:
       return undefined;

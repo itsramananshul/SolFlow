@@ -119,7 +119,8 @@ export function rebuildPorts(data: NodeData, ctx: WorkflowCtx): NodePorts {
         ],
         out: [
           CTL('next', 'next'),
-          DATA(`var:${data.varName}`, data.varName || 'var', data.varType, false),
+          // Stable port id 'var' so renaming varName doesn't break wired edges.
+          DATA('var', data.varName || 'var', data.varType, false),
         ],
       };
     case 'assign':

@@ -217,6 +217,30 @@ export const useGraphStore = defineStore('graph', () => {
     if (!fn) return;
     const node = fn.nodes.find((n) => n.id === nodeId);
     if (!node) return;
+
+    // Detect variable-name rename for propagation to varGet/assign references.
+    let renameFrom: string | undefined;
+    let renameTo: string | undefined;
+    const oldKind = node.data.kind;
+    if (
+      oldKind === 'let' &&
+      'varName' in patch &&
+      typeof (patch as { varName?: unknown }).varName === 'string' &&
+      (patch as { varName: string }).varName !== node.data.varName
+    ) {
+      renameFrom = node.data.varName;
+      renameTo = (patch as { varName: string }).varName;
+    }
+    if (
+      oldKind === 'forEach' &&
+      'iteratorName' in patch &&
+      typeof (patch as { iteratorName?: unknown }).iteratorName === 'string' &&
+      (patch as { iteratorName: string }).iteratorName !== node.data.iteratorName
+    ) {
+      renameFrom = node.data.iteratorName;
+      renameTo = (patch as { iteratorName: string }).iteratorName;
+    }
+
     node.data = { ...node.data, ...patch } as NodeData;
     const newPorts = rebuildPorts(node.data, ctx.value);
 
@@ -239,7 +263,38 @@ export const useGraphStore = defineStore('graph', () => {
     }
 
     node.ports = newPorts;
+
+    // Propagate rename to any varGet / assign nodes that reference the
+    // old name in the same function. We also rewrite inline expressions
+    // where the old name appears as a bare identifier (word boundary
+    // match — naive but catches the common case of `counter < 4` →
+    // `count < 4` after a let rename).
+    if (renameFrom && renameTo && renameFrom !== renameTo) {
+      const wordRe = new RegExp(`\\b${escapeRegex(renameFrom)}\\b`, 'g');
+      for (const n of fn.nodes) {
+        if (n.id === nodeId) continue;
+        if (n.data.kind === 'varGet' && n.data.varName === renameFrom) {
+          n.data.varName = renameTo;
+          n.ports = rebuildPorts(n.data, ctx.value);
+        }
+        if (n.data.kind === 'assign' && n.data.varName === renameFrom) {
+          n.data.varName = renameTo;
+        }
+        if (n.expressions) {
+          for (const k of Object.keys(n.expressions)) {
+            const before = n.expressions[k];
+            const after = before.replace(wordRe, renameTo);
+            if (after !== before) n.expressions[k] = after;
+          }
+        }
+      }
+    }
+
     touch();
+  }
+
+  function escapeRegex(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   /**
