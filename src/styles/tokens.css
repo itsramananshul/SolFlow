@@ -82,4 +82,19 @@
   --sf-shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
   --sf-shadow-2: 0 4px 12px rgba(0, 0, 0, 0.5);
   --sf-shadow-3: 0 12px 32px rgba(0, 0, 0, 0.6);
+
+  /*
+   * Layered z-index scale. Components must use these vars instead of
+   * arbitrary numbers so overlays don't collide.
+   *  Vue Flow's internal stack (1-5) covers canvas-bg / edges / nodes.
+   *  ambient = empty-state hint, ambient toasts
+   *  drawer  = diagnostics drawer
+   *  popover = context menu, quick-add, tooltips
+   *  modal / modal-top = Run modal / Help modal
+   */
+  --sf-z-ambient: 6;
+  --sf-z-drawer: 10;
+  --sf-z-popover: 80;
+  --sf-z-modal: 100;
+  --sf-z-modal-top: 120;
 }

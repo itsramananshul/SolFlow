@@ -83,7 +83,7 @@ function onBackdrop(e: MouseEvent) {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
-  z-index: 110;
+  z-index: var(--sf-z-modal-top);
   display: flex;
   align-items: center;
   justify-content: center;

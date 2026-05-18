@@ -89,7 +89,7 @@ watch(
 <style scoped>
 .ctx-menu {
   position: fixed;
-  z-index: 200;
+  z-index: var(--sf-z-popover);
   background: var(--sf-bg-2);
   border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-md);

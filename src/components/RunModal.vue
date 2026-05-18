@@ -224,7 +224,7 @@ function formatReturn(v: unknown): string {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.78);
-  z-index: 100;
+  z-index: var(--sf-z-modal);
   display: flex;
   align-items: center;
   justify-content: center;

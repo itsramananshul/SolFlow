@@ -234,7 +234,7 @@ const headline = computed(() => {
 <style scoped>
 .qa-popover {
   position: fixed;
-  z-index: 200;
+  z-index: var(--sf-z-popover);
   width: 320px;
   max-height: 360px;
   background: var(--sf-bg-2);

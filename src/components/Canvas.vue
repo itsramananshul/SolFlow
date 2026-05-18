@@ -432,6 +432,17 @@ function getCurrentSelectionIds(): string[] {
   return ui.selectedNodeId ? [ui.selectedNodeId] : [];
 }
 
+// Empty-state hint visibility: only when the function contains just the
+// auto-placed Start node and zero edges. Hides the second any real node
+// or edge appears so it never overlaps graph content.
+const isFunctionEmpty = computed(() => {
+  const fn = graph.activeFunction;
+  if (!fn) return false;
+  if (fn.edges.length > 0) return false;
+  if (fn.nodes.length !== 1) return false;
+  return fn.nodes[0].data.kind === 'start';
+});
+
 function onGlobalKey(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
   // Cmd/Ctrl+K → Quick-Add at cursor
@@ -529,25 +540,19 @@ onBeforeUnmount(() => {
       />
     </VueFlow>
     <div
-      v-if="(graph.activeFunction?.nodes.length ?? 0) <= 1 && (graph.activeFunction?.edges.length ?? 0) === 0"
+      v-if="isFunctionEmpty"
       class="empty-hint"
     >
-      <div class="hint-keys">
-        <span class="kbd">Space</span>
-      </div>
-      <div class="hint-title">Press Space to add a node</div>
-      <div class="hint-body">
-        Type to fuzzy-search · Enter to insert · drag a wire into empty
-        canvas to add-and-connect in one motion
-      </div>
-      <div class="hint-quick">
-        <span>or</span>
+      <span class="kbd">Space</span>
+      <span class="hint-text">to add a node</span>
+      <span class="dot">·</span>
+      <span class="hint-alts">
         <span class="kbd small">⌘K</span>
-        <span>·</span>
-        <span class="kbd small">Double-click</span>
-        <span>·</span>
-        <span class="kbd small">Drag from palette</span>
-      </div>
+        <span class="alt-sep">·</span>
+        <span class="alt-label">Double-click</span>
+        <span class="alt-sep">·</span>
+        <span class="alt-label">Drag from palette</span>
+      </span>
     </div>
     <ContextMenu
       :open="ctxMenu.open"
@@ -574,76 +579,73 @@ onBeforeUnmount(() => {
   position: relative;
   min-height: 0;
 }
-@keyframes sf-empty-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(50, 145, 255, 0.18);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(50, 145, 255, 0);
-  }
-}
+/*
+ * Empty-canvas hint: a single horizontal pill anchored to the bottom of
+ * the canvas viewport, *not* the center. Stays out of node territory
+ * (Start is auto-placed at (80, 60); pan-relative since absolute to the
+ * viewport this sits at the bottom regardless of canvas pan). Renders
+ * at var(--sf-z-ambient) which is below the drawer but above edges /
+ * nodes... actually NO — pointer-events:none and a low opacity make
+ * it ambient. Subtle.
+ */
 .empty-hint {
   position: absolute;
-  top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(17, 17, 17, 0.7);
+  border: 1px solid var(--sf-border);
+  border-radius: 999px;
   color: var(--sf-text-2);
   pointer-events: none;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  max-width: 480px;
-  padding: 0 20px;
+  opacity: 0.72;
+  font-size: 0.6875rem;
+  z-index: var(--sf-z-ambient);
+  white-space: nowrap;
+  transition: opacity 0.18s ease;
+  backdrop-filter: blur(6px);
 }
-.hint-keys {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.empty-hint:hover {
+  opacity: 1;
 }
-.kbd {
+.empty-hint .kbd {
   display: inline-block;
   font-family: var(--sf-font-mono);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  padding: 6px 14px;
-  background: var(--sf-bg-2);
-  border: 1px solid var(--sf-border-strong);
-  border-bottom-width: 2px;
-  border-radius: 6px;
-  color: var(--sf-text-0);
-  letter-spacing: 0.5px;
-  animation: sf-empty-pulse 2s ease-in-out infinite;
-}
-.kbd.small {
   font-size: 0.625rem;
-  padding: 2px 7px;
-  border-bottom-width: 1px;
-  letter-spacing: 0.3px;
-  animation: none;
   font-weight: 500;
+  padding: 2px 7px;
+  background: var(--sf-bg-3);
+  border: 1px solid var(--sf-border-strong);
+  border-radius: 4px;
+  color: var(--sf-text-0);
+  letter-spacing: 0.3px;
+}
+.empty-hint .kbd.small {
+  font-size: 0.5625rem;
+  padding: 1px 5px;
   color: var(--sf-text-1);
 }
-.hint-title {
-  font-size: 0.9375rem;
-  font-weight: 500;
-  color: var(--sf-text-0);
-  letter-spacing: -0.01em;
+.empty-hint .hint-text {
+  color: var(--sf-text-1);
 }
-.hint-body {
-  font-size: 0.75rem;
-  line-height: 1.55;
+.empty-hint .dot {
   color: var(--sf-text-3);
 }
-.hint-quick {
-  display: flex;
+.empty-hint .hint-alts {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: center;
-  font-size: 0.6875rem;
+  gap: 5px;
+}
+.empty-hint .alt-sep {
   color: var(--sf-text-3);
-  margin-top: 6px;
+  font-size: 0.5625rem;
+}
+.empty-hint .alt-label {
+  color: var(--sf-text-2);
+  font-size: 0.625rem;
 }
 </style>

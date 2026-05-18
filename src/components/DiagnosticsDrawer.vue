@@ -69,7 +69,7 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
   border-top: 1px solid var(--sf-border);
   display: flex;
   flex-direction: column;
-  z-index: 5;
+  z-index: var(--sf-z-drawer);
 }
 .header {
   display: flex;
