@@ -176,7 +176,7 @@ function updateVariantValue(enumId: string, idx: number, value: string) {
 
 <style scoped>
 .types {
-  padding: 8px;
+  padding: 12px 10px;
   display: flex;
   flex-direction: column;
   gap: 16px;

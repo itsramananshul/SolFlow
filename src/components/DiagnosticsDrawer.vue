@@ -1,9 +1,17 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 
 const graph = useGraphStore();
 const ui = useUIStore();
+
+const errorCount = computed(
+  () => graph.diagnostics.filter((d) => d.severity === 'error').length,
+);
+const warningCount = computed(
+  () => graph.diagnostics.filter((d) => d.severity === 'warning').length,
+);
 
 function jumpTo(d: { nodeId?: string; functionId?: string }) {
   if (d.functionId) graph.setActiveFunction(d.functionId);
@@ -14,12 +22,26 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
 <template>
   <div class="drawer">
     <div class="header">
-      <span class="title">Diagnostics</span>
+      <div class="header-left">
+        <span class="title">Diagnostics</span>
+        <span v-if="errorCount > 0" class="count err">
+          <span class="dot err" />
+          {{ errorCount }} {{ errorCount === 1 ? 'error' : 'errors' }}
+        </span>
+        <span v-if="warningCount > 0" class="count warn">
+          <span class="dot warn" />
+          {{ warningCount }} {{ warningCount === 1 ? 'warning' : 'warnings' }}
+        </span>
+        <span v-if="graph.diagnostics.length === 0" class="count ok">
+          <span class="dot ok" />
+          all clear
+        </span>
+      </div>
       <button class="ghost" @click="ui.toggleDrawer">Hide</button>
     </div>
     <div class="list">
       <div v-if="graph.diagnostics.length === 0" class="empty">
-        No diagnostics — graph is clean.
+        Graph is clean — no issues detected.
       </div>
       <div
         v-for="(d, i) in graph.diagnostics"
@@ -28,7 +50,7 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
         :class="d.severity"
         @click="jumpTo(d)"
       >
-        <span class="badge" :class="d.severity">{{ d.severity }}</span>
+        <span class="dot" :class="d.severity" />
         <span class="code">{{ d.code }}</span>
         <span class="msg">{{ d.message }}</span>
       </div>
@@ -42,7 +64,7 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 200px;
+  height: 240px;
   background: var(--sf-bg-0);
   border-top: 1px solid var(--sf-border);
   display: flex;
@@ -53,64 +75,85 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 12px;
+  padding: 8px 14px;
   background: var(--sf-bg-1);
   border-bottom: 1px solid var(--sf-border);
 }
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .title {
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 1px;
+  letter-spacing: 0.4px;
   text-transform: uppercase;
+  color: var(--sf-text-1);
+}
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.6875rem;
+  color: var(--sf-text-2);
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.dot.error,
+.dot.err {
+  background: var(--sf-error);
+}
+.dot.warning,
+.dot.warn {
+  background: var(--sf-warning);
+}
+.dot.ok {
+  background: var(--sf-success);
 }
 .list {
   flex: 1;
   overflow-y: auto;
-  padding: 6px;
+  padding: 6px 8px;
 }
 .empty {
   color: var(--sf-text-3);
   padding: 16px;
   text-align: center;
   font-size: 0.6875rem;
+  font-style: italic;
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
+  gap: 10px;
+  padding: 6px 10px;
   border-radius: var(--sf-radius-sm);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background 0.1s ease;
 }
 .row:hover {
   background: var(--sf-bg-2);
 }
 .row.error {
-  border-left: 3px solid var(--sf-error);
+  border-left-color: var(--sf-error);
 }
 .row.warning {
-  border-left: 3px solid var(--sf-warning);
-}
-.badge {
-  font-size: 0.5625rem;
-  text-transform: uppercase;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-weight: 600;
-}
-.badge.error {
-  background: var(--sf-error);
-  color: white;
-}
-.badge.warning {
-  background: var(--sf-warning);
-  color: var(--sf-bg-0);
+  border-left-color: var(--sf-warning);
 }
 .code {
   font-family: var(--sf-font-mono);
   color: var(--sf-text-3);
   font-size: 0.625rem;
+  background: var(--sf-bg-2);
+  padding: 1px 5px;
+  border-radius: 2px;
+  flex-shrink: 0;
 }
 .msg {
   color: var(--sf-text-1);

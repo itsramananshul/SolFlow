@@ -192,6 +192,14 @@ function validateFunction(
             functionId: fn.id,
             code: 'unset-var',
           });
+        } else if (!variableResolves(fn, data.varName)) {
+          diags.push({
+            severity: 'warning',
+            message: `${nodeLabel(n)}: variable "${data.varName}" is not declared in this function.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unresolved-var',
+          });
         }
         break;
     }
@@ -222,4 +230,22 @@ function validateFunction(
 
 function nodeLabel(n: GraphNode): string {
   return n.data.kind;
+}
+
+/**
+ * Cheap "is this variable name declared anywhere in this function" check.
+ * Not scope-accurate — it doesn't honor control-flow reachability. Phase B
+ * will replace with the real analyzer's scope walk. Good enough to surface
+ * obvious "you renamed a let but its varGet still points at the old name"
+ * errors.
+ */
+function variableResolves(fn: FunctionGraph, name: string): boolean {
+  for (const p of fn.params) {
+    if (p.name === name) return true;
+  }
+  for (const n of fn.nodes) {
+    if (n.data.kind === 'let' && n.data.varName === name) return true;
+    if (n.data.kind === 'forEach' && n.data.iteratorName === name) return true;
+  }
+  return false;
 }
