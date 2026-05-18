@@ -35,6 +35,27 @@ const kindLabel = computed(() => labelForKind(node.value.data));
 const categoryDot = computed(() => categoryColor(category.value));
 const simStatus = computed(() => sim.getNodeStatus(node.value.id));
 
+// Role glyph: a single mono character that hints at what the node DOES at
+// a glance. Branch = directional, loops = iterative, trigger = entry,
+// terminal = end. Kept tiny + monospace so it reads as type, not decoration.
+const roleGlyph = computed<string | null>(() => {
+  const k = node.value.data.kind;
+  if (k === 'branch') return '⌥';
+  if (k === 'while' || k === 'forEach') return '↻';
+  if (k === 'trigger') return '⚡';
+  if (k === 'return') return '⏎';
+  if (k === 'start') return '▸';
+  return null;
+});
+
+// Tiny header badge used for triggers — communicates "this is an
+// entrypoint" without leaning on a color-only differentiator.
+const headerBadge = computed<string | null>(() => {
+  const d = node.value.data;
+  if (d.kind === 'trigger') return d.triggerKind.toUpperCase();
+  return null;
+});
+
 const dataIns = computed<Port[]>(() =>
   node.value.ports.in.filter((p) => p.kind === 'data'),
 );
@@ -181,7 +202,9 @@ function formatLiteralPreview(t: string, v: string): string {
   >
     <div class="header">
       <span class="cat-dot" :style="{ background: categoryDot }" />
+      <span v-if="roleGlyph" class="role-glyph">{{ roleGlyph }}</span>
       <span class="title" :title="kindLabel">{{ kindLabel }}</span>
+      <span v-if="headerBadge" class="header-badge">{{ headerBadge }}</span>
       <div v-if="node.data.kind !== 'start'" class="quick-actions nodrag">
         <button
           class="qa-btn"
@@ -312,41 +335,46 @@ function formatLiteralPreview(t: string, v: string): string {
   font-size: 0.6875rem;
   position: relative;
   user-select: none;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  cursor: grab;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease,
+    background 0.12s ease;
+}
+.sf-node:active {
+  cursor: grabbing;
 }
 .sf-node:hover {
   border-color: var(--sf-border-strong);
+  box-shadow: var(--sf-shadow-2);
 }
 .sf-node.selected {
   border-color: var(--sf-accent);
-  box-shadow: 0 0 0 1px var(--sf-accent-dim);
-}
-
-.sf-node.cat-trigger {
-  /* Amber left-strip so triggers read as entry points at a glance. */
-  border-left: 3px solid var(--sf-cat-trigger);
-  background: linear-gradient(
-    90deg,
-    rgba(232, 166, 87, 0.06) 0%,
-    var(--sf-bg-2) 24%
-  );
-}
-.sf-node.cat-trigger .header {
-  /* Hairline under the trigger badge to keep the title legible against the tint. */
-  border-bottom-color: rgba(232, 166, 87, 0.22);
+  box-shadow:
+    0 0 0 1px var(--sf-accent-ring),
+    var(--sf-shadow-2);
 }
 
 .header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
+  gap: 7px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--sf-border);
 }
 .cat-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.role-glyph {
+  font-family: var(--sf-font-mono);
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--sf-text-2);
   flex-shrink: 0;
 }
 .title {
@@ -358,6 +386,18 @@ function formatLiteralPreview(t: string, v: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: -0.1px;
+}
+.header-badge {
+  font-family: var(--sf-font-mono);
+  font-size: 0.5rem;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(232, 166, 87, 0.14);
+  color: var(--sf-cat-trigger);
+  flex-shrink: 0;
 }
 .quick-actions {
   display: inline-flex;
