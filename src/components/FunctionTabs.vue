@@ -90,6 +90,12 @@ function updateReturnType(fnId: string, typeStr: string) {
   if (!fn) return;
   graph.updateFunctionSignature(fnId, fn.params, typeFromString(typeStr));
 }
+
+function signatureTooltip(fn: { name: string; params: Param[]; returnType: SolType }): string {
+  const params = fn.params.map((p) => `${p.name}: ${typeLabel(p.type)}`).join(', ');
+  const ret = fn.returnType.kind === 'void' ? '' : ` -> ${typeLabel(fn.returnType)}`;
+  return `function ${fn.name}(${params})${ret}`;
+}
 </script>
 
 <template>
@@ -109,8 +115,8 @@ function updateReturnType(fnId: string, typeStr: string) {
           @input="(e) => rename(fn.id, e)"
           @click.stop
         />
-        <span class="fn-sig">
-          ({{ fn.params.length }}){{
+        <span class="fn-sig" :title="signatureTooltip(fn)">
+          ({{ fn.params.map((p) => p.name + ': ' + typeLabel(p.type)).join(', ') || '' }}){{
             fn.returnType.kind !== 'void' ? ' → ' + typeLabel(fn.returnType) : ''
           }}
         </span>
@@ -236,6 +242,10 @@ function updateReturnType(fnId: string, typeStr: string) {
   font-family: var(--sf-font-mono);
   font-size: 0.625rem;
   color: var(--sf-text-3);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .icon {
   padding: 3px;

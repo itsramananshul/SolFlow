@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, markRaw } from 'vue';
+import { computed, markRaw, nextTick, ref, watch } from 'vue';
 import {
   VueFlow,
   MarkerType,
+  useVueFlow,
   type Edge,
   type Node as VueFlowNode,
   type Connection,
@@ -20,6 +21,27 @@ import SolNode from './SolNode.vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
+const { fitView } = useVueFlow();
+const flowContainerRef = ref<HTMLDivElement | null>(null);
+
+// Auto-fit the viewport whenever the active function changes (e.g. when
+// loading a sample workflow, switching function tab, or creating a new
+// workflow). nextTick lets Vue Flow finish rendering the new node set
+// before we measure.
+watch(
+  () => graph.activeFunctionId,
+  async () => {
+    await nextTick();
+    setTimeout(() => {
+      try {
+        fitView({ padding: 0.2, duration: 250 });
+      } catch {
+        /* fitView is no-op before mount */
+      }
+    }, 30);
+  },
+  { immediate: true },
+);
 
 const SolNodeRaw = markRaw(SolNode);
 const kindList = [

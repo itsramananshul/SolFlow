@@ -1,10 +1,18 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useUIStore } from '@/stores/ui.store';
+import { useGraphStore } from '@/stores/graph.store';
 import NodePalette from './NodePalette.vue';
 import TypesPanel from './TypesPanel.vue';
 import ImportsPanel from './ImportsPanel.vue';
 
 const ui = useUIStore();
+const graph = useGraphStore();
+
+const typesCount = computed(
+  () => graph.workflow.structs.length + graph.workflow.enums.length,
+);
+const importsCount = computed(() => graph.workflow.imports.length);
 </script>
 
 <template>
@@ -22,14 +30,14 @@ const ui = useUIStore();
         :class="{ active: ui.sidebarTab === 'types' }"
         @click="ui.setSidebarTab('types')"
       >
-        Types
+        Types<span v-if="typesCount > 0" class="count">{{ typesCount }}</span>
       </button>
       <button
         class="tab"
         :class="{ active: ui.sidebarTab === 'imports' }"
         @click="ui.setSidebarTab('imports')"
       >
-        Imports
+        Imports<span v-if="importsCount > 0" class="count">{{ importsCount }}</span>
       </button>
     </nav>
     <div class="tab-body">
@@ -67,6 +75,10 @@ const ui = useUIStore();
   cursor: pointer;
   border-bottom: 2px solid transparent;
   letter-spacing: 0.1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
 }
 .tab:hover {
   color: var(--sf-text-0);
@@ -74,6 +86,20 @@ const ui = useUIStore();
 .tab.active {
   color: var(--sf-text-0);
   border-bottom-color: var(--sf-accent);
+}
+.count {
+  display: inline-block;
+  font-family: var(--sf-font-mono);
+  font-size: 0.5625rem;
+  color: var(--sf-text-2);
+  background: var(--sf-bg-3);
+  padding: 1px 5px;
+  border-radius: 8px;
+  letter-spacing: 0;
+}
+.tab.active .count {
+  color: var(--sf-accent);
+  background: var(--sf-accent-dim);
 }
 .tab-body {
   flex: 1;
