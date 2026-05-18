@@ -185,10 +185,33 @@ export const useGraphStore = defineStore('graph', () => {
   ) {
     const fn = activeFunction.value;
     if (!fn) return;
+    maybeReplaceUnusedStart(fn, kind);
     const node = createNode(kind, position, ctx.value, init);
     fn.nodes.push(node);
     touch();
     return node;
+  }
+
+  /**
+   * Entry-point reconciliation: when the user adds a Trigger to a
+   * function whose auto-placed Start has no outgoing edges, the Start
+   * is silently removed. The user has signalled event-driven intent;
+   * the empty placeholder Start would clutter the canvas and confuse
+   * the "where does this start?" question.
+   *
+   * If the Start IS wired to something, both stay — that's the user
+   * explicitly authoring a hybrid (e.g. for testing both paths).
+   */
+  function maybeReplaceUnusedStart(fn: FunctionGraph, addingKind: NodeKind) {
+    if (addingKind !== 'trigger') return;
+    const start = fn.nodes.find((n) => n.data.kind === 'start');
+    if (!start) return;
+    const startWired = fn.edges.some((e) => e.source.node === start.id);
+    if (startWired) return;
+    fn.nodes = fn.nodes.filter((n) => n.id !== start.id);
+    fn.edges = fn.edges.filter(
+      (e) => e.source.node !== start.id && e.target.node !== start.id,
+    );
   }
 
   function updateNodePosition(nodeId: string, position: { x: number; y: number }) {
@@ -385,6 +408,7 @@ export const useGraphStore = defineStore('graph', () => {
         }
       }
     }
+    maybeReplaceUnusedStart(fn, kind);
     const safePos = findFreePosition(preferred, fn.nodes);
     const node = createNode(kind, safePos, ctx.value, init);
     fn.nodes.push(node);
@@ -538,7 +562,20 @@ export const useGraphStore = defineStore('graph', () => {
     if (!fn) return;
     const node = fn.nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    if (node.data.kind === 'start') return; // start is non-deletable
+    // Entry-point safety: a function must always have at least one entry
+    // (Start OR Trigger). Refuse to remove the last one — otherwise the
+    // workflow is orphaned and the user has no way back to "where does
+    // this start." Both kinds can be deleted freely as long as another
+    // entry remains; this lets users replace Start with a Trigger or
+    // swap one Trigger for another.
+    if (node.data.kind === 'start' || node.data.kind === 'trigger') {
+      const otherEntries = fn.nodes.filter(
+        (n) =>
+          n.id !== nodeId &&
+          (n.data.kind === 'start' || n.data.kind === 'trigger'),
+      );
+      if (otherEntries.length === 0) return;
+    }
     fn.nodes = fn.nodes.filter((n) => n.id !== nodeId);
     fn.edges = fn.edges.filter(
       (e) => e.source.node !== nodeId && e.target.node !== nodeId,

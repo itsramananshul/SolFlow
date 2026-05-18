@@ -236,14 +236,41 @@ function placeholderFor(portId: string, kind: string): string {
   return 'expression';
 }
 
+// canDelete reflects the store's entry-point rule: a function must
+// keep at least one entry (Start OR Trigger). For non-entry nodes this
+// is always true; for entries it's true iff at least one OTHER entry
+// remains. We compute it locally so the button can show as disabled
+// with a clear tooltip — better UX than a button that silently no-ops.
+const canDelete = computed<boolean>(() => {
+  const k = node.value.data.kind;
+  if (k !== 'start' && k !== 'trigger') return true;
+  const fn = graph.activeFunction;
+  if (!fn) return false;
+  return fn.nodes.some(
+    (n) =>
+      n.id !== node.value.id &&
+      (n.data.kind === 'start' || n.data.kind === 'trigger'),
+  );
+});
+
+const deleteTooltip = computed<string>(() => {
+  if (canDelete.value) return 'Delete';
+  if (node.value.data.kind === 'start') {
+    return 'Add a Trigger first — every function needs an entrypoint.';
+  }
+  return 'A function needs at least one entry — add another Trigger or a Start before deleting this one.';
+});
+
+// Duplicate is hidden on Start: only one Start per function by design.
+const canDuplicate = computed<boolean>(() => node.value.data.kind !== 'start');
+
 function handleDelete() {
-  if (node.value.data.kind === 'start') return;
   graph.removeNode(node.value.id);
   if (ui.selectedNodeId === node.value.id) ui.selectNode(null);
 }
 
 function handleDuplicate() {
-  if (node.value.data.kind === 'start') return;
+  if (!canDuplicate.value) return;
   const dup = graph.duplicateNode(node.value.id);
   if (dup) ui.selectNode(dup.id);
 }
@@ -399,8 +426,9 @@ function formatLiteralPreview(t: string, v: string): string {
           <div class="tip-body">{{ explanation }}</div>
         </div>
       </Transition>
-      <div v-if="node.data.kind !== 'start'" class="quick-actions nodrag">
+      <div class="quick-actions nodrag">
         <button
+          v-if="canDuplicate"
           class="qa-btn"
           title="Duplicate"
           @click.stop="handleDuplicate"
@@ -413,7 +441,8 @@ function formatLiteralPreview(t: string, v: string): string {
         </button>
         <button
           class="qa-btn"
-          title="Delete"
+          :disabled="!canDelete"
+          :title="deleteTooltip"
           @click.stop="handleDelete"
           @mousedown.stop
         >
@@ -619,9 +648,13 @@ function formatLiteralPreview(t: string, v: string): string {
   color: var(--sf-text-0);
   background: var(--sf-bg-4);
 }
-.qa-btn:last-child:hover {
+.qa-btn:last-child:hover:not(:disabled) {
   color: var(--sf-error);
   background: rgba(255, 77, 79, 0.12);
+}
+.qa-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
 }
 
 .body {

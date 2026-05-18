@@ -48,15 +48,18 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Show this help</span><kbd>?</kbd></div>
           </section>
           <section>
-            <div class="section-title">Triggers</div>
+            <div class="section-title">Triggers &amp; entry points</div>
             <div class="row">
-              <span>Add a Trigger node from the palette (Manual / Webhook / Timer / Event / HTTP). Triggers act as entry points alongside <code>start</code>.</span>
+              <span>A function always has one entry: a <code>Start</code> (manual) or a <code>Trigger</code> (event-driven). Adding the first Trigger to an empty function removes the placeholder Start automatically.</span>
+            </div>
+            <div class="row">
+              <span>Trigger kinds: Manual / Webhook / Timer / Event / HTTP. Configure them in the Inspector.</span>
             </div>
             <div class="row">
               <span>Edit a trigger's sample payload, then press <strong>Trigger Event ▷</strong> in the Inspector to simulate an inbound event.</span>
             </div>
             <div class="row">
-              <span>The <code>payload</code> data-out port carries the parsed payload to downstream nodes.</span>
+              <span>You can delete Start once a Trigger exists (or vice versa). You can't delete the last entry — that would orphan the function.</span>
             </div>
           </section>
           <section>

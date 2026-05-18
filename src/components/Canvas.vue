@@ -397,8 +397,18 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
   // Node menu
   const id = ctxMenu.value.nodeId;
   if (!id) return [];
-  const node = graph.activeFunction?.nodes.find((n) => n.id === id);
+  const fn = graph.activeFunction;
+  const node = fn?.nodes.find((n) => n.id === id);
   const isStart = node?.data.kind === 'start';
+  const isEntry = node?.data.kind === 'start' || node?.data.kind === 'trigger';
+  // Entry-node deletion blocked iff this would orphan the function
+  // (no other entry would remain).
+  const isLastEntry =
+    !!fn &&
+    isEntry &&
+    !fn.nodes.some(
+      (n) => n.id !== id && (n.data.kind === 'start' || n.data.kind === 'trigger'),
+    );
   return [
     {
       label: 'Duplicate',
@@ -419,7 +429,7 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       label: 'Delete',
       shortcut: 'Del',
       danger: true,
-      disabled: isStart,
+      disabled: isLastEntry,
       action: () => {
         graph.removeNode(id);
         if (ui.selectedNodeId === id) ui.selectNode(null);
