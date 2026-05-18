@@ -217,16 +217,7 @@ function isPortWired(portId: string): boolean {
 
 /** Short label of the source node for a wired data input. */
 function wiredSourceLabel(portId: string): string {
-  const fn = graph.activeFunction;
-  if (!fn) return 'connected';
-  const edge = fn.edges.find(
-    (e) =>
-      e.kind === 'data' &&
-      e.target.node === node.value.id &&
-      e.target.port === portId,
-  );
-  if (!edge) return 'connected';
-  const src = fn.nodes.find((n) => n.id === edge.source.node);
+  const src = wiredSourceNode(portId);
   if (!src) return 'connected';
   const d = src.data;
   switch (d.kind) {
@@ -242,6 +233,27 @@ function wiredSourceLabel(portId: string): string {
     case 'forEach':     return d.iteratorName;
     default:            return d.kind;
   }
+}
+
+function wiredSourceNode(portId: string): GraphNode | undefined {
+  const fn = graph.activeFunction;
+  if (!fn) return undefined;
+  const edge = fn.edges.find(
+    (e) =>
+      e.kind === 'data' &&
+      e.target.node === node.value.id &&
+      e.target.port === portId,
+  );
+  if (!edge) return undefined;
+  return fn.nodes.find((n) => n.id === edge.source.node);
+}
+
+/** Click handler on the "from X" chip: pan the canvas to the source. */
+function jumpToSourcePort(portId: string, ev: MouseEvent) {
+  ev.stopPropagation();
+  const src = wiredSourceNode(portId);
+  if (!src) return;
+  ui.requestFocus(src.id);
 }
 
 function onExprInput(portId: string, e: Event) {
@@ -490,16 +502,20 @@ function formatLiteralPreview(t: string, v: string): string {
           <div class="port-cell">
             <div class="port-meta">
               <span class="port-label">{{ p.name }}</span>
-              <span
+              <button
                 v-if="isPortWired(p.id) && inlineExprFor(p.id).trim() !== ''"
-                class="pill override"
-                title="An inline expression overrides the connected source. Open Inspector to manage."
-              >override</span>
-              <span
+                class="pill override nodrag nopan"
+                title="An inline expression overrides the connected source. Click to jump to source."
+                @click.stop="(ev) => jumpToSourcePort(p.id, ev)"
+                @mousedown.stop
+              >override</button>
+              <button
                 v-else-if="isPortWired(p.id)"
-                class="pill wire"
-                :title="`Connected from ${wiredSourceLabel(p.id)} — open Inspector to disconnect or override`"
-              >from {{ wiredSourceLabel(p.id) }}</span>
+                class="pill wire nodrag nopan"
+                :title="`Connected from ${wiredSourceLabel(p.id)} — click to jump`"
+                @click.stop="(ev) => jumpToSourcePort(p.id, ev)"
+                @mousedown.stop
+              >from {{ wiredSourceLabel(p.id) }} →</button>
               <span v-else class="port-type">{{ p.type ? typeLabel(p.type) : '' }}</span>
             </div>
             <!-- Inline input is always editable when not purely wired.
@@ -738,29 +754,38 @@ function formatLiteralPreview(t: string, v: string): string {
   font-size: 0.5625rem;
   color: var(--sf-text-3);
 }
-.pill.wire {
+.pill.wire,
+.pill.override {
   font-family: var(--sf-font-mono);
   font-size: 0.5625rem;
-  color: var(--sf-accent);
-  background: var(--sf-accent-dim);
   padding: 1px 5px;
   border-radius: 2px;
-  letter-spacing: 0.3px;
-  text-transform: none;
+  border: none;
+  cursor: pointer;
   max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.pill.wire {
+  color: var(--sf-accent);
+  background: var(--sf-accent-dim);
+  letter-spacing: 0.3px;
+}
+.pill.wire:hover {
+  background: rgba(50, 145, 255, 0.24);
+  color: var(--sf-text-0);
 }
 .pill.override {
-  font-family: var(--sf-font-mono);
-  font-size: 0.5625rem;
   color: var(--sf-cat-trigger);
   background: rgba(232, 166, 87, 0.16);
-  padding: 1px 5px;
-  border-radius: 2px;
   letter-spacing: 0.4px;
   text-transform: uppercase;
+}
+.pill.override:hover {
+  background: rgba(232, 166, 87, 0.28);
+  color: #1a1208;
 }
 .port-input {
   font-family: var(--sf-font-mono);

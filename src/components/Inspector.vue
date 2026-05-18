@@ -322,25 +322,91 @@ function jumpToSource(portId: string) {
   ui.requestFocus(src.id);
 }
 
-function startInlineOverride(portId: string) {
-  // Phase-A precedence: any non-empty inline expression wins over wired
-  // edges in the emitter. Seeding with a single space gives the field
-  // an explicit non-empty value the user can immediately replace, so
-  // override mode is visually obvious before they type.
-  const current = exprFor(portId);
-  if (current.trim() === '') {
-    setExpr(portId, ' ');
-  }
-  // Focus is handled by the v-focus pattern in the template.
+/** True when the user has typed something into the inline field. */
+function hasInlineExpr(portId: string): boolean {
+  return exprFor(portId).trim() !== '';
 }
 
 function clearInlineOverride(portId: string) {
   setExpr(portId, '');
 }
 
-/** True when the user has typed something into the inline field. */
-function hasInlineExpr(portId: string): boolean {
-  return exprFor(portId).trim() !== '';
+// =============================================================
+//  Outbound connections — "this node's output is used by ___"
+// =============================================================
+// The inbound side ("connected from") tells the user where values
+// come into a node. The outbound side tells them what consumes the
+// node's outputs — equally important for imported workflows where a
+// `let amount` deep inside a frame might feed three branches.
+
+interface OutboundUse {
+  /** Stable Vue key. */
+  edgeId: string;
+  /** Output port on the selected node (for labeling). */
+  fromPortId: string;
+  /** Target node + port. */
+  targetNodeId: string;
+  targetLabel: string;
+  targetPortName: string;
+}
+
+function describeNodeShort(n: GraphNode): string {
+  const d = n.data;
+  switch (d.kind) {
+    case 'start':         return 'start()';
+    case 'trigger':       return `${d.triggerKind} trigger`;
+    case 'let':           return `let ${d.varName}`;
+    case 'assign':        return `${d.varName} =`;
+    case 'print':         return 'print';
+    case 'return':        return 'return';
+    case 'branch':        return 'branch';
+    case 'while':         return 'while';
+    case 'forEach':       return `for ${d.iteratorName}`;
+    case 'binaryOp':      return `op ${d.op}`;
+    case 'unaryOp':       return `op ${d.op}`;
+    case 'varGet':        return d.varName || 'varGet';
+    case 'literal':       return `${d.value}`;
+    case 'arrayLiteral':  return `array[${d.length}]`;
+    case 'structLiteral': return d.structName || 'struct';
+    case 'fieldAccess':   return `.${d.fieldName}`;
+    case 'fieldSet':      return `.${d.fieldName} =`;
+    case 'indexRead':     return 'arr[i]';
+    case 'indexSet':      return 'arr[i] =';
+    case 'enumVariant':   return `${d.enumName}::${d.variantName}`;
+    case 'call':          return 'call()';
+    case 'note':          return 'note';
+    case 'frame':         return d.title || 'Section';
+  }
+}
+
+const outboundUses = computed<OutboundUse[]>(() => {
+  const sel = selectedNode.value;
+  const fn = graph.activeFunction;
+  if (!sel || !fn) return [];
+  const out: OutboundUse[] = [];
+  for (const e of fn.edges) {
+    if (e.kind !== 'data') continue;
+    if (e.source.node !== sel.id) continue;
+    const target = fn.nodes.find((n) => n.id === e.target.node);
+    if (!target) continue;
+    const port = target.ports.in.find((p) => p.id === e.target.port);
+    out.push({
+      edgeId: e.id,
+      fromPortId: e.source.port,
+      targetNodeId: target.id,
+      targetLabel: describeNodeShort(target),
+      targetPortName: port?.name ?? e.target.port,
+    });
+  }
+  return out;
+});
+
+function disconnectOutbound(edgeId: string) {
+  graph.removeEdge(edgeId);
+}
+
+function jumpToTarget(nodeId: string) {
+  ui.requestFocus(nodeId);
 }
 
 function update<T extends object>(patch: T) {
@@ -436,7 +502,15 @@ const placeholderFor = (portId: string, kind: string): string => {
             </span>
           </div>
 
-          <!-- Wired source card (states c + d) -->
+          <!--
+            Wired source card. Shown whenever a data edge feeds this
+            port. The connection summary + jump/disconnect actions live
+            here. The override expression input is rendered BELOW the
+            card, always visible — no toggle to manage; the emitter
+            already gives non-empty inline expressions priority over
+            wired edges, so this is a clean "empty = use connection /
+            non-empty = override wins" model.
+          -->
           <div
             v-if="isPortWired(p.id)"
             class="wired-card"
@@ -457,7 +531,7 @@ const placeholderFor = (portId: string, kind: string): string => {
               </span>
             </div>
             <div v-if="hasInlineExpr(p.id)" class="override-banner">
-              Inline override active — your typed value wins over the connection.
+              Inline override active — your typed value below wins over the connection.
             </div>
             <div class="wired-actions">
               <button type="button" class="wired-btn" @click="jumpToSource(p.id)">
@@ -467,40 +541,41 @@ const placeholderFor = (portId: string, kind: string): string => {
                 Disconnect
               </button>
               <button
-                v-if="!hasInlineExpr(p.id)"
-                type="button"
-                class="wired-btn"
-                @click="startInlineOverride(p.id)"
-              >
-                Override with expression…
-              </button>
-              <button
-                v-else
+                v-if="hasInlineExpr(p.id)"
                 type="button"
                 class="wired-btn"
                 @click="clearInlineOverride(p.id)"
               >
-                Use connected value instead
+                Clear override
               </button>
             </div>
           </div>
 
-          <!-- The expression input — shown for unwired ports AND for
-               wired ports in override mode. We keep it editable always
-               when the port isn't wired (states a + b) and also when an
-               override is active (state d). For pure-connected state (c)
-               the input is hidden in favour of the card above. -->
+          <!--
+            Expression input. ALWAYS visible:
+              - Unwired port → primary entry, friendly placeholder.
+              - Wired port  → secondary "override" entry. Empty means
+                              "use the connection above"; typing anything
+                              flips on override mode (banner appears in
+                              the card above).
+            One field, two behaviors — no toggle.
+          -->
           <input
-            v-if="!isPortWired(p.id) || hasInlineExpr(p.id)"
             class="expr-input"
+            :class="{ 'override-input': isPortWired(p.id) }"
             :value="exprFor(p.id)"
-            :placeholder="portMeta(selectedNode.data.kind, p.id).placeholder ?? p.name"
+            :placeholder="
+              isPortWired(p.id)
+                ? 'Override with expression — leave empty to use the connection'
+                : (portMeta(selectedNode.data.kind, p.id).placeholder ?? p.name)
+            "
             spellcheck="false"
             @input="(e) => setExpr(p.id, (e.target as HTMLInputElement).value)"
           />
 
           <!-- Example chips: click to fill the input. Hidden once the
-               user has typed anything (no need to keep nagging). -->
+               user has typed anything (no need to keep nagging) or
+               when the port is wired (the connection is the example). -->
           <div
             v-if="
               !hasInlineExpr(p.id) &&
@@ -526,6 +601,52 @@ const placeholderFor = (portId: string, kind: string): string => {
           >
             {{ portMeta(selectedNode.data.kind, p.id).helper }}
           </span>
+        </div>
+      </section>
+
+      <!--
+        Outbound connections — "this node's outputs are read by ___".
+        Symmetric counterpart to the wired-card inbound view. Shown only
+        when the selected node has at least one wired data output. Each
+        row gives a Jump + Disconnect action so a user reading an
+        imported workflow can quickly answer "what uses this?" and
+        unwire it if they want to replace its consumers.
+      -->
+      <section v-if="outboundUses.length > 0" class="section">
+        <div class="section-header">
+          <span>Used by</span>
+          <span class="hint">{{ outboundUses.length }} consumer{{ outboundUses.length === 1 ? '' : 's' }}</span>
+        </div>
+        <div
+          v-for="use in outboundUses"
+          :key="use.edgeId"
+          class="outbound-row"
+        >
+          <div class="outbound-summary">
+            <svg viewBox="0 0 16 16" width="11" height="11" class="wire-glyph out" fill="none">
+              <path
+                d="M2 8 H6 M10 8 H14"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+              <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.4" />
+            </svg>
+            <span>
+              <code class="port-name">{{ use.fromPortId }}</code>
+              →
+              <strong>{{ use.targetLabel }}</strong>
+              <span class="dim"> · {{ use.targetPortName }}</span>
+            </span>
+          </div>
+          <div class="outbound-actions">
+            <button type="button" class="wired-btn" @click="jumpToTarget(use.targetNodeId)">
+              Jump to consumer →
+            </button>
+            <button type="button" class="wired-btn" @click="disconnectOutbound(use.edgeId)">
+              Disconnect
+            </button>
+          </div>
         </div>
       </section>
 
@@ -1489,5 +1610,50 @@ const placeholderFor = (portId: string, kind: string): string => {
 .input-helper {
   /* Aligned via help-blurb base style but tightened spacing here. */
   margin-top: 0;
+}
+
+.expr-input.override-input {
+  /* Faint amber tint so the override field is visually distinct from
+     the primary entry when the port is also wired. */
+  border-color: rgba(232, 166, 87, 0.28);
+  background: rgba(232, 166, 87, 0.04);
+}
+.expr-input.override-input:focus {
+  border-color: var(--sf-cat-trigger);
+  background: rgba(232, 166, 87, 0.08);
+  box-shadow: 0 0 0 1px rgba(232, 166, 87, 0.32);
+}
+
+.outbound-row {
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  border-left: 2px solid var(--sf-cat-flow);
+  border-radius: var(--sf-radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.outbound-row:last-child {
+  margin-bottom: 0;
+}
+.outbound-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.6875rem;
+  color: var(--sf-text-1);
+}
+.outbound-summary strong {
+  color: var(--sf-text-0);
+  font-weight: 600;
+}
+.wire-glyph.out {
+  color: var(--sf-cat-flow);
+}
+.outbound-actions {
+  display: flex;
+  gap: 4px;
 }
 </style>
