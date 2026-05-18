@@ -18,7 +18,7 @@ import { useUIStore } from '@/stores/ui.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { typeCssClass } from '@/graph/schema';
 import type { GraphEdge, NodeData, NodeKind, SolType } from '@/graph/schema';
-import { PALETTE } from '@/graph/kinds';
+import { PALETTE, categoryForKind } from '@/graph/kinds';
 import SolNode from './SolNode.vue';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import QuickAddPalette, { type SourceContext } from './QuickAddPalette.vue';
@@ -121,6 +121,28 @@ const flowEdges = computed<Edge[]>(() => {
   });
 });
 
+// Tint each MiniMap dot by category so the overview map reads as a
+// summary of the workflow — entry points pop amber/green, flow nodes
+// pop blue, plumbing fades into the dark surface. Vue Flow needs a
+// resolved color string (not a CSS var), so we pass hex literals that
+// mirror tokens.css. Kept in sync manually — there's only one of these.
+const CAT_HEX: Record<string, string> = {
+  trigger: '#e8a657',
+  flow: '#5d8acf',
+  variable: '#3a3a3a',
+  operator: '#3a3a3a',
+  literal: '#2e2e2e',
+  access: '#2e2e2e',
+  call: '#5d8acf',
+  io: '#7e5a5a',
+  entry: '#00cc88',
+};
+function minimapNodeColor(node: VueFlowNode): string {
+  const data = node.data as { data: { kind: NodeKind } } | undefined;
+  if (!data) return '#2e2e2e';
+  const cat = categoryForKind(data.data.kind);
+  return CAT_HEX[cat] ?? '#2e2e2e';
+}
 function cssVarForType(cls: string): string {
   const map: Record<string, string> = {
     'data-int': '#f2c97d',
@@ -547,8 +569,8 @@ onBeforeUnmount(() => {
       <MiniMap
         pannable
         zoomable
-        node-color="#262626"
-        node-stroke-color="rgba(255, 255, 255, 0.1)"
+        :node-color="minimapNodeColor"
+        node-stroke-color="rgba(255, 255, 255, 0.18)"
         mask-color="rgba(0, 0, 0, 0.78)"
       />
     </VueFlow>
