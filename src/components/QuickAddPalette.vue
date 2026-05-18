@@ -153,11 +153,34 @@ function onDocClick(e: MouseEvent) {
   const t = e.target as HTMLElement;
   if (!t.closest('.qa-popover')) emit('close');
 }
+// Window-level Escape catcher. The input's @keydown only fires while the
+// search input has focus — and there are short focus-gap windows (e.g.
+// drag-edge-to-empty opens the palette before nextTick autofocuses it)
+// where Escape would otherwise do nothing and the user perceives the
+// palette as "stuck". Bind on window so Escape always dismisses.
+function onWinKey(e: KeyboardEvent) {
+  if (!props.open) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    emit('close');
+  }
+}
+// If `open` is flipped to false externally (e.g. a node was selected, a
+// new workflow was loaded), the input may still have focus — blur it so
+// future Space/keystrokes go back to the canvas, not the palette input.
+watch(
+  () => props.open,
+  (now) => {
+    if (!now) inputRef.value?.blur();
+  },
+);
 onMounted(() => {
   document.addEventListener('mousedown', onDocClick);
+  window.addEventListener('keydown', onWinKey);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocClick);
+  window.removeEventListener('keydown', onWinKey);
 });
 
 // Adjust position to stay inside the viewport.
