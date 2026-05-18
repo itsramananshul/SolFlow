@@ -301,30 +301,50 @@ const placeholderFor = (portId: string, kind: string): string => {
         </template>
 
         <template v-else-if="selectedNode.data.kind === 'branch'">
+          <p class="help-blurb">
+            A branch checks a condition and goes one of two ways. The
+            <code>then</code> path runs when the condition is true; the
+            <code>else</code> path runs when it's false.
+          </p>
           <label class="field checkbox-row">
             <input
               type="checkbox"
               :checked="selectedNode.data.hasElse"
               @change="(e) => update({ hasElse: (e.target as HTMLInputElement).checked })"
             />
-            <span>Include `else` branch</span>
+            <span>Also handle the "else" case</span>
           </label>
         </template>
 
         <template v-else-if="selectedNode.data.kind === 'while'">
-          <p class="muted-note">Condition above, body via the body control out.</p>
+          <p class="help-blurb">
+            A while loop repeats the steps connected to its
+            <code>body</code> output for as long as the condition stays
+            true. Type the condition above, then connect what should
+            repeat to the body port.
+          </p>
         </template>
 
         <template v-else-if="selectedNode.data.kind === 'forEach'">
+          <p class="help-blurb">
+            For-each walks through every item in an array. Each item is
+            handed to the steps connected to <code>body</code>, then the
+            loop moves on to the next item.
+          </p>
           <label class="field">
-            <span class="field-label">Iterator name</span>
+            <span class="field-label">Name for each item</span>
             <input
               :value="selectedNode.data.iteratorName"
+              placeholder="item"
               @input="(e) => update({ iteratorName: (e.target as HTMLInputElement).value })"
             />
+            <span class="help-blurb">
+              Inside the body, you'll refer to the current array element by
+              this name (e.g. <code>order</code>, <code>row</code>).
+            </span>
           </label>
           <label class="field">
-            <span class="field-label">Item type</span>
+            <span class="field-label">What kind of item is it?</span>
             <select
               :value="typeAsString(selectedNode.data.iteratorType)"
               @change="(e) => update({ iteratorType: typeFromString((e.target as HTMLSelectElement).value) })"
@@ -721,7 +741,9 @@ const placeholderFor = (portId: string, kind: string): string => {
         </template>
 
         <template v-else>
-          <p class="muted-note">No additional parameters.</p>
+          <p class="help-blurb">
+            This node has no settings — connect its ports above to use it.
+          </p>
         </template>
       </section>
     </div>
