@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import { useSimulationStore } from '@/stores/simulation.store';
+import ExpressionHelper from './ExpressionHelper.vue';
+import BranchConditionBuilder from './BranchConditionBuilder.vue';
 import {
   BINARY_OPS,
   UNARY_OPS,
@@ -409,6 +411,50 @@ function jumpToTarget(nodeId: string) {
   ui.requestFocus(nodeId);
 }
 
+// =============================================================
+//  Expression-helper-driven inserts
+// =============================================================
+// The ExpressionHelper button next to each input emits an `insert`
+// event with the snippet text. We splice it into the current value at
+// the cursor position (or append, smartly spacing), then restore
+// focus + cursor placement after Vue updates the DOM.
+
+const exprRefs = ref<Record<string, HTMLInputElement | null>>({});
+function setExprRef(portId: string, el: Element | null) {
+  exprRefs.value[portId] = el as HTMLInputElement | null;
+}
+function insertIntoPort(portId: string, snippet: string) {
+  const el = exprRefs.value[portId];
+  const current = exprFor(portId);
+  let next: string;
+  let caret: number;
+  if (el && document.activeElement === el && el.selectionStart !== null) {
+    const start = el.selectionStart ?? current.length;
+    const end = el.selectionEnd ?? start;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const needLeadingSpace = before.length > 0 && !/\s$/.test(before);
+    const inserted = needLeadingSpace ? ` ${snippet}` : snippet;
+    next = before + inserted + after;
+    caret = (before + inserted).length;
+  } else {
+    const needLeadingSpace = current.length > 0 && !/\s$/.test(current);
+    next = current + (needLeadingSpace ? ` ${snippet}` : snippet);
+    caret = next.length;
+  }
+  setExpr(portId, next);
+  nextTick(() => {
+    const e = exprRefs.value[portId];
+    if (!e) return;
+    e.focus();
+    e.setSelectionRange(caret, caret);
+  });
+}
+
+function setBranchCond(nodeId: string, cond: string) {
+  graph.updateNodeExpression(nodeId, 'cond', cond);
+}
+
 function update<T extends object>(patch: T) {
   if (!selectedNode.value) return;
   graph.updateNodeData(
@@ -558,20 +604,32 @@ const placeholderFor = (portId: string, kind: string): string => {
                               "use the connection above"; typing anything
                               flips on override mode (banner appears in
                               the card above).
-            One field, two behaviors — no toggle.
+            One field, two behaviors — no toggle. The ⨁ helper button
+            on the right opens a picker (variables / operators / quick
+            literals / examples) so users don't have to memorize SOL
+            syntax to fill the field.
           -->
-          <input
-            class="expr-input"
-            :class="{ 'override-input': isPortWired(p.id) }"
-            :value="exprFor(p.id)"
-            :placeholder="
-              isPortWired(p.id)
-                ? 'Override with expression — leave empty to use the connection'
-                : (portMeta(selectedNode.data.kind, p.id).placeholder ?? p.name)
-            "
-            spellcheck="false"
-            @input="(e) => setExpr(p.id, (e.target as HTMLInputElement).value)"
-          />
+          <div class="expr-row">
+            <input
+              :ref="(el) => setExprRef(p.id, el as Element | null)"
+              class="expr-input"
+              :class="{ 'override-input': isPortWired(p.id) }"
+              :value="exprFor(p.id)"
+              :placeholder="
+                isPortWired(p.id)
+                  ? 'Override with expression — leave empty to use the connection'
+                  : (portMeta(selectedNode.data.kind, p.id).placeholder ?? p.name)
+              "
+              spellcheck="false"
+              @input="(e) => setExpr(p.id, (e.target as HTMLInputElement).value)"
+            />
+            <ExpressionHelper
+              :node-id="selectedNode.id"
+              :node-kind="selectedNode.data.kind"
+              :port-id="p.id"
+              @insert="(text: string) => insertIntoPort(p.id, text)"
+            />
+          </div>
 
           <!-- Example chips: click to fill the input. Hidden once the
                user has typed anything (no need to keep nagging) or
@@ -705,6 +763,23 @@ const placeholderFor = (portId: string, kind: string): string => {
             <code>then</code> path runs when the condition is true; the
             <code>else</code> path runs when it's false.
           </p>
+          <!--
+            Guided condition builder. "Build it" mode composes a SOL
+            expression from three slots (left value · operator · right
+            value); "Type it" mode is the raw expression input. Either
+            mode writes to the `cond` port's inline expression — the
+            same field the Inputs section above edits, so changes here
+            and in the inputs section stay in sync via the store.
+          -->
+          <div class="field">
+            <span class="field-label">Condition</span>
+            <BranchConditionBuilder
+              :node-id="selectedNode.id"
+              :node-kind="selectedNode.data.kind"
+              :model-value="exprFor('cond')"
+              @update:model-value="(v: string) => setBranchCond(selectedNode!.id, v)"
+            />
+          </div>
           <label class="field checkbox-row">
             <input
               type="checkbox"
@@ -1610,6 +1685,16 @@ const placeholderFor = (portId: string, kind: string): string => {
 .input-helper {
   /* Aligned via help-blurb base style but tightened spacing here. */
   margin-top: 0;
+}
+
+.expr-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.expr-row .expr-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .expr-input.override-input {
