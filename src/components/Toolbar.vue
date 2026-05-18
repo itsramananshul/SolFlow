@@ -1,23 +1,38 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import { SAMPLES } from '@/samples';
 import type { SolWorkflow } from '@/graph/schema';
-import RunModal from './RunModal.vue';
+
+defineProps<{ runOpen: boolean }>();
+const emit = defineEmits<{ (e: 'open-run'): void }>();
 
 const graph = useGraphStore();
 const ui = useUIStore();
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const sampleMenuOpen = ref(false);
-const runOpen = ref(false);
+const modKey = ref<'⌘' | 'Ctrl'>('Ctrl');
+
+onMounted(() => {
+  if (typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)) {
+    modKey.value = '⌘';
+  }
+  document.addEventListener('click', closeSampleMenuOnOutsideClick);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closeSampleMenuOnOutsideClick);
+});
+
+function closeSampleMenuOnOutsideClick(e: MouseEvent) {
+  if (!sampleMenuOpen.value) return;
+  const t = e.target as HTMLElement;
+  if (!t.closest('.sample-dropdown')) sampleMenuOpen.value = false;
+}
 
 function openRun() {
-  runOpen.value = true;
-}
-function closeRun() {
-  runOpen.value = false;
+  emit('open-run');
 }
 
 function newWorkflow() {
@@ -107,7 +122,9 @@ function toggleSampleMenu() {
     <div class="actions">
       <button class="ghost" @click="newWorkflow">New</button>
       <button class="ghost" @click="openFilePicker">Open</button>
-      <button class="ghost" @click="downloadGraph">Save</button>
+      <button class="ghost" @click="downloadGraph" :title="`Save workflow JSON (${modKey}+S)`">
+        Save
+      </button>
 
       <div class="separator" />
 
@@ -131,7 +148,11 @@ function toggleSampleMenu() {
         </div>
       </div>
 
-      <button class="ghost" @click="ui.toggleDrawer">
+      <button
+        class="ghost diag-btn"
+        :class="{ active: ui.drawerOpen, 'has-issues': graph.diagnostics.length > 0 }"
+        @click="ui.toggleDrawer"
+      >
         <span v-if="graph.diagnostics.length > 0" class="badge">
           {{ graph.diagnostics.length }}
         </span>
@@ -140,9 +161,15 @@ function toggleSampleMenu() {
 
       <div class="separator" />
 
-      <button class="ghost" @click="downloadSol">Export .sol</button>
-      <button class="primary run-btn" @click="openRun" title="Run this workflow in the browser">
-        <svg viewBox="0 0 12 12" width="10" height="10" fill="currentColor" style="margin-right: 4px;">
+      <button class="ghost" @click="downloadSol" :title="`Export .sol (${modKey}+E)`">
+        Export .sol
+      </button>
+      <button
+        class="primary run-btn"
+        @click="openRun"
+        :title="`Run workflow (${modKey}+Enter)`"
+      >
+        <svg viewBox="0 0 12 12" width="10" height="10" fill="currentColor" style="margin-right: 5px;">
           <path d="M3 2 L10 6 L3 10 Z" />
         </svg>
         Run
@@ -156,8 +183,6 @@ function toggleSampleMenu() {
       class="file-hidden"
       @change="onFileChosen"
     />
-
-    <RunModal :open="runOpen" @close="closeRun" />
   </header>
 </template>
 
@@ -266,5 +291,12 @@ function toggleSampleMenu() {
   display: inline-flex;
   align-items: center;
   font-weight: 600;
+}
+.diag-btn.active {
+  background: var(--sf-bg-3);
+  color: var(--sf-text-0);
+}
+.diag-btn.has-issues {
+  border-color: rgba(255, 77, 79, 0.3);
 }
 </style>

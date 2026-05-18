@@ -82,6 +82,13 @@ function setExpr(portId: string, text: string) {
   graph.updateNodeExpression(selectedNode.value.id, portId, text);
 }
 
+function onExprInput(portId: string, e: Event) {
+  const ta = e.target as HTMLTextAreaElement;
+  setExpr(portId, ta.value);
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(160, ta.scrollHeight) + 'px';
+}
+
 function isPortWired(portId: string): boolean {
   if (!selectedNode.value || !graph.activeFunction) return false;
   return graph.activeFunction.edges.some(
