@@ -1,0 +1,107 @@
+<script setup lang="ts">
+import { useGraphStore } from '@/stores/graph.store';
+
+const graph = useGraphStore();
+
+function updatePath(id: string, value: string) {
+  const parts = value.split('.').map((p) => p.trim()).filter((p) => p.length > 0);
+  graph.updateImport(id, { path: parts });
+}
+</script>
+
+<template>
+  <div class="imports">
+    <div class="section">
+      <div class="section-header">
+        <span>Imports</span>
+        <button class="ghost" @click="graph.addImport()">+ Import</button>
+      </div>
+      <p class="note">
+        Imports are declarative in Phase A — SOL itself doesn't yet resolve
+        cross-peer endpoints. You'll see them at the top of the emitted SOL.
+      </p>
+      <div v-if="graph.workflow.imports.length === 0" class="empty">
+        No imports.
+      </div>
+      <div v-for="imp in graph.workflow.imports" :key="imp.id" class="card">
+        <div class="row">
+          <input
+            class="path"
+            :value="imp.path.join('.')"
+            placeholder="Router.App.Endpoint"
+            @input="(e) => updatePath(imp.id, (e.target as HTMLInputElement).value)"
+          />
+        </div>
+        <div class="row">
+          <span class="lbl">as</span>
+          <input
+            class="alias"
+            :value="imp.alias"
+            placeholder="Alias"
+            @input="(e) => graph.updateImport(imp.id, { alias: (e.target as HTMLInputElement).value })"
+          />
+          <button class="ghost danger" @click="graph.deleteImport(imp.id)">×</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.imports {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  color: var(--sf-text-1);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.note {
+  color: var(--sf-text-3);
+  font-size: 11px;
+  margin: 0 0 8px 0;
+  line-height: 1.4;
+}
+.card {
+  background: var(--sf-bg-2);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+  padding: 6px;
+  margin-bottom: 6px;
+}
+.row {
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.path {
+  flex: 1;
+  font-family: var(--sf-font-mono);
+  font-size: 11px;
+}
+.alias {
+  flex: 1;
+  font-family: var(--sf-font-mono);
+  font-size: 11px;
+}
+.lbl {
+  color: var(--sf-text-2);
+  font-style: italic;
+}
+.empty {
+  color: var(--sf-text-3);
+}
+.danger:hover {
+  color: var(--sf-error);
+}
+</style>
