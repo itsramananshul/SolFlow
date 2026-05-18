@@ -9,7 +9,7 @@
  * node when the user clicks into an input.
  */
 import { computed, ref } from 'vue';
-import { Handle, Position } from '@vue-flow/core';
+import { Handle, Position, useVueFlow } from '@vue-flow/core';
 
 import type { GraphNode, NodeData, Port } from '@/graph/schema';
 import { typeCssClass, typeLabel } from '@/graph/schema';
@@ -28,6 +28,7 @@ const props = defineProps<Props>();
 const graph = useGraphStore();
 const ui = useUIStore();
 const sim = useSimulationStore();
+const { getViewport } = useVueFlow();
 
 const node = computed(() => props.data);
 const category = computed(() => categoryForKind(node.value.data.kind));
@@ -132,6 +133,50 @@ function hideTooltip() {
     tooltipTimer = undefined;
   }
   tooltipVisible.value = false;
+}
+
+// =============================================================
+//  Frame resize handle
+//  Drag the south-east corner to resize. Screen-pixel deltas
+//  are divided by the current zoom factor so the resize feels
+//  1:1 with the cursor at any viewport scale.
+// =============================================================
+const MIN_FRAME_W = 200;
+const MIN_FRAME_H = 140;
+let resizeStart: { x: number; y: number; w: number; h: number } | null = null;
+
+function onFrameResizeStart(e: MouseEvent) {
+  if (node.value.data.kind !== 'frame') return;
+  e.stopPropagation();
+  e.preventDefault();
+  resizeStart = {
+    x: e.clientX,
+    y: e.clientY,
+    w: node.value.data.width,
+    h: node.value.data.height,
+  };
+  window.addEventListener('mousemove', onFrameResizeMove);
+  window.addEventListener('mouseup', onFrameResizeEnd);
+}
+
+function onFrameResizeMove(e: MouseEvent) {
+  if (!resizeStart) return;
+  if (node.value.data.kind !== 'frame') return;
+  const zoom = getViewport().zoom || 1;
+  const dx = (e.clientX - resizeStart.x) / zoom;
+  const dy = (e.clientY - resizeStart.y) / zoom;
+  const newW = Math.max(MIN_FRAME_W, Math.round(resizeStart.w + dx));
+  const newH = Math.max(MIN_FRAME_H, Math.round(resizeStart.h + dy));
+  graph.updateNodeData(node.value.id, {
+    width: newW,
+    height: newH,
+  } as Partial<NodeData>);
+}
+
+function onFrameResizeEnd() {
+  resizeStart = null;
+  window.removeEventListener('mousemove', onFrameResizeMove);
+  window.removeEventListener('mouseup', onFrameResizeEnd);
 }
 
 const dataIns = computed<Port[]>(() =>
@@ -297,6 +342,19 @@ function formatLiteralPreview(t: string, v: string): string {
         @mousedown.stop
         @input="(e) => graph.updateNodeData(node.id, { title: (e.target as HTMLInputElement).value } as Partial<NodeData>)"
       />
+    </div>
+    <!--
+      South-east corner resize handle. nodrag+nopan prevent Vue Flow
+      from intercepting the mousedown; @mousedown.stop keeps the frame
+      itself from starting a drag-move. Visible only on hover/select.
+    -->
+    <div
+      class="frame-resize nodrag nopan"
+      @mousedown="onFrameResizeStart"
+    >
+      <svg viewBox="0 0 10 10" width="10" height="10" fill="none">
+        <path d="M2 9 L9 2 M5 9 L9 5 M8 9 L9 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+      </svg>
     </div>
   </div>
   <div
@@ -740,6 +798,29 @@ function formatLiteralPreview(t: string, v: string): string {
 }
 .frame-title-input::placeholder {
   color: var(--sf-text-3);
+}
+.frame-resize {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 3px;
+  cursor: nwse-resize;
+  color: var(--sf-text-3);
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+  border-bottom-right-radius: var(--sf-radius-lg);
+}
+.sf-frame:hover .frame-resize,
+.sf-frame.selected .frame-resize {
+  opacity: 1;
+}
+.frame-resize:hover {
+  color: var(--sf-accent);
 }
 
 /* =================================================================

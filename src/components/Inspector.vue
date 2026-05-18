@@ -833,6 +833,61 @@ const placeholderFor = (portId: string, kind: string): string => {
           </label>
         </template>
 
+        <template v-else-if="selectedNode.data.kind === 'frame'">
+          <label class="field">
+            <span class="field-label">Section title</span>
+            <input
+              :value="selectedNode.data.title"
+              placeholder="e.g. Payment Processing"
+              @input="(e) => update({ title: (e.target as HTMLInputElement).value })"
+            />
+          </label>
+          <div class="size-row">
+            <label class="field size-field">
+              <span class="field-label">Width</span>
+              <input
+                type="number"
+                min="200"
+                step="20"
+                :value="selectedNode.data.width"
+                @input="(e) => update({ width: Math.max(200, Number((e.target as HTMLInputElement).value) || 200) })"
+              />
+            </label>
+            <label class="field size-field">
+              <span class="field-label">Height</span>
+              <input
+                type="number"
+                min="140"
+                step="20"
+                :value="selectedNode.data.height"
+                @input="(e) => update({ height: Math.max(140, Number((e.target as HTMLInputElement).value) || 140) })"
+              />
+            </label>
+          </div>
+          <p class="help-blurb">
+            Drag the corner of the frame to resize visually, or type
+            exact dimensions here. Resizing doesn't move the nodes
+            inside — dragging the frame body does.
+          </p>
+        </template>
+
+        <template v-else-if="selectedNode.data.kind === 'note'">
+          <label class="field">
+            <span class="field-label">Note text</span>
+            <textarea
+              class="mono-area"
+              rows="5"
+              :value="selectedNode.data.text"
+              placeholder="Add a note for your team…"
+              @input="(e) => update({ text: (e.target as HTMLTextAreaElement).value })"
+            />
+          </label>
+          <p class="help-blurb">
+            Notes are for humans only — they're never emitted as SOL and
+            don't affect execution.
+          </p>
+        </template>
+
         <template v-else>
           <p class="help-blurb">
             This node has no settings — connect its ports above to use it.
@@ -1101,5 +1156,12 @@ const placeholderFor = (portId: string, kind: string): string => {
   font-size: 0.75rem;
   line-height: 1.5;
   color: var(--sf-text-1);
+}
+.size-row {
+  display: flex;
+  gap: 10px;
+}
+.size-field {
+  flex: 1;
 }
 </style>
