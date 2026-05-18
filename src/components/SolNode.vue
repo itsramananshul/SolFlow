@@ -47,6 +47,13 @@ const controlIns = computed<Port[]>(() =>
 const controlOuts = computed<Port[]>(() =>
   node.value.ports.out.filter((p) => p.kind === 'control'),
 );
+// Multi-out flow nodes (branch/while/forEach) carry directional labels
+// (then/else/after/body) that the user genuinely needs to read. Every
+// other node has a single `next` out — the label is noise. Suppress it
+// so the canvas reads cleanly when many statements stack vertically.
+const showControlOutLabels = computed(
+  () => controlOuts.value.length > 1,
+);
 
 function inlineExprFor(portId: string): string {
   return node.value.expressions?.[portId] ?? '';
@@ -275,6 +282,14 @@ function formatLiteralPreview(t: string, v: string): string {
         :style="{ left: `${((i + 0.5) / controlOuts.length) * 100}%` }"
         class="handle control"
       />
+    </div>
+    <!--
+      Inline footer band for multi-out flow nodes. Labels live INSIDE the
+      card so they never collide with downstream nodes when graphs pack
+      tight. Suppressed for single-out nodes (most statements) — `next`
+      would just add noise.
+    -->
+    <div v-if="showControlOutLabels" class="control-out-labels">
       <div
         v-for="(p, i) in controlOuts"
         :key="`coutlbl:${p.id}`"
@@ -465,22 +480,27 @@ function formatLiteralPreview(t: string, v: string): string {
 
 .control-out-row {
   position: relative;
-  height: 14px;
+  height: 10px;
+}
+.control-out-labels {
+  position: relative;
+  height: 16px;
+  border-top: 1px solid var(--sf-border);
+  background: var(--sf-bg-1);
+  border-bottom-left-radius: var(--sf-radius-md);
+  border-bottom-right-radius: var(--sf-radius-md);
 }
 .control-out-label {
   position: absolute;
-  bottom: -18px;
-  transform: translateX(-50%);
-  font-size: 0.625rem;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 0.5625rem;
   font-family: var(--sf-font-mono);
   color: var(--sf-text-2);
   white-space: nowrap;
   pointer-events: none;
-  background: var(--sf-bg-1);
-  padding: 1px 6px;
-  border-radius: 3px;
-  border: 1px solid var(--sf-border);
-  letter-spacing: 0.4px;
+  letter-spacing: 0.5px;
+  text-transform: lowercase;
 }
 
 .handle.control {
