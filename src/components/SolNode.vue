@@ -8,7 +8,7 @@
  * a "wired" pill instead. Click-stop prevents Vue Flow from dragging the
  * node when the user clicks into an input.
  */
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { Handle, Position } from '@vue-flow/core';
 
 import type { GraphNode, NodeData, Port } from '@/graph/schema';
@@ -55,6 +55,80 @@ const headerBadge = computed<string | null>(() => {
   if (d.kind === 'trigger') return d.triggerKind.toUpperCase();
   return null;
 });
+
+// Plain-English explanations shown on a hover tooltip. The point is to
+// teach concepts without forcing the user to open the Inspector or read
+// docs. Kept under ~120 chars per entry so the tooltip stays scan-able.
+function explainKind(d: NodeData): string {
+  switch (d.kind) {
+    case 'start':
+      return 'Entry point of this function. Execution starts here and follows the wires below.';
+    case 'trigger': {
+      const k = d.triggerKind;
+      if (k === 'webhook') return 'Starts the workflow when someone POSTs to your webhook URL.';
+      if (k === 'timer')   return 'Starts the workflow on a schedule (every N minutes / hours / days).';
+      if (k === 'event')   return `Starts the workflow when the event "${d.eventName}" happens in your system.`;
+      if (k === 'http')    return 'Starts the workflow when a specific HTTP request is received.';
+      return 'Starts the workflow when someone clicks "Trigger Event ▷" — useful for testing.';
+    }
+    case 'let':
+      return 'Stores a value in a named variable. Downstream nodes can read this name.';
+    case 'assign':
+      return 'Changes the value of an existing variable.';
+    case 'print':
+      return 'Outputs a value (string, number, etc.) to the run log.';
+    case 'return':
+      return d.hasValue ? 'Ends the function and gives back a value.' : 'Ends the function with no return value.';
+    case 'branch':
+      return 'Sends execution one of two ways based on a condition: then (true) or else (false).';
+    case 'while':
+      return 'Repeats the body steps while the condition stays true.';
+    case 'forEach':
+      return 'Walks through each item in an array, running the body once per item.';
+    case 'binaryOp':
+      return `Combines two values with an operator (${d.op}). Math, comparison, or logic.`;
+    case 'unaryOp':
+      return `Applies a one-sided operator to a value (${d.op}).`;
+    case 'varGet':
+      return 'Reads the current value of a variable.';
+    case 'literal':
+      return `A fixed value of type ${d.litType}.`;
+    case 'arrayLiteral':
+      return 'A fixed-length array — each slot gets its own value.';
+    case 'structLiteral':
+      return 'Constructs a struct by filling in each of its fields.';
+    case 'fieldAccess':
+      return 'Reads a single field out of a struct value.';
+    case 'fieldSet':
+      return 'Writes a new value into a struct field.';
+    case 'indexRead':
+      return 'Reads the array element at a given index.';
+    case 'indexSet':
+      return 'Writes a value into the array element at a given index.';
+    case 'enumVariant':
+      return 'A specific value of an enum (e.g. Status::Active).';
+    case 'call':
+      return 'Calls another function defined in this workflow.';
+  }
+}
+
+const explanation = computed(() => explainKind(node.value.data));
+const tooltipVisible = ref(false);
+let tooltipTimer: number | undefined;
+function showTooltip() {
+  if (tooltipTimer !== undefined) window.clearTimeout(tooltipTimer);
+  // Delay so quick mouse passes don't flash the tooltip.
+  tooltipTimer = window.setTimeout(() => {
+    tooltipVisible.value = true;
+  }, 600);
+}
+function hideTooltip() {
+  if (tooltipTimer !== undefined) {
+    window.clearTimeout(tooltipTimer);
+    tooltipTimer = undefined;
+  }
+  tooltipVisible.value = false;
+}
 
 const dataIns = computed<Port[]>(() =>
   node.value.ports.in.filter((p) => p.kind === 'data'),
@@ -200,11 +274,21 @@ function formatLiteralPreview(t: string, v: string): string {
     @mouseenter="ui.setHovered(node.id)"
     @mouseleave="ui.setHovered(null)"
   >
-    <div class="header">
+    <div
+      class="header"
+      @mouseenter="showTooltip"
+      @mouseleave="hideTooltip"
+    >
       <span class="cat-dot" :style="{ background: categoryDot }" />
       <span v-if="roleGlyph" class="role-glyph">{{ roleGlyph }}</span>
       <span class="title" :title="kindLabel">{{ kindLabel }}</span>
       <span v-if="headerBadge" class="header-badge">{{ headerBadge }}</span>
+      <Transition name="tip">
+        <div v-if="tooltipVisible" class="node-tooltip">
+          <div class="tip-title">{{ kindLabel }}</div>
+          <div class="tip-body">{{ explanation }}</div>
+        </div>
+      </Transition>
       <div v-if="node.data.kind !== 'start'" class="quick-actions nodrag">
         <button
           class="qa-btn"
@@ -557,4 +641,47 @@ function formatLiteralPreview(t: string, v: string): string {
 .handle.data-struct { background: var(--sf-type-struct); }
 .handle.data-enum { background: var(--sf-type-enum); }
 .handle.data-any { background: var(--sf-type-any); }
+
+/* Hover-help tooltip floating above the node header. Teaches what a
+   kind does in one sentence so users don't need to open the Inspector
+   to learn. Pointer-events: none so it doesn't intercept node drags. */
+.node-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border-strong);
+  border-radius: var(--sf-radius-md);
+  box-shadow: var(--sf-shadow-2);
+  padding: 8px 10px;
+  width: max-content;
+  max-width: 280px;
+  font-size: 0.6875rem;
+  color: var(--sf-text-1);
+  line-height: 1.4;
+  z-index: 10;
+  pointer-events: none;
+}
+.node-tooltip .tip-title {
+  font-family: var(--sf-font-mono);
+  font-weight: 600;
+  color: var(--sf-text-0);
+  font-size: 0.625rem;
+  letter-spacing: 0.3px;
+  margin-bottom: 3px;
+}
+.node-tooltip .tip-body {
+  color: var(--sf-text-2);
+  white-space: normal;
+}
+.tip-enter-active,
+.tip-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.tip-enter-from,
+.tip-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
+}
 </style>
