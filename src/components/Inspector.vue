@@ -15,6 +15,8 @@ import {
 } from '@/graph/schema';
 import { bindingsInScope } from '@/graph/scope';
 import { recordTrace } from '@/runtime/simulate';
+import { portMeta } from '@/graph/portMeta';
+import type { GraphEdge, GraphNode } from '@/graph/schema';
 
 const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 // Friendlier labels for triggers — backend kind stays the same, the UI
@@ -261,13 +263,84 @@ function onExprInput(portId: string, e: Event) {
 }
 
 function isPortWired(portId: string): boolean {
-  if (!selectedNode.value || !graph.activeFunction) return false;
-  return graph.activeFunction.edges.some(
+  return wiredEdgeFor(portId) !== undefined;
+}
+
+/**
+ * Find the data edge feeding into this node's `portId`, if any. Used by
+ * the wired-input panel to surface "Connected from [source]" + Jump /
+ * Disconnect actions.
+ */
+function wiredEdgeFor(portId: string): GraphEdge | undefined {
+  if (!selectedNode.value || !graph.activeFunction) return undefined;
+  return graph.activeFunction.edges.find(
     (e) =>
       e.kind === 'data' &&
       e.target.node === selectedNode.value!.id &&
       e.target.port === portId,
   );
+}
+
+function sourceNodeFor(portId: string): GraphNode | undefined {
+  const edge = wiredEdgeFor(portId);
+  if (!edge) return undefined;
+  return graph.activeFunction?.nodes.find((n) => n.id === edge.source.node);
+}
+
+/** Short human description of the source — used in the "from X" chip. */
+function sourceLabel(portId: string): string {
+  const src = sourceNodeFor(portId);
+  if (!src) return 'another node';
+  const d = src.data;
+  switch (d.kind) {
+    case 'varGet':       return d.varName || 'variable';
+    case 'literal':      return `literal ${d.value}`;
+    case 'binaryOp':     return `${d.op} operator`;
+    case 'unaryOp':      return `${d.op}x operator`;
+    case 'fieldAccess':  return `.${d.fieldName}`;
+    case 'indexRead':    return 'arr[i]';
+    case 'enumVariant':  return `${d.enumName}::${d.variantName}`;
+    case 'call':         return 'function result';
+    case 'trigger':      return `${d.triggerKind} trigger payload`;
+    case 'arrayLiteral': return `[${d.length}]`;
+    case 'structLiteral': return `${d.structName} {}`;
+    case 'let':          return `let ${d.varName}`;
+    case 'forEach':      return `for-each item (${d.iteratorName})`;
+    default:             return String(d.kind);
+  }
+}
+
+function disconnectInput(portId: string) {
+  const edge = wiredEdgeFor(portId);
+  if (!edge) return;
+  graph.removeEdge(edge.id);
+}
+
+function jumpToSource(portId: string) {
+  const src = sourceNodeFor(portId);
+  if (!src) return;
+  ui.requestFocus(src.id);
+}
+
+function startInlineOverride(portId: string) {
+  // Phase-A precedence: any non-empty inline expression wins over wired
+  // edges in the emitter. Seeding with a single space gives the field
+  // an explicit non-empty value the user can immediately replace, so
+  // override mode is visually obvious before they type.
+  const current = exprFor(portId);
+  if (current.trim() === '') {
+    setExpr(portId, ' ');
+  }
+  // Focus is handled by the v-focus pattern in the template.
+}
+
+function clearInlineOverride(portId: string) {
+  setExpr(portId, '');
+}
+
+/** True when the user has typed something into the inline field. */
+function hasInlineExpr(portId: string): boolean {
+  return exprFor(portId).trim() !== '';
 }
 
 function update<T extends object>(patch: T) {
@@ -321,27 +394,139 @@ const placeholderFor = (portId: string, kind: string): string => {
         <p class="summary">{{ nodeSummary }}</p>
       </section>
 
-      <!-- Inline expressions section — shown next if the node has data inputs. -->
+      <!--
+        Inputs section.
+        Each input rendered as one of:
+
+          (a) Not wired, no inline yet     →  plain expression input
+                                              with examples + helper.
+
+          (b) Not wired, inline filled in  →  same input, "Inline" tag.
+
+          (c) Wired, no inline override    →  rich "Connected from ___"
+                                              card with Jump / Disconnect
+                                              / Override actions.
+
+          (d) Wired AND inline filled in   →  "Inline override active"
+                                              banner over the editable
+                                              input, with "Use wired
+                                              instead" + Jump + Disconnect.
+
+        The emitter already prefers non-empty inline expressions over
+        wired edges, so all four states behave consistently downstream.
+      -->
       <section v-if="dataInPorts.length > 0" class="section">
         <div class="section-header">
           <span>Inputs</span>
-          <span class="hint">type SOL expression, or wire the port</span>
+          <span class="hint">type a SOL expression, or wire from another node</span>
         </div>
-        <label v-for="p in dataInPorts" :key="p.id" class="field">
-          <span class="field-label">
-            <span class="port-name">{{ p.name }}</span>
-            <span v-if="isPortWired(p.id)" class="wire-pill">wired</span>
-            <span v-else-if="exprFor(p.id)" class="inline-pill">inline</span>
-          </span>
+
+        <div v-for="p in dataInPorts" :key="p.id" class="field input-field">
+          <!-- Friendly label + state tag -->
+          <div class="input-label">
+            <span class="input-label-text">{{ portMeta(selectedNode.data.kind, p.id).label ?? p.name }}</span>
+            <span v-if="isPortWired(p.id) && hasInlineExpr(p.id)" class="state-tag override">
+              Inline override
+            </span>
+            <span v-else-if="isPortWired(p.id)" class="state-tag wired">
+              Connected
+            </span>
+            <span v-else-if="hasInlineExpr(p.id)" class="state-tag inline">
+              Inline
+            </span>
+          </div>
+
+          <!-- Wired source card (states c + d) -->
+          <div
+            v-if="isPortWired(p.id)"
+            class="wired-card"
+            :class="{ 'override-active': hasInlineExpr(p.id) }"
+          >
+            <div class="wired-summary">
+              <svg viewBox="0 0 16 16" width="11" height="11" class="wire-glyph" fill="none">
+                <path
+                  d="M2 8 H6 M10 8 H14"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                />
+                <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.4" />
+              </svg>
+              <span>
+                Connected from <strong>{{ sourceLabel(p.id) }}</strong>
+              </span>
+            </div>
+            <div v-if="hasInlineExpr(p.id)" class="override-banner">
+              Inline override active — your typed value wins over the connection.
+            </div>
+            <div class="wired-actions">
+              <button type="button" class="wired-btn" @click="jumpToSource(p.id)">
+                Jump to source →
+              </button>
+              <button type="button" class="wired-btn" @click="disconnectInput(p.id)">
+                Disconnect
+              </button>
+              <button
+                v-if="!hasInlineExpr(p.id)"
+                type="button"
+                class="wired-btn"
+                @click="startInlineOverride(p.id)"
+              >
+                Override with expression…
+              </button>
+              <button
+                v-else
+                type="button"
+                class="wired-btn"
+                @click="clearInlineOverride(p.id)"
+              >
+                Use connected value instead
+              </button>
+            </div>
+          </div>
+
+          <!-- The expression input — shown for unwired ports AND for
+               wired ports in override mode. We keep it editable always
+               when the port isn't wired (states a + b) and also when an
+               override is active (state d). For pure-connected state (c)
+               the input is hidden in favour of the card above. -->
           <input
+            v-if="!isPortWired(p.id) || hasInlineExpr(p.id)"
             class="expr-input"
             :value="exprFor(p.id)"
-            :placeholder="placeholderFor(p.id, selectedNode.data.kind)"
-            :disabled="isPortWired(p.id)"
+            :placeholder="portMeta(selectedNode.data.kind, p.id).placeholder ?? p.name"
             spellcheck="false"
             @input="(e) => setExpr(p.id, (e.target as HTMLInputElement).value)"
           />
-        </label>
+
+          <!-- Example chips: click to fill the input. Hidden once the
+               user has typed anything (no need to keep nagging). -->
+          <div
+            v-if="
+              !hasInlineExpr(p.id) &&
+              !isPortWired(p.id) &&
+              (portMeta(selectedNode.data.kind, p.id).examples?.length ?? 0) > 0
+            "
+            class="example-chips"
+          >
+            <span class="example-prefix">e.g.</span>
+            <button
+              v-for="ex in portMeta(selectedNode.data.kind, p.id).examples"
+              :key="ex"
+              type="button"
+              class="example-chip"
+              @click="setExpr(p.id, ex)"
+            >{{ ex }}</button>
+          </div>
+
+          <!-- Helper blurb -->
+          <span
+            v-if="portMeta(selectedNode.data.kind, p.id).helper"
+            class="help-blurb input-helper"
+          >
+            {{ portMeta(selectedNode.data.kind, p.id).helper }}
+          </span>
+        </div>
       </section>
 
       <!-- Kind-specific properties. -->
@@ -1163,5 +1348,146 @@ const placeholderFor = (portId: string, kind: string): string => {
 }
 .size-field {
   flex: 1;
+}
+
+/* =================================================================
+ *  Inputs section: wired-card, state tags, example chips
+ * ================================================================= */
+.input-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.input-field:last-child {
+  margin-bottom: 0;
+}
+.input-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.6875rem;
+  color: var(--sf-text-1);
+  font-weight: 500;
+}
+.input-label-text {
+  flex: 1;
+  min-width: 0;
+}
+.state-tag {
+  font-family: var(--sf-font-mono);
+  font-size: 0.5rem;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.state-tag.wired {
+  background: rgba(50, 145, 255, 0.14);
+  color: var(--sf-accent);
+}
+.state-tag.inline {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--sf-text-2);
+}
+.state-tag.override {
+  background: rgba(232, 166, 87, 0.18);
+  color: var(--sf-cat-trigger);
+}
+
+.wired-card {
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  border-left: 2px solid var(--sf-accent);
+  border-radius: var(--sf-radius-sm);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wired-card.override-active {
+  border-left-color: var(--sf-cat-trigger);
+}
+.wired-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.6875rem;
+  color: var(--sf-text-1);
+}
+.wired-summary strong {
+  color: var(--sf-text-0);
+  font-weight: 600;
+}
+.wire-glyph {
+  color: var(--sf-accent);
+  flex-shrink: 0;
+}
+.wired-card.override-active .wire-glyph {
+  color: var(--sf-cat-trigger);
+}
+.override-banner {
+  font-size: 0.625rem;
+  color: var(--sf-cat-trigger);
+  background: rgba(232, 166, 87, 0.08);
+  padding: 4px 6px;
+  border-radius: 3px;
+  line-height: 1.4;
+}
+.wired-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.wired-btn {
+  background: transparent;
+  border: 1px solid var(--sf-border);
+  color: var(--sf-text-1);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.wired-btn:hover {
+  background: var(--sf-bg-3);
+  color: var(--sf-text-0);
+  border-color: var(--sf-border-strong);
+}
+
+.example-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.example-prefix {
+  font-size: 0.5625rem;
+  color: var(--sf-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-right: 2px;
+}
+.example-chip {
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  color: var(--sf-text-2);
+  font-family: var(--sf-font-mono);
+  font-size: 0.625rem;
+  padding: 2px 7px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.example-chip:hover {
+  background: var(--sf-bg-3);
+  color: var(--sf-text-0);
+  border-color: var(--sf-border-strong);
+}
+.input-helper {
+  /* Aligned via help-blurb base style but tightened spacing here. */
+  margin-top: 0;
 }
 </style>

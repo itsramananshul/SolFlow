@@ -14,6 +14,7 @@ import { Handle, Position, useVueFlow } from '@vue-flow/core';
 import type { GraphNode, NodeData, Port } from '@/graph/schema';
 import { typeCssClass, typeLabel } from '@/graph/schema';
 import { categoryColor, categoryForKind } from '@/graph/kinds';
+import { portMeta } from '@/graph/portMeta';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import { useSimulationStore } from '@/stores/simulation.store';
@@ -214,26 +215,44 @@ function isPortWired(portId: string): boolean {
   );
 }
 
+/** Short label of the source node for a wired data input. */
+function wiredSourceLabel(portId: string): string {
+  const fn = graph.activeFunction;
+  if (!fn) return 'connected';
+  const edge = fn.edges.find(
+    (e) =>
+      e.kind === 'data' &&
+      e.target.node === node.value.id &&
+      e.target.port === portId,
+  );
+  if (!edge) return 'connected';
+  const src = fn.nodes.find((n) => n.id === edge.source.node);
+  if (!src) return 'connected';
+  const d = src.data;
+  switch (d.kind) {
+    case 'varGet':      return d.varName || 'var';
+    case 'literal':     return d.value || d.litType;
+    case 'fieldAccess': return `.${d.fieldName}`;
+    case 'indexRead':   return 'arr[i]';
+    case 'binaryOp':    return d.op;
+    case 'enumVariant': return `${d.enumName}::${d.variantName}`;
+    case 'call':        return 'fn()';
+    case 'trigger':     return 'payload';
+    case 'let':         return d.varName;
+    case 'forEach':     return d.iteratorName;
+    default:            return d.kind;
+  }
+}
+
 function onExprInput(portId: string, e: Event) {
   const text = (e.target as HTMLInputElement).value;
   graph.updateNodeExpression(node.value.id, portId, text);
 }
 
 function placeholderFor(portId: string, kind: string): string {
-  if (portId === 'cond') return 'counter < 4';
-  if (portId === 'value' && kind === 'print') return '"hello"';
-  if (portId === 'value' && kind === 'return') return '0';
-  if (portId === 'value' && kind === 'let') return '5 + 3';
-  if (portId === 'value' && kind === 'assign') return 'counter + 1';
-  if (portId === 'array') return 'arr';
-  if (portId === 'index') return 'i';
-  if (portId === 'target') return 'node';
-  if (portId === 'lhs' || portId === 'rhs') return '0';
-  if (portId === 'operand') return 'x';
-  if (portId.startsWith('arg:')) return portId.slice(4);
-  if (portId.startsWith('field:')) return portId.slice(6);
-  if (portId.startsWith('item:')) return '0';
-  return 'expression';
+  // Defer to the canonical portMeta table; fall back to the port id.
+  const meta = portMeta(kind as NodeData['kind'], portId);
+  return meta.placeholder ?? meta.label ?? portId;
 }
 
 // canDelete reflects the store's entry-point rule: a function must
@@ -472,14 +491,23 @@ function formatLiteralPreview(t: string, v: string): string {
             <div class="port-meta">
               <span class="port-label">{{ p.name }}</span>
               <span
-                v-if="isPortWired(p.id)"
+                v-if="isPortWired(p.id) && inlineExprFor(p.id).trim() !== ''"
+                class="pill override"
+                title="An inline expression overrides the connected source. Open Inspector to manage."
+              >override</span>
+              <span
+                v-else-if="isPortWired(p.id)"
                 class="pill wire"
-                title="Wired from another node"
-              >wired</span>
+                :title="`Connected from ${wiredSourceLabel(p.id)} — open Inspector to disconnect or override`"
+              >from {{ wiredSourceLabel(p.id) }}</span>
               <span v-else class="port-type">{{ p.type ? typeLabel(p.type) : '' }}</span>
             </div>
+            <!-- Inline input is always editable when not purely wired.
+                 The Inspector handles the "override a wired input"
+                 case in a richer panel; on the node card we just show
+                 the source chip so the surface stays compact. -->
             <input
-              v-if="!isPortWired(p.id)"
+              v-if="!isPortWired(p.id) || inlineExprFor(p.id).trim() !== ''"
               class="port-input nodrag nopan"
               :value="inlineExprFor(p.id)"
               :placeholder="placeholderFor(p.id, node.data.kind)"
@@ -715,6 +743,20 @@ function formatLiteralPreview(t: string, v: string): string {
   font-size: 0.5625rem;
   color: var(--sf-accent);
   background: var(--sf-accent-dim);
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.3px;
+  text-transform: none;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill.override {
+  font-family: var(--sf-font-mono);
+  font-size: 0.5625rem;
+  color: var(--sf-cat-trigger);
+  background: rgba(232, 166, 87, 0.16);
   padding: 1px 5px;
   border-radius: 2px;
   letter-spacing: 0.4px;
