@@ -904,6 +904,15 @@ export const useGraphStore = defineStore('graph', () => {
   }
   function undo() {
     if (!canUndo()) return;
+    // Cancel any in-flight debounced snapshot. Without this, a snapshot
+    // for the pre-undo state could fire AFTER the restore — splicing
+    // off the redo history and making the user lose the operation they
+    // just undid. Same applies to redo. This is the single most
+    // important undo/redo correctness fix.
+    if (historyTimer !== undefined) {
+      window.clearTimeout(historyTimer);
+      historyTimer = undefined;
+    }
     isReplaying = true;
     historyIndex--;
     const snap = history[historyIndex];
@@ -919,6 +928,10 @@ export const useGraphStore = defineStore('graph', () => {
   }
   function redo() {
     if (!canRedo()) return;
+    if (historyTimer !== undefined) {
+      window.clearTimeout(historyTimer);
+      historyTimer = undefined;
+    }
     isReplaying = true;
     historyIndex++;
     const snap = history[historyIndex];

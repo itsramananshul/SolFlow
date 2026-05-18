@@ -113,6 +113,34 @@ watch(clampedRight, () => {
   requestAnimationFrame(measureRightPane);
 });
 
+/**
+ * Selection-validity guard.
+ *
+ * After any graph change — undo, redo, multi-select delete, function
+ * switch, Load workflow — the previously-selected or hovered node may
+ * no longer exist. Without this guard, the Inspector renders against
+ * a stale id and shows ghost data, or quick-actions act on phantom
+ * nodes.
+ *
+ * Watches a string fingerprint of the active function's node ids so
+ * the validation runs cheaply on every structural change without a
+ * deep-watch sweep.
+ */
+const activeNodeFingerprint = computed(() => {
+  const fn = graph.activeFunction;
+  if (!fn) return '';
+  return fn.nodes.map((n) => n.id).join('|');
+});
+watch(activeNodeFingerprint, (fingerprint) => {
+  const ids = new Set(fingerprint ? fingerprint.split('|') : []);
+  if (ui.selectedNodeId && !ids.has(ui.selectedNodeId)) {
+    ui.selectNode(null);
+  }
+  if (ui.hoveredNodeId && !ids.has(ui.hoveredNodeId)) {
+    ui.setHovered(null);
+  }
+});
+
 function onKey(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
