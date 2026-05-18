@@ -441,17 +441,22 @@ function formatLiteralPreview(t: string, v: string): string {
 
 .control-out-row {
   position: relative;
-  height: 12px;
+  height: 14px;
 }
 .control-out-label {
   position: absolute;
-  bottom: -16px;
+  bottom: -18px;
   transform: translateX(-50%);
-  font-size: 0.5625rem;
+  font-size: 0.625rem;
   font-family: var(--sf-font-mono);
-  color: var(--sf-text-3);
+  color: var(--sf-text-2);
   white-space: nowrap;
   pointer-events: none;
+  background: var(--sf-bg-1);
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--sf-border);
+  letter-spacing: 0.4px;
 }
 
 .handle.control {

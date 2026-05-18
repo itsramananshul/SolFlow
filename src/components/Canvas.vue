@@ -523,10 +523,21 @@ onBeforeUnmount(() => {
       v-if="(graph.activeFunction?.nodes.length ?? 0) <= 1 && (graph.activeFunction?.edges.length ?? 0) === 0"
       class="empty-hint"
     >
-      <div class="hint-title">Empty function body</div>
+      <div class="hint-keys">
+        <span class="kbd">Space</span>
+      </div>
+      <div class="hint-title">Press Space to add a node</div>
       <div class="hint-body">
-        Drag a node from the <strong>Nodes</strong> palette on the left,<br />
-        or load a sample workflow from the <strong>Samples</strong> menu in the toolbar.
+        Type to fuzzy-search · Enter to insert · drag a wire into empty
+        canvas to add-and-connect in one motion
+      </div>
+      <div class="hint-quick">
+        <span>or</span>
+        <span class="kbd small">⌘K</span>
+        <span>·</span>
+        <span class="kbd small">Double-click</span>
+        <span>·</span>
+        <span class="kbd small">Drag from palette</span>
       </div>
     </div>
     <ContextMenu
@@ -554,28 +565,76 @@ onBeforeUnmount(() => {
   position: relative;
   min-height: 0;
 }
+@keyframes sf-empty-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(50, 145, 255, 0.18);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(50, 145, 255, 0);
+  }
+}
 .empty-hint {
   position: absolute;
-  top: 55%;
+  top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  color: var(--sf-text-3);
+  color: var(--sf-text-2);
   pointer-events: none;
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 480px;
+  padding: 0 20px;
 }
-.hint-title {
+.hint-keys {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.kbd {
+  display: inline-block;
+  font-family: var(--sf-font-mono);
   font-size: 0.8125rem;
   font-weight: 500;
-  color: var(--sf-text-2);
-  margin-bottom: 8px;
-  font-family: var(--sf-font-mono);
+  padding: 6px 14px;
+  background: var(--sf-bg-2);
+  border: 1px solid var(--sf-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  color: var(--sf-text-0);
+  letter-spacing: 0.5px;
+  animation: sf-empty-pulse 2s ease-in-out infinite;
+}
+.kbd.small {
+  font-size: 0.625rem;
+  padding: 2px 7px;
+  border-bottom-width: 1px;
+  letter-spacing: 0.3px;
+  animation: none;
+  font-weight: 500;
+  color: var(--sf-text-1);
+}
+.hint-title {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--sf-text-0);
+  letter-spacing: -0.01em;
 }
 .hint-body {
   font-size: 0.75rem;
-  line-height: 1.6;
+  line-height: 1.55;
+  color: var(--sf-text-3);
 }
-.hint-body strong {
-  color: var(--sf-text-1);
-  font-weight: 500;
+.hint-quick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-size: 0.6875rem;
+  color: var(--sf-text-3);
+  margin-top: 6px;
 }
 </style>
