@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
+import { useUIStore } from '@/stores/ui.store';
 import { useSimulationStore } from '@/stores/simulation.store';
+import type { GraphNode } from '@/graph/schema';
 
 const graph = useGraphStore();
+const ui = useUIStore();
 const sim = useSimulationStore();
 
 const fn = computed(() => graph.activeFunction);
@@ -38,28 +41,118 @@ const errorCount = computed(
 const warningCount = computed(
   () => graph.diagnostics.filter((d) => d.severity === 'warning').length,
 );
+
+/**
+ * Selection breadcrumb: gives a "you are here" trail when a node is
+ * selected on a large workflow. Format:
+ *   <function> › [<frame title>] › <node label>
+ * The frame segment is only shown when the selected node visually sits
+ * inside a Frame (center-of-node-inside-frame test, same heuristic as
+ * frame drag). On medium-density graphs the frame title is the single
+ * most useful piece of context — "I'm editing a node inside the
+ * RISK CHECK section."
+ */
+const selectedNode = computed<GraphNode | null>(() => {
+  const f = fn.value;
+  if (!f || !ui.selectedNodeId) return null;
+  return f.nodes.find((n) => n.id === ui.selectedNodeId) ?? null;
+});
+
+const containingFrameTitle = computed<string | null>(() => {
+  const sel = selectedNode.value;
+  const f = fn.value;
+  if (!sel || !f) return null;
+  if (sel.data.kind === 'frame') return null; // a frame doesn't sit inside itself
+  // Center-of-node test mirrors Canvas's frame drag logic.
+  const cx = sel.position.x + 110;
+  const cy = sel.position.y + 28;
+  for (const n of f.nodes) {
+    if (n.data.kind !== 'frame') continue;
+    if (
+      cx >= n.position.x &&
+      cx <= n.position.x + n.data.width &&
+      cy >= n.position.y &&
+      cy <= n.position.y + n.data.height
+    ) {
+      return n.data.title || 'Section';
+    }
+  }
+  return null;
+});
+
+function nodeBreadcrumbLabel(n: GraphNode): string {
+  const d = n.data;
+  switch (d.kind) {
+    case 'start':       return 'start()';
+    case 'trigger':     return `${d.triggerKind} trigger`;
+    case 'let':         return `let ${d.varName}`;
+    case 'assign':      return `${d.varName} =`;
+    case 'print':       return 'print';
+    case 'return':      return 'return';
+    case 'branch':      return 'branch';
+    case 'while':       return 'while';
+    case 'forEach':     return `for ${d.iteratorName}`;
+    case 'binaryOp':    return d.op;
+    case 'unaryOp':     return `${d.op}x`;
+    case 'varGet':      return d.varName || 'varGet';
+    case 'literal':     return `${d.litType}: ${d.value}`;
+    case 'arrayLiteral':  return `array[${d.length}]`;
+    case 'structLiteral': return d.structName || 'struct';
+    case 'fieldAccess': return `.${d.fieldName}`;
+    case 'fieldSet':    return `.${d.fieldName} =`;
+    case 'indexRead':   return 'arr[i]';
+    case 'indexSet':    return 'arr[i] =';
+    case 'enumVariant': return `${d.enumName}::${d.variantName}`;
+    case 'call':        return 'call()';
+    case 'note':        return 'note';
+    case 'frame':       return d.title || 'Section';
+  }
+}
+
+const selectionCrumb = computed<string>(() => {
+  const sel = selectedNode.value;
+  if (!sel) return '';
+  return nodeBreadcrumbLabel(sel);
+});
 </script>
 
 <template>
   <footer class="status-bar">
     <div class="left">
-      <span class="cell">
-        <span class="dot acc" />
-        <span class="label">function</span>
-        <code>{{ fn?.name ?? '—' }}</code>
-      </span>
-      <span class="cell">
-        <span class="label">nodes</span>
-        <code>{{ nodeCount }}</code>
-      </span>
-      <span class="cell">
-        <span class="label">edges</span>
-        <code>{{ edgeCount }}</code>
-      </span>
-      <span class="cell">
-        <span class="label">fns</span>
-        <code>{{ fnCount }}</code>
-      </span>
+      <!--
+        When a node is selected, the breadcrumb takes priority and reads
+        as: function › [frame] › node-label. When nothing is selected,
+        we fall back to the per-function counters that were here before.
+      -->
+      <template v-if="selectedNode">
+        <span class="cell crumb">
+          <span class="dot acc" />
+          <code>{{ fn?.name ?? '—' }}</code>
+          <span v-if="containingFrameTitle" class="crumb-arrow">›</span>
+          <code v-if="containingFrameTitle" class="frame-crumb">{{ containingFrameTitle }}</code>
+          <span class="crumb-arrow">›</span>
+          <code class="leaf-crumb">{{ selectionCrumb }}</code>
+        </span>
+      </template>
+      <template v-else>
+        <span class="cell">
+          <span class="dot acc" />
+          <span class="label">function</span>
+          <code>{{ fn?.name ?? '—' }}</code>
+        </span>
+        <span class="cell">
+          <span class="label">nodes</span>
+          <code>{{ nodeCount }}</code>
+        </span>
+        <span class="cell">
+          <span class="label">edges</span>
+          <code>{{ edgeCount }}</code>
+        </span>
+        <span class="cell">
+          <span class="label">fns</span>
+          <code>{{ fnCount }}</code>
+        </span>
+      </template>
     </div>
     <div class="right">
       <span v-if="sim.isPlaying" class="cell sim">
@@ -155,5 +248,25 @@ code {
 }
 .time {
   color: var(--sf-text-2);
+}
+.crumb {
+  min-width: 0;
+  overflow: hidden;
+}
+.crumb code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crumb-arrow {
+  color: var(--sf-text-3);
+  margin: 0 2px;
+  font-size: 0.625rem;
+}
+.frame-crumb {
+  color: var(--sf-cat-trigger);
+}
+.leaf-crumb {
+  color: var(--sf-accent);
 }
 </style>

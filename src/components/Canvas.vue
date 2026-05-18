@@ -103,20 +103,33 @@ const flowEdges = computed<Edge[]>(() => {
   if (!fn) return [];
   return fn.edges.map((e) => {
     const isControl = e.kind === 'control';
-    // Determine edge type tint
-    let strokeColor = '#cbd1de';
-    if (!isControl) {
+    // Control edges = the workflow spine. Use a single brighter neutral
+    // and a thicker stroke so they read as the primary path.
+    // Data edges = type-tinted, thinner, slightly transparent, dashed —
+    // they read as "plumbing" instead of competing visually with the
+    // spine. Big win on dense graphs.
+    let strokeColor: string;
+    let strokeWidth: number;
+    let strokeDasharray: string | undefined;
+    let strokeOpacity: number | undefined;
+    if (isControl) {
+      strokeColor = '#cbd1de';
+      strokeWidth = 2.4;
+    } else {
       const src = fn.nodes.find((n) => n.id === e.source.node);
       const port = src?.ports.out.find((p) => p.id === e.source.port);
       const cls = typeCssClass(port?.type);
       strokeColor = cssVarForType(cls);
+      strokeWidth = 1.4;
+      strokeDasharray = '5 4';
+      strokeOpacity = 0.72;
     }
     const active = sim.isEdgeActive(e.id);
     const hovered = ui.hoveredNodeId;
     const related =
       hovered != null && (e.source.node === hovered || e.target.node === hovered);
     const dim = hovered != null && !related;
-    const classes: string[] = [];
+    const classes: string[] = [isControl ? 'sf-edge-control' : 'sf-edge-data'];
     if (active) classes.push('sf-edge-active');
     if (related) classes.push('sf-edge-related');
     if (dim) classes.push('sf-edge-dim');
@@ -126,16 +139,20 @@ const flowEdges = computed<Edge[]>(() => {
       target: e.target.node,
       sourceHandle: e.source.port,
       targetHandle: e.target.port,
-      type: 'smoothstep',
+      // Bezier routes data edges more gently around clutter; smoothstep
+      // keeps control edges feeling like an orthogonal program flow.
+      type: isControl ? 'smoothstep' : 'bezier',
       class: classes.join(' '),
       style: {
         stroke: strokeColor,
-        strokeWidth: isControl ? 2.4 : 1.8,
+        strokeWidth,
+        ...(strokeDasharray ? { strokeDasharray } : {}),
+        ...(strokeOpacity !== undefined ? { strokeOpacity } : {}),
       },
       animated: false,
       // Widen the invisible interaction stroke so edges are easy to click/select.
       interactionWidth: 22,
-      markerEnd: { type: MarkerType.ArrowClosed, color: strokeColor, width: 14, height: 14 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: strokeColor, width: 12, height: 12 },
     } as Edge;
   });
 });
