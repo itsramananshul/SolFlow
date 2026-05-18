@@ -49,6 +49,7 @@
   --sf-type-any: #888888;
 
   /* category indicators — muted dots only, NOT used for big colored headers */
+  --sf-cat-trigger: #e8a657;
   --sf-cat-flow: #5d8acf;
   --sf-cat-variable: #d4a76a;
   --sf-cat-operator: #a07ec3;

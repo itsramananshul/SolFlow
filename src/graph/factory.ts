@@ -33,6 +33,14 @@ export function defaultData(kind: NodeKind): NodeData {
   switch (kind) {
     case 'start':
       return { kind: 'start' };
+    case 'trigger':
+      return {
+        kind: 'trigger',
+        triggerKind: 'manual',
+        eventName: 'manual.run',
+        payloadSchema: '{ "type": "object" }',
+        samplePayload: '{}',
+      };
     case 'let':
       return { kind: 'let', varName: 'x', varType: { kind: 'int' } };
     case 'assign':
@@ -110,6 +118,15 @@ export function rebuildPorts(data: NodeData, ctx: WorkflowCtx): NodePorts {
       return {
         in: [],
         out: [CTL('next', 'next')],
+      };
+    case 'trigger':
+      return {
+        in: [],
+        out: [
+          CTL('next', 'next'),
+          // Event payload data-out; downstream nodes can wire to read it.
+          DATA('payload', 'payload', { kind: 'any' }, false),
+        ],
       };
     case 'let':
       return {

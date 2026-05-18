@@ -2,10 +2,10 @@
 import { computed, ref } from 'vue';
 import { paletteByCategory, CATEGORY_LABELS, categoryColor, PALETTE } from '@/graph/kinds';
 import type { Category, PaletteEntry } from '@/graph/kinds';
-import type { NodeKind } from '@/graph/schema';
 
 const grouped = computed(() => paletteByCategory());
 const order: Category[] = [
+  'trigger',
   'flow',
   'variable',
   'operator',
@@ -30,8 +30,14 @@ const filtered = computed<PaletteEntry[]>(() => {
   );
 });
 
-function onDragStart(event: DragEvent, kind: NodeKind) {
-  event.dataTransfer?.setData('application/x-solflow-kind', kind);
+function onDragStart(event: DragEvent, entry: PaletteEntry) {
+  event.dataTransfer?.setData('application/x-solflow-kind', entry.kind);
+  if (entry.initialData) {
+    event.dataTransfer?.setData(
+      'application/x-solflow-init',
+      JSON.stringify(entry.initialData),
+    );
+  }
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
 }
 
@@ -71,7 +77,7 @@ function clearSearch() {
         :key="entry.kind"
         class="palette-item"
         draggable="true"
-        @dragstart="onDragStart($event, entry.kind)"
+        @dragstart="onDragStart($event, entry)"
         :title="entry.description"
       >
         <span class="dot" :style="{ background: categoryColor(entry.category) }" />
@@ -89,7 +95,7 @@ function clearSearch() {
           :key="entry.kind"
           class="palette-item"
           draggable="true"
-          @dragstart="onDragStart($event, entry.kind)"
+          @dragstart="onDragStart($event, entry)"
           :title="entry.description"
         >
           <span class="dot" :style="{ background: categoryColor(cat) }" />

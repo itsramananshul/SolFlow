@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
-export type SidebarTab = 'palette' | 'types' | 'imports';
+export type SidebarTab = 'palette' | 'types' | 'imports' | 'policies';
 
 export const useUIStore = defineStore('ui', () => {
   const sidebarTab = ref<SidebarTab>('palette');

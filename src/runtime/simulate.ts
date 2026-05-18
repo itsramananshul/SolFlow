@@ -12,7 +12,7 @@
  * event timeline, not the output buffer).
  */
 
-import { run, type RunResult } from './interpret';
+import { run, type RunOptions, type RunResult } from './interpret';
 import type { SolWorkflow } from '@/graph/schema';
 
 export type StepEvent =
@@ -26,14 +26,18 @@ export interface Trace {
   result: RunResult;
 }
 
-export function recordTrace(workflow: SolWorkflow): Trace {
+export function recordTrace(workflow: SolWorkflow, opts?: RunOptions): Trace {
   const events: StepEvent[] = [];
   // Use a fresh array for each call; the interpreter walks synchronously.
-  const result = run(workflow, {
-    onNodeEnter: (id) => events.push({ type: 'enter', id }),
-    onNodeExit: (id) => events.push({ type: 'exit', id }),
-    onEdgeTraverse: (id) => events.push({ type: 'edge', id }),
-    onError: (id, message) => events.push({ type: 'error', id, message }),
-  });
+  const result = run(
+    workflow,
+    {
+      onNodeEnter: (id) => events.push({ type: 'enter', id }),
+      onNodeExit: (id) => events.push({ type: 'exit', id }),
+      onEdgeTraverse: (id) => events.push({ type: 'edge', id }),
+      onError: (id, message) => events.push({ type: 'error', id, message }),
+    },
+    opts,
+  );
   return { events, result };
 }

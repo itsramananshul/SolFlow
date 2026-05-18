@@ -171,10 +171,14 @@ export const useGraphStore = defineStore('graph', () => {
   // Nodes
   // -----------------------------------------------------------
 
-  function addNode(kind: NodeKind, position: { x: number; y: number }) {
+  function addNode(
+    kind: NodeKind,
+    position: { x: number; y: number },
+    init?: Partial<NodeData>,
+  ) {
     const fn = activeFunction.value;
     if (!fn) return;
-    const node = createNode(kind, position, ctx.value);
+    const node = createNode(kind, position, ctx.value, init);
     fn.nodes.push(node);
     touch();
     return node;
@@ -347,11 +351,12 @@ export const useGraphStore = defineStore('graph', () => {
     kind: NodeKind,
     position: { x: number; y: number },
     autoConnect?: { fromNode: string; fromPort: string; edgeKind: 'control' | 'data' },
+    init?: Partial<NodeData>,
   ): GraphNode | undefined {
     const fn = activeFunction.value;
     if (!fn) return undefined;
     const safePos = findFreePosition(position, fn.nodes);
-    const node = createNode(kind, safePos, ctx.value);
+    const node = createNode(kind, safePos, ctx.value, init);
     fn.nodes.push(node);
 
     if (autoConnect) {

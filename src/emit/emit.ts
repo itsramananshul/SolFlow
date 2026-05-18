@@ -18,6 +18,7 @@ import type {
   FunctionGraph,
   GraphEdge,
   GraphNode,
+  NodeData,
   SolWorkflow,
   StructDecl,
 } from '@/graph/schema';
@@ -130,14 +131,42 @@ function emitFunction(ctx: EmitCtx): string {
   const params = fn.params.map((p) => `${p.name}: ${typeLabel(p.type)}`).join(', ');
   const ret = fn.returnType.kind === 'void' ? '' : ` -> ${typeLabel(fn.returnType)}`;
 
-  const start = fn.nodes.find((n) => n.data.kind === 'start');
-  if (!start) {
-    ctx.warnings.push(`function ${fn.name}: no start node`);
-    return `function ${fn.name}(${params})${ret} {\n}`;
+  // Phase A — trigger annotations are emitted as comments preceding the
+  // signature. Phase B will lower these into proper decorator syntax.
+  const triggerLines: string[] = [];
+  for (const n of fn.nodes) {
+    if (n.data.kind !== 'trigger') continue;
+    triggerLines.push(emitTriggerComment(n.data));
   }
-  const body = emitChain(ctx, start.id, 'next', 1);
+
+  // Allow start OR a trigger node as entry — pick whichever exists.
+  const entry =
+    fn.nodes.find((n) => n.data.kind === 'start') ??
+    fn.nodes.find((n) => n.data.kind === 'trigger');
+  if (!entry) {
+    ctx.warnings.push(`function ${fn.name}: no entry (start or trigger) node`);
+    return `${triggerLines.join('\n')}${triggerLines.length ? '\n' : ''}function ${fn.name}(${params})${ret} {\n}`;
+  }
+  const body = emitChain(ctx, entry.id, 'next', 1);
   const bodyLines = body.length === 0 ? [] : [body];
-  return `function ${fn.name}(${params})${ret} {\n${bodyLines.join('')}}`;
+  const prefix = triggerLines.length ? triggerLines.join('\n') + '\n' : '';
+  return `${prefix}function ${fn.name}(${params})${ret} {\n${bodyLines.join('')}}`;
+}
+
+function emitTriggerComment(data: Extract<NodeData, { kind: 'trigger' }>): string {
+  const parts: string[] = [`// @trigger ${data.triggerKind}`];
+  parts.push(`event="${data.eventName}"`);
+  if (data.triggerKind === 'webhook' && data.webhookPath) {
+    parts.push(`path="${data.webhookPath}"`);
+  }
+  if (data.triggerKind === 'timer' && data.cronExpr) {
+    parts.push(`cron="${data.cronExpr}"`);
+  }
+  if (data.triggerKind === 'http') {
+    parts.push(`method=${data.httpMethod ?? 'POST'}`);
+    if (data.httpPath) parts.push(`path="${data.httpPath}"`);
+  }
+  return parts.join(' ');
 }
 
 // =============================================================
@@ -264,6 +293,10 @@ function emitStatement(ctx: EmitCtx, node: GraphNode, indent: number): string {
         .join(', ');
       return `${pad}${fname}(${args});\n`;
     }
+    case 'trigger':
+      // Trigger nodes are entry markers; their annotation is emitted at the
+      // function header, not as an inline statement.
+      return '';
     default:
       return '';
   }
@@ -358,6 +391,10 @@ function emitExpression(ctx: EmitCtx, node: GraphNode, outPort: string): string 
       // Reading the variable bound by this let via its data-out port.
       // Stable 'var' is the current id; 'var:<name>' is preserved for old saved graphs.
       if (outPort === 'var' || outPort.startsWith('var:')) return data.varName;
+      return '/* invalid */';
+    }
+    case 'trigger': {
+      if (outPort === 'payload') return 'payload';
       return '/* invalid */';
     }
     default:

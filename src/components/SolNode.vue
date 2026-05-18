@@ -101,6 +101,14 @@ function labelForKind(data: NodeData): string {
   switch (data.kind) {
     case 'start':
       return 'start()';
+    case 'trigger': {
+      const k = data.triggerKind;
+      if (k === 'webhook') return `webhook · ${data.webhookPath ?? ''}`;
+      if (k === 'timer') return `timer · ${data.cronExpr ?? ''}`;
+      if (k === 'http') return `${data.httpMethod ?? 'POST'} ${data.httpPath ?? ''}`;
+      if (k === 'manual') return `manual · ${data.eventName}`;
+      return `event · ${data.eventName}`;
+    }
     case 'let':
       return `let ${data.varName || '_'}: ${typeLabel(data.varType)}`;
     case 'assign':
@@ -297,6 +305,20 @@ function formatLiteralPreview(t: string, v: string): string {
 .sf-node.selected {
   border-color: var(--sf-accent);
   box-shadow: 0 0 0 1px var(--sf-accent-dim);
+}
+
+.sf-node.cat-trigger {
+  /* Amber left-strip so triggers read as entry points at a glance. */
+  border-left: 3px solid var(--sf-cat-trigger);
+  background: linear-gradient(
+    90deg,
+    rgba(232, 166, 87, 0.06) 0%,
+    var(--sf-bg-2) 24%
+  );
+}
+.sf-node.cat-trigger .header {
+  /* Hairline under the trigger badge to keep the title legible against the tint. */
+  border-bottom-color: rgba(232, 166, 87, 0.22);
 }
 
 .header {

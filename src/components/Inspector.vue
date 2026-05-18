@@ -1,19 +1,46 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
+import { useSimulationStore } from '@/stores/simulation.store';
 import {
   BINARY_OPS,
   UNARY_OPS,
   type BinaryOpSymbol,
+  type HttpMethod,
+  type TriggerKind,
   type UnaryOpSymbol,
   type SolPrimitive,
   type SolType,
 } from '@/graph/schema';
 import { bindingsInScope } from '@/graph/scope';
+import { recordTrace } from '@/runtime/simulate';
+
+const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+const TRIGGER_KINDS: TriggerKind[] = ['manual', 'webhook', 'timer', 'event', 'http'];
 
 const graph = useGraphStore();
 const ui = useUIStore();
+const sim = useSimulationStore();
+
+const copyMsg = ref<string | null>(null);
+function copyToClipboard(text: string) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard) {
+    navigator.clipboard.writeText(text).catch(() => {
+      /* ignore */
+    });
+  }
+  copyMsg.value = 'Copied';
+  setTimeout(() => (copyMsg.value = null), 1200);
+}
+
+function triggerEvent() {
+  if (!selectedNode.value || selectedNode.value.data.kind !== 'trigger') return;
+  const trace = recordTrace(graph.workflow, {
+    entryTriggerId: selectedNode.value.id,
+  });
+  sim.play(trace);
+}
 
 const selectedNode = computed(() => {
   const fn = graph.activeFunction;
@@ -433,6 +460,103 @@ const placeholderFor = (portId: string, kind: string): string => {
           </label>
         </template>
 
+        <template v-else-if="selectedNode.data.kind === 'trigger'">
+          <label class="field">
+            <span class="field-label">Trigger kind</span>
+            <select
+              :value="selectedNode.data.triggerKind"
+              @change="(e) => update({ triggerKind: (e.target as HTMLSelectElement).value as TriggerKind })"
+            >
+              <option v-for="k in TRIGGER_KINDS" :key="k" :value="k">{{ k }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Event name</span>
+            <input
+              :value="selectedNode.data.eventName"
+              @input="(e) => update({ eventName: (e.target as HTMLInputElement).value })"
+            />
+          </label>
+          <label v-if="selectedNode.data.triggerKind === 'webhook'" class="field">
+            <span class="field-label">Webhook URL</span>
+            <div class="copy-row">
+              <input
+                readonly
+                :value="selectedNode.data.webhookPath"
+                class="copy-input"
+              />
+              <button
+                type="button"
+                class="copy-btn"
+                @click="copyToClipboard(selectedNode.data.webhookPath ?? '')"
+              >Copy</button>
+            </div>
+            <span class="muted-note">
+              Phase A: simulated URL. The runtime will issue a real signed
+              endpoint in Phase B.
+            </span>
+          </label>
+          <label v-if="selectedNode.data.triggerKind === 'timer'" class="field">
+            <span class="field-label">Cron expression</span>
+            <input
+              :value="selectedNode.data.cronExpr"
+              placeholder="*/5 * * * *"
+              spellcheck="false"
+              @input="(e) => update({ cronExpr: (e.target as HTMLInputElement).value })"
+            />
+          </label>
+          <template v-if="selectedNode.data.triggerKind === 'http'">
+            <label class="field">
+              <span class="field-label">HTTP method</span>
+              <select
+                :value="selectedNode.data.httpMethod"
+                @change="(e) => update({ httpMethod: (e.target as HTMLSelectElement).value as HttpMethod })"
+              >
+                <option v-for="m in HTTP_METHODS" :key="m" :value="m">{{ m }}</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Path</span>
+              <input
+                :value="selectedNode.data.httpPath"
+                placeholder="/api/orders"
+                spellcheck="false"
+                @input="(e) => update({ httpPath: (e.target as HTMLInputElement).value })"
+              />
+            </label>
+          </template>
+          <label class="field">
+            <span class="field-label">Payload schema</span>
+            <textarea
+              class="mono-area"
+              rows="3"
+              :value="selectedNode.data.payloadSchema"
+              spellcheck="false"
+              @input="(e) => update({ payloadSchema: (e.target as HTMLTextAreaElement).value })"
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">Sample payload (JSON)</span>
+            <textarea
+              class="mono-area"
+              rows="5"
+              :value="selectedNode.data.samplePayload"
+              spellcheck="false"
+              @input="(e) => update({ samplePayload: (e.target as HTMLTextAreaElement).value })"
+            />
+          </label>
+          <div class="trigger-actions">
+            <button type="button" class="trigger-btn" @click="triggerEvent">
+              Trigger Event ▷
+            </button>
+            <span v-if="copyMsg" class="copy-msg">{{ copyMsg }}</span>
+          </div>
+          <p class="muted-note">
+            Phase A: runs the workflow locally with the sample payload bound
+            to <code>payload</code>. Phase B: real event subscription.
+          </p>
+        </template>
+
         <template v-else-if="selectedNode.data.kind === 'call'">
           <label class="field">
             <span class="field-label">Function</span>
@@ -585,5 +709,60 @@ const placeholderFor = (portId: string, kind: string): string => {
   color: var(--sf-text-3);
   font-size: 0.6875rem;
   margin: 0;
+}
+.mono-area {
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+  resize: vertical;
+  min-height: 48px;
+}
+.copy-row {
+  display: flex;
+  gap: 4px;
+}
+.copy-input {
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+  flex: 1;
+  background: var(--sf-bg-1);
+  cursor: text;
+}
+.copy-btn {
+  background: var(--sf-bg-3);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+  color: var(--sf-text-1);
+  font-size: 0.625rem;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.copy-btn:hover {
+  background: var(--sf-bg-4);
+  color: var(--sf-text-0);
+}
+.trigger-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.trigger-btn {
+  background: var(--sf-cat-trigger);
+  color: #1a1208;
+  border: none;
+  border-radius: var(--sf-radius-sm);
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.2px;
+}
+.trigger-btn:hover {
+  filter: brightness(1.08);
+}
+.copy-msg {
+  font-size: 0.625rem;
+  color: var(--sf-success, #5fd97a);
+  letter-spacing: 0.4px;
 }
 </style>

@@ -62,6 +62,10 @@ interface RunCtx {
   started: number;
   callDepth: number;
   hooks?: RunHooks;
+  /** When set, the run begins from this trigger node instead of `start`. */
+  entryTriggerId?: string;
+  /** Parsed trigger payload by node id; resolved by trigger nodes' `payload` data-out. */
+  payloadByNodeId: Map<string, unknown>;
 }
 
 class ReturnSignal {
@@ -70,7 +74,20 @@ class ReturnSignal {
 
 class RuntimeError extends Error {}
 
-export function run(workflow: SolWorkflow, hooks?: RunHooks): RunResult {
+export interface RunOptions {
+  /**
+   * When set, the run starts at this trigger node (must live in one of the
+   * workflow's functions). The trigger's samplePayload is parsed and bound
+   * to its `payload` data-out port. Used by Inspector's "Simulate Event".
+   */
+  entryTriggerId?: string;
+}
+
+export function run(
+  workflow: SolWorkflow,
+  hooks?: RunHooks,
+  opts?: RunOptions,
+): RunResult {
   const ctx: RunCtx = {
     workflow,
     output: [],
@@ -78,10 +95,29 @@ export function run(workflow: SolWorkflow, hooks?: RunHooks): RunResult {
     started: Date.now(),
     callDepth: 0,
     hooks,
+    entryTriggerId: opts?.entryTriggerId,
+    payloadByNodeId: new Map(),
   };
 
-  const start = workflow.functions.find((f) => f.name === 'start');
-  if (!start) {
+  // Locate entry function: explicit trigger (if provided) wins, else `start`.
+  let entryFn: FunctionGraph | undefined;
+  if (opts?.entryTriggerId) {
+    entryFn = workflow.functions.find((f) =>
+      f.nodes.some((n) => n.id === opts.entryTriggerId),
+    );
+    if (!entryFn) {
+      return {
+        ok: false,
+        output: [],
+        error: 'Trigger node not found in any function.',
+        steps: 0,
+        durationMs: 0,
+      };
+    }
+  } else {
+    entryFn = workflow.functions.find((f) => f.name === 'start');
+  }
+  if (!entryFn) {
     return {
       ok: false,
       output: [],
@@ -92,7 +128,7 @@ export function run(workflow: SolWorkflow, hooks?: RunHooks): RunResult {
   }
 
   try {
-    const result = callFunction(ctx, start, []);
+    const result = callFunction(ctx, entryFn, []);
     return {
       ok: true,
       output: ctx.output,
@@ -127,17 +163,36 @@ function callFunction(ctx: RunCtx, fn: FunctionGraph, args: unknown[]): unknown 
     scope[p.name] = args[i];
   });
 
-  const start = fn.nodes.find((n) => n.data.kind === 'start');
-  if (!start) {
+  // Pick the entry node for THIS function call:
+  //   - if a trigger was explicitly requested AND lives in this function, use it
+  //   - else first trigger node in this function (if any)
+  //   - else the `start` node
+  let entry: GraphNode | undefined;
+  if (ctx.entryTriggerId) {
+    const candidate = fn.nodes.find((n) => n.id === ctx.entryTriggerId);
+    if (candidate && candidate.data.kind === 'trigger') entry = candidate;
+  }
+  if (!entry) {
+    entry = fn.nodes.find((n) => n.data.kind === 'trigger');
+  }
+  if (!entry) {
+    entry = fn.nodes.find((n) => n.data.kind === 'start');
+  }
+  if (!entry) {
     ctx.callDepth--;
     return undefined;
   }
 
-  ctx.hooks?.onNodeEnter?.(start.id);
-  ctx.hooks?.onNodeExit?.(start.id);
+  // If the entry is a trigger, prime its payload cache from samplePayload.
+  if (entry.data.kind === 'trigger') {
+    ctx.payloadByNodeId.set(entry.id, parseSamplePayload(entry.data.samplePayload));
+  }
+
+  ctx.hooks?.onNodeEnter?.(entry.id);
+  ctx.hooks?.onNodeExit?.(entry.id);
 
   try {
-    walkChain(ctx, fn, scope, start.id, 'next');
+    walkChain(ctx, fn, scope, entry.id, 'next');
   } catch (e) {
     if (e instanceof ReturnSignal) {
       ctx.callDepth--;
@@ -240,6 +295,14 @@ function executeStatement(
   switch (data.kind) {
     case 'start':
       return;
+    case 'trigger': {
+      // Idempotent payload prime: a trigger reached mid-graph (e.g. via a
+      // weird wiring) still has its payload available to downstream reads.
+      if (!ctx.payloadByNodeId.has(node.id)) {
+        ctx.payloadByNodeId.set(node.id, parseSamplePayload(data.samplePayload));
+      }
+      return;
+    }
     case 'let': {
       const value = resolveDataInput(ctx, fn, scope, node, 'value');
       scope[data.varName] = value;
@@ -435,8 +498,32 @@ function evalNode(
       if (outPort === 'var') return scope[data.varName];
       if (outPort.startsWith('var:')) return scope[outPort.slice(4)];
       return undefined;
+    case 'trigger':
+      if (outPort === 'payload') {
+        // Lazy-prime if the trigger wasn't walked through yet (e.g. a node
+        // reads payload before control reaches the trigger). Safe & cheap.
+        if (!ctx.payloadByNodeId.has(node.id)) {
+          ctx.payloadByNodeId.set(node.id, parseSamplePayload(data.samplePayload));
+        }
+        return ctx.payloadByNodeId.get(node.id);
+      }
+      return undefined;
     default:
       return undefined;
+  }
+}
+
+/**
+ * Parse a trigger's samplePayload textbox. Accepts JSON; falls back to the
+ * raw string if not valid JSON (lets users paste plain text for tests).
+ */
+function parseSamplePayload(raw: string): unknown {
+  const s = (raw ?? '').trim();
+  if (s === '') return {};
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
   }
 }
 

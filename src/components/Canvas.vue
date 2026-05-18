@@ -17,7 +17,7 @@ import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { typeCssClass } from '@/graph/schema';
-import type { GraphEdge, NodeKind, SolType } from '@/graph/schema';
+import type { GraphEdge, NodeData, NodeKind, SolType } from '@/graph/schema';
 import SolNode from './SolNode.vue';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import QuickAddPalette, { type SourceContext } from './QuickAddPalette.vue';
@@ -221,13 +221,22 @@ function onDrop(event: DragEvent) {
     | NodeKind
     | undefined;
   if (!kind) return;
+  const initRaw = event.dataTransfer?.getData('application/x-solflow-init');
+  let init: object | undefined;
+  if (initRaw) {
+    try {
+      init = JSON.parse(initRaw);
+    } catch {
+      /* ignore malformed init */
+    }
+  }
   const target = event.currentTarget as HTMLDivElement;
   const rect = target.getBoundingClientRect();
   const pos = {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   };
-  graph.addNode(kind, pos);
+  graph.addNode(kind, pos, init as Partial<NodeData> | undefined);
 }
 
 function isValidConnection(c: Connection): boolean {
@@ -398,13 +407,18 @@ function closeQuickAdd() {
   qaSourceContext.value = undefined;
 }
 
-function onQuickAddSelect(kind: NodeKind, source?: SourceContext) {
+function onQuickAddSelect(
+  kind: NodeKind,
+  source?: SourceContext,
+  initialData?: Partial<NodeData>,
+) {
   const node = graph.addNodeAt(
     kind,
     qaFlowPos.value,
     source
       ? { fromNode: source.nodeId, fromPort: source.portId, edgeKind: source.edgeKind }
       : undefined,
+    initialData,
   );
   if (node) ui.selectNode(node.id);
 }

@@ -99,8 +99,10 @@ export interface FunctionGraph {
 // =============================================================
 
 export type NodeKind =
-  // flow
+  // entry
   | 'start'
+  | 'trigger'
+  // flow
   | 'let'
   | 'assign'
   | 'print'
@@ -122,6 +124,16 @@ export type NodeKind =
   | 'enumVariant'
   | 'call';
 
+/**
+ * Trigger sub-kind. A trigger node is an event-driven entrypoint to a
+ * function — runs the workflow when an event arrives (webhook delivered,
+ * cron tick, named event published, etc.). Phase A models this purely
+ * visually + with sample payload injection during simulated runs.
+ */
+export type TriggerKind = 'manual' | 'webhook' | 'timer' | 'event' | 'http';
+
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+
 export type PortKind = 'control' | 'data';
 
 export interface Port {
@@ -140,6 +152,24 @@ export interface NodePorts {
 // Discriminated union for per-kind data.
 export type NodeData =
   | { kind: 'start' }
+  | {
+      kind: 'trigger';
+      triggerKind: TriggerKind;
+      eventName: string;
+      /** Free-form JSON-Schema-style payload contract (Phase A: text). */
+      payloadSchema: string;
+      /** Sample event payload as JSON literal text. Bound to the
+       *  payload data-out port during simulated runs. */
+      samplePayload: string;
+      /** Webhook-only: generated path. */
+      webhookPath?: string;
+      /** Timer-only: cron-style schedule expression. */
+      cronExpr?: string;
+      /** HTTP-only: REST method. */
+      httpMethod?: HttpMethod;
+      /** HTTP-only: route path. */
+      httpPath?: string;
+    }
   | { kind: 'let'; varName: string; varType: SolType }
   | { kind: 'assign'; varName: string } // assign-to-var (var picked from scope dropdown)
   | { kind: 'print' }

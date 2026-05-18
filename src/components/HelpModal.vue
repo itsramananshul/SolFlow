@@ -48,6 +48,18 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Show this help</span><kbd>?</kbd></div>
           </section>
           <section>
+            <div class="section-title">Triggers</div>
+            <div class="row">
+              <span>Add a Trigger node from the palette (Manual / Webhook / Timer / Event / HTTP). Triggers act as entry points alongside <code>start</code>.</span>
+            </div>
+            <div class="row">
+              <span>Edit a trigger's sample payload, then press <strong>Trigger Event ▷</strong> in the Inspector to simulate an inbound event.</span>
+            </div>
+            <div class="row">
+              <span>The <code>payload</code> data-out port carries the parsed payload to downstream nodes.</span>
+            </div>
+          </section>
+          <section>
             <div class="section-title">Canvas</div>
             <div class="row"><span>Quick-add node at cursor</span><kbd>Space</kbd></div>
             <div class="row"><span>Quick-add (alt)</span><kbd>{{ modKey }}</kbd><kbd>K</kbd></div>

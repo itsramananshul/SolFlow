@@ -39,11 +39,28 @@ const importsCount = computed(() => graph.workflow.imports.length);
       >
         Imports<span v-if="importsCount > 0" class="count">{{ importsCount }}</span>
       </button>
+      <button
+        class="tab"
+        :class="{ active: ui.sidebarTab === 'policies' }"
+        @click="ui.setSidebarTab('policies')"
+      >
+        Policies
+      </button>
     </nav>
     <div class="tab-body">
       <NodePalette v-if="ui.sidebarTab === 'palette'" />
       <TypesPanel v-else-if="ui.sidebarTab === 'types'" />
-      <ImportsPanel v-else />
+      <ImportsPanel v-else-if="ui.sidebarTab === 'imports'" />
+      <div v-else class="policies-placeholder">
+        <div class="policies-card">
+          <div class="policies-title">Policies</div>
+          <p class="policies-body">
+            Per-workflow guardrails — rate limits, retries, idempotency keys,
+            role-based access, audit logging.
+          </p>
+          <div class="policies-tag">Coming soon</div>
+        </div>
+      </div>
     </div>
   </aside>
 </template>
@@ -111,5 +128,41 @@ const importsCount = computed(() => graph.workflow.imports.length);
 .tab-body > * {
   flex: 1;
   min-height: 0;
+}
+.policies-placeholder {
+  padding: 16px;
+  overflow-y: auto;
+}
+.policies-card {
+  border: 1px dashed var(--sf-border-strong);
+  border-radius: var(--sf-radius-md);
+  padding: 14px;
+  background: var(--sf-bg-0);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.policies-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--sf-text-0);
+  letter-spacing: 0.2px;
+}
+.policies-body {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--sf-text-2);
+  line-height: 1.5;
+}
+.policies-tag {
+  align-self: flex-start;
+  font-size: 0.5625rem;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  color: var(--sf-cat-trigger);
+  background: rgba(232, 166, 87, 0.12);
+  border-radius: 2px;
+  font-weight: 600;
 }
 </style>

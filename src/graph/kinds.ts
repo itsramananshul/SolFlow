@@ -5,9 +5,10 @@
  * and the per-kind port builder.
  */
 
-import type { NodeKind, SolType } from './schema';
+import type { NodeData, NodeKind, SolType } from './schema';
 
 export type Category =
+  | 'trigger'
   | 'flow'
   | 'variable'
   | 'operator'
@@ -23,11 +24,101 @@ export interface PaletteEntry {
   category: Category;
   description: string;
   draggable: boolean; // start is not draggable; auto-placed
+  /**
+   * Optional partial data merged with defaultData(kind) when creating a
+   * node from this entry. Used for trigger sub-kinds (manual / webhook /
+   * timer / event / http) so all five share the 'trigger' NodeKind but
+   * land with different initial state + visuals.
+   */
+  initialData?: Partial<NodeData>;
+}
+
+// Tiny helper to coin webhook paths so two new Webhook triggers don't
+// collide. Demo-grade — Phase B replaces with server-issued URLs.
+function newWebhookPath(): string {
+  const slug = Math.random().toString(36).slice(2, 9);
+  return `/webhooks/${slug}`;
 }
 
 export const PALETTE: PaletteEntry[] = [
   // entry — present but not in palette
   { kind: 'start', label: 'Start', category: 'entry', description: 'Function entry', draggable: false },
+
+  // triggers — first-class event-driven entrypoints
+  {
+    kind: 'trigger',
+    label: 'Manual Trigger',
+    category: 'trigger',
+    description: 'Manually invoked entry point',
+    draggable: true,
+    initialData: {
+      kind: 'trigger',
+      triggerKind: 'manual',
+      eventName: 'manual.run',
+      payloadSchema: '{ "type": "object" }',
+      samplePayload: '{}',
+    },
+  },
+  {
+    kind: 'trigger',
+    label: 'Webhook',
+    category: 'trigger',
+    description: 'POST to a generated URL fires this workflow',
+    draggable: true,
+    initialData: {
+      kind: 'trigger',
+      triggerKind: 'webhook',
+      eventName: 'webhook.received',
+      webhookPath: newWebhookPath(),
+      payloadSchema: '{ "type": "object" }',
+      samplePayload: '{\n  "id": "evt_abc123",\n  "body": {}\n}',
+    },
+  },
+  {
+    kind: 'trigger',
+    label: 'Timer',
+    category: 'trigger',
+    description: 'Schedule (cron-style)',
+    draggable: true,
+    initialData: {
+      kind: 'trigger',
+      triggerKind: 'timer',
+      eventName: 'timer.tick',
+      cronExpr: '*/5 * * * *',
+      payloadSchema: '{ "at": "string" }',
+      samplePayload: '{\n  "at": "2026-01-01T00:00:00Z"\n}',
+    },
+  },
+  {
+    kind: 'trigger',
+    label: 'Event',
+    category: 'trigger',
+    description: 'React to a named domain event',
+    draggable: true,
+    initialData: {
+      kind: 'trigger',
+      triggerKind: 'event',
+      eventName: 'invoice.created',
+      payloadSchema: '{ "id": "string", "amount": "number" }',
+      samplePayload: '{\n  "id": "inv_001",\n  "amount": 4250\n}',
+    },
+  },
+  {
+    kind: 'trigger',
+    label: 'HTTP Trigger',
+    category: 'trigger',
+    description: 'REST endpoint',
+    draggable: true,
+    initialData: {
+      kind: 'trigger',
+      triggerKind: 'http',
+      eventName: 'http.request',
+      httpMethod: 'POST',
+      httpPath: '/api/orders',
+      payloadSchema: '{ "body": "object" }',
+      samplePayload: '{\n  "body": {}\n}',
+    },
+  },
 
   // flow
   { kind: 'branch', label: 'Branch', category: 'flow', description: 'if / else', draggable: true },
@@ -63,6 +154,7 @@ export const PALETTE: PaletteEntry[] = [
 
 export function paletteByCategory(): Record<Category, PaletteEntry[]> {
   const map: Record<Category, PaletteEntry[]> = {
+    trigger: [],
     flow: [],
     variable: [],
     operator: [],
@@ -79,6 +171,7 @@ export function paletteByCategory(): Record<Category, PaletteEntry[]> {
 }
 
 export const CATEGORY_LABELS: Record<Category, string> = {
+  trigger: 'Triggers',
   flow: 'Flow',
   variable: 'Variables',
   operator: 'Operators',
@@ -91,6 +184,8 @@ export const CATEGORY_LABELS: Record<Category, string> = {
 
 export function categoryColor(c: Category): string {
   switch (c) {
+    case 'trigger':
+      return 'var(--sf-cat-trigger)';
     case 'flow':
       return 'var(--sf-cat-flow)';
     case 'variable':

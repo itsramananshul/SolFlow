@@ -26,7 +26,7 @@ import {
   categoryColor,
   type PaletteEntry,
 } from '@/graph/kinds';
-import type { NodeKind, SolType } from '@/graph/schema';
+import type { NodeData, NodeKind, SolType } from '@/graph/schema';
 
 export interface SourceContext {
   nodeId: string;
@@ -44,7 +44,12 @@ const props = defineProps<{
   sourceContext?: SourceContext;
 }>();
 const emit = defineEmits<{
-  (e: 'select', kind: NodeKind, ctx?: SourceContext): void;
+  (
+    e: 'select',
+    kind: NodeKind,
+    ctx?: SourceContext,
+    initialData?: Partial<NodeData>,
+  ): void;
   (e: 'close'): void;
 }>();
 
@@ -119,7 +124,7 @@ watch(filtered, () => {
 function pickIndex(i: number) {
   const entry = filtered.value[i];
   if (!entry) return;
-  emit('select', entry.kind, props.sourceContext);
+  emit('select', entry.kind, props.sourceContext, entry.initialData);
   emit('close');
 }
 

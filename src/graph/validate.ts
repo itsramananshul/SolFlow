@@ -31,10 +31,15 @@ export interface Diagnostic {
 export function validateWorkflow(wf: SolWorkflow): Diagnostic[] {
   const diags: Diagnostic[] = [];
 
-  if (!wf.functions.find((f) => f.name === 'start')) {
+  const hasStart = wf.functions.some((f) => f.name === 'start');
+  const hasTrigger = wf.functions.some((f) =>
+    f.nodes.some((n) => n.data.kind === 'trigger'),
+  );
+  if (!hasStart && !hasTrigger) {
     diags.push({
       severity: 'warning',
-      message: 'No `start` function defined — program has no entry point.',
+      message:
+        'No `start` function or trigger node defined — workflow has no entry point.',
       code: 'no-entry',
     });
   }
