@@ -23,6 +23,8 @@ import SolNode from './SolNode.vue';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import QuickAddPalette, { type SourceContext } from './QuickAddPalette.vue';
 import NodeSearchPalette from './NodeSearchPalette.vue';
+import ExecutionControls from './ExecutionControls.vue';
+import ExecutionTimeline from './ExecutionTimeline.vue';
 import { onMounted, onBeforeUnmount } from 'vue';
 
 const graph = useGraphStore();
@@ -832,6 +834,8 @@ onBeforeUnmount(() => {
       @jump="onSearchJump"
       @close="closeSearch"
     />
+    <ExecutionTimeline />
+    <ExecutionControls />
   </div>
 </template>
 

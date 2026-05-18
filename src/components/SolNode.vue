@@ -36,6 +36,26 @@ const category = computed(() => categoryForKind(node.value.data.kind));
 const kindLabel = computed(() => labelForKind(node.value.data));
 const categoryDot = computed(() => categoryColor(category.value));
 const simStatus = computed(() => sim.getNodeStatus(node.value.id));
+/**
+ * Most recent runtime summary for this node, if a trace is loaded.
+ * Surfaces as a pill in the header so the user can scan "what each
+ * node did" without opening the Inspector. Cleared by sim.reset().
+ */
+const simValueSummary = computed<string | undefined>(() =>
+  sim.getValueFor(node.value.id),
+);
+/** Most recent error message for this node (failed nodes only). */
+const simError = computed<string | undefined>(() =>
+  sim.getErrorFor(node.value.id),
+);
+/**
+ * For branch / while / forEach: the control-out port that was taken
+ * on the most recent visit. Used to dim the not-taken control arms
+ * so users see WHY a path was chosen at a glance.
+ */
+const simTakenPath = computed<string | undefined>(() =>
+  sim.getTakenPath(node.value.id),
+);
 
 // Role glyph: a single mono character that hints at what the node DOES at
 // a glance. Branch = directional, loops = iterative, trigger = entry,
@@ -455,8 +475,33 @@ function formatLiteralPreview(t: string, v: string): string {
         <div v-if="tooltipVisible" class="node-tooltip">
           <div class="tip-title">{{ kindLabel }}</div>
           <div class="tip-body">{{ explanation }}</div>
+          <div v-if="simValueSummary" class="tip-runtime">
+            <span class="tip-runtime-label">Last run:</span>
+            <code>{{ simValueSummary }}</code>
+          </div>
+          <div v-if="simError" class="tip-error">
+            <span class="tip-runtime-label">Error:</span>
+            <code>{{ simError }}</code>
+          </div>
         </div>
       </Transition>
+
+      <!--
+        Runtime value pill — visible only while a trace is loaded. Sits
+        under the header so it doesn't push other chrome around. Shows
+        what the node DID on the most recent simulated run (let value,
+        branch decision, printed text, etc.). Tooltip on hover gives
+        the longer detail.
+      -->
+      <div
+        v-if="simValueSummary"
+        class="runtime-pill"
+        :class="{ failed: simStatus === 'failed' }"
+        :title="simError || simValueSummary"
+      >
+        <span class="runtime-glyph">▸</span>
+        <span class="runtime-text">{{ simValueSummary }}</span>
+      </div>
       <div class="quick-actions nodrag">
         <button
           v-if="canDuplicate"
@@ -571,6 +616,10 @@ function formatLiteralPreview(t: string, v: string): string {
         :position="Position.Bottom"
         :style="{ left: `${((i + 0.5) / controlOuts.length) * 100}%` }"
         class="handle control"
+        :class="{
+          'taken-path': simTakenPath === p.id,
+          'not-taken-path': simTakenPath !== undefined && simTakenPath !== p.id,
+        }"
       />
     </div>
     <!--
@@ -584,6 +633,10 @@ function formatLiteralPreview(t: string, v: string): string {
         v-for="(p, i) in controlOuts"
         :key="`coutlbl:${p.id}`"
         class="control-out-label"
+        :class="{
+          'taken-path': simTakenPath === p.id,
+          'not-taken-path': simTakenPath !== undefined && simTakenPath !== p.id,
+        }"
         :style="{ left: `${((i + 0.5) / controlOuts.length) * 100}%` }"
       >
         {{ p.name }}
@@ -964,6 +1017,95 @@ function formatLiteralPreview(t: string, v: string): string {
 .note-body::placeholder {
   color: rgba(245, 200, 90, 0.4);
   font-style: italic;
+}
+
+/* =================================================================
+ *  Runtime value pill — shown when a trace has been recorded
+ * ================================================================= */
+.runtime-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 8px 6px;
+  padding: 3px 8px;
+  background: rgba(0, 204, 136, 0.08);
+  border: 1px solid rgba(0, 204, 136, 0.25);
+  border-radius: var(--sf-radius-sm);
+  font-size: 0.625rem;
+  color: var(--sf-success);
+  font-family: var(--sf-font-mono);
+  max-width: calc(100% - 16px);
+}
+.runtime-pill.failed {
+  background: rgba(255, 77, 79, 0.08);
+  border-color: rgba(255, 77, 79, 0.35);
+  color: var(--sf-error);
+}
+.runtime-glyph {
+  font-size: 0.625rem;
+  flex-shrink: 0;
+}
+.runtime-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.1px;
+}
+
+/* Tooltip extension lines for runtime info. */
+.tip-runtime,
+.tip-error {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--sf-border);
+  font-size: 0.625rem;
+  color: var(--sf-text-2);
+}
+.tip-runtime-label {
+  font-family: var(--sf-font-mono);
+  font-size: 0.5rem;
+  letter-spacing: 0.4px;
+  color: var(--sf-text-3);
+  text-transform: uppercase;
+  margin-right: 5px;
+}
+.tip-runtime code,
+.tip-error code {
+  font-family: var(--sf-font-mono);
+  color: var(--sf-text-0);
+}
+.tip-runtime code {
+  color: var(--sf-success);
+}
+.tip-error {
+  color: var(--sf-error);
+}
+.tip-error code {
+  color: var(--sf-error);
+}
+
+/* =================================================================
+ *  Branch / loop arm dimming
+ *  The control-out handle + footer label for the path that was taken
+ *  on the most recent run is highlighted. Arms that were NOT taken
+ *  fade so users can visually answer "why did it go this way?"
+ *  at a glance. Only relevant when sim.takenPathByNodeId has an
+ *  entry for this node.
+ * ================================================================= */
+.handle.control.taken-path {
+  background: var(--sf-success) !important;
+  box-shadow: 0 0 0 3px rgba(0, 204, 136, 0.18);
+}
+.handle.control.not-taken-path {
+  background: var(--sf-text-3) !important;
+  opacity: 0.45;
+}
+.control-out-label.taken-path {
+  color: var(--sf-success);
+  font-weight: 600;
+}
+.control-out-label.not-taken-path {
+  opacity: 0.4;
 }
 
 /* Hover-help tooltip floating above the node header. Teaches what a

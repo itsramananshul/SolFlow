@@ -247,6 +247,16 @@ function describeCron(cron: string): string | null {
   return map[cron] ?? null;
 }
 
+/** Runtime summary for the currently-selected node, if any. */
+const simValueForSelected = computed<string | undefined>(() => {
+  if (!selectedNode.value) return undefined;
+  return sim.getValueFor(selectedNode.value.id);
+});
+const simErrorForSelected = computed<string | undefined>(() => {
+  if (!selectedNode.value) return undefined;
+  return sim.getErrorFor(selectedNode.value.id);
+});
+
 function exprFor(portId: string): string {
   if (!selectedNode.value) return '';
   return selectedNode.value.expressions?.[portId] ?? '';
@@ -504,6 +514,20 @@ const placeholderFor = (portId: string, kind: string): string => {
       -->
       <section class="section summary-section">
         <p class="summary">{{ nodeSummary }}</p>
+        <!--
+          Runtime banner: when a simulation has run and recorded a
+          value or error for THIS node, show it directly under the
+          static summary. Lets the user inspect "what did this node
+          actually do on the last run?" without leaving the panel.
+        -->
+        <div v-if="simErrorForSelected" class="runtime-banner failed">
+          <span class="runtime-banner-label">Error on last run</span>
+          <code>{{ simErrorForSelected }}</code>
+        </div>
+        <div v-else-if="simValueForSelected" class="runtime-banner">
+          <span class="runtime-banner-label">Last run</span>
+          <code>{{ simValueForSelected }}</code>
+        </div>
       </section>
 
       <!--
@@ -1537,6 +1561,38 @@ const placeholderFor = (portId: string, kind: string): string => {
   font-size: 0.75rem;
   line-height: 1.5;
   color: var(--sf-text-1);
+}
+.runtime-banner {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: rgba(0, 204, 136, 0.08);
+  border: 1px solid rgba(0, 204, 136, 0.25);
+  border-radius: var(--sf-radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.runtime-banner.failed {
+  background: rgba(255, 77, 79, 0.08);
+  border-color: rgba(255, 77, 79, 0.32);
+}
+.runtime-banner-label {
+  font-size: 0.5625rem;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--sf-success);
+  font-weight: 600;
+}
+.runtime-banner.failed .runtime-banner-label {
+  color: var(--sf-error);
+}
+.runtime-banner code {
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+  color: var(--sf-text-0);
+}
+.runtime-banner.failed code {
+  color: var(--sf-error);
 }
 .size-row {
   display: flex;
