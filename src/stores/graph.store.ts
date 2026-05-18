@@ -189,6 +189,29 @@ export const useGraphStore = defineStore('graph', () => {
     touch();
   }
 
+  /**
+   * Duplicate a node. Copies data + ports + inline expressions; gets a
+   * new nanoid + a 30px offset position. Skips the Start node since
+   * there can be only one per function.
+   */
+  function duplicateNode(nodeId: string): GraphNode | undefined {
+    const fn = activeFunction.value;
+    if (!fn) return undefined;
+    const orig = fn.nodes.find((n) => n.id === nodeId);
+    if (!orig) return undefined;
+    if (orig.data.kind === 'start') return undefined;
+    const copy: GraphNode = {
+      id: nanoid(8),
+      data: JSON.parse(JSON.stringify(orig.data)) as NodeData,
+      position: { x: orig.position.x + 30, y: orig.position.y + 30 },
+      ports: JSON.parse(JSON.stringify(orig.ports)),
+      expressions: orig.expressions ? { ...orig.expressions } : undefined,
+    };
+    fn.nodes.push(copy);
+    touch();
+    return copy;
+  }
+
   function updateNodeData(nodeId: string, patch: Partial<NodeData>) {
     const fn = activeFunction.value;
     if (!fn) return;
@@ -530,6 +553,7 @@ export const useGraphStore = defineStore('graph', () => {
     updateNodePosition,
     updateNodeData,
     updateNodeExpression,
+    duplicateNode,
     removeNode,
     addEdge,
     removeEdge,

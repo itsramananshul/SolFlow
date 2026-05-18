@@ -18,6 +18,7 @@ import { useUIStore } from '@/stores/ui.store';
 import { typeCssClass } from '@/graph/schema';
 import type { GraphEdge, NodeKind } from '@/graph/schema';
 import SolNode from './SolNode.vue';
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
@@ -196,6 +197,58 @@ function isValidConnection(c: Connection): boolean {
   if (!srcPort || !tgtPort) return false;
   return srcPort.kind === tgtPort.kind;
 }
+
+// Right-click context menu state.
+const ctxMenu = ref<{ open: boolean; x: number; y: number; nodeId?: string }>({
+  open: false,
+  x: 0,
+  y: 0,
+});
+
+const ctxItems = computed<ContextMenuItem[]>(() => {
+  const id = ctxMenu.value.nodeId;
+  if (!id) return [];
+  const node = graph.activeFunction?.nodes.find((n) => n.id === id);
+  const isStart = node?.data.kind === 'start';
+  return [
+    {
+      label: 'Duplicate',
+      shortcut: '⎘',
+      disabled: isStart,
+      action: () => {
+        const dup = graph.duplicateNode(id);
+        if (dup) ui.selectNode(dup.id);
+      },
+    },
+    {
+      label: 'Delete',
+      shortcut: 'Del',
+      danger: true,
+      disabled: isStart,
+      action: () => {
+        graph.removeNode(id);
+        if (ui.selectedNodeId === id) ui.selectNode(null);
+      },
+    },
+  ];
+});
+
+function onNodeContextMenu(event: { event: MouseEvent | TouchEvent; node: VueFlowNode }) {
+  const me = event.event as MouseEvent;
+  if (typeof me.preventDefault === 'function') me.preventDefault();
+  const x = 'clientX' in me ? me.clientX : 0;
+  const y = 'clientY' in me ? me.clientY : 0;
+  ctxMenu.value = {
+    open: true,
+    x,
+    y,
+    nodeId: event.node.id,
+  };
+}
+
+function closeCtxMenu() {
+  ctxMenu.value = { ...ctxMenu.value, open: false };
+}
 </script>
 
 <template>
@@ -217,7 +270,8 @@ function isValidConnection(c: Connection): boolean {
       @edge-click="onEdgeClick"
       @nodes-delete="onNodesDelete"
       @edges-delete="onEdgesDelete"
-      :connection-line-style="{ stroke: '#5b8def', strokeWidth: 2 }"
+      @node-context-menu="onNodeContextMenu"
+      :connection-line-style="{ stroke: '#3291ff', strokeWidth: 2 }"
     >
       <Background variant="dots" :pattern-color="'rgba(255, 255, 255, 0.06)'" :gap="20" :size="1" />
       <Controls :show-interactive="false" />
@@ -239,6 +293,13 @@ function isValidConnection(c: Connection): boolean {
         or load a sample workflow from the <strong>Samples</strong> menu in the toolbar.
       </div>
     </div>
+    <ContextMenu
+      :open="ctxMenu.open"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :items="ctxItems"
+      @close="closeCtxMenu"
+    />
   </div>
 </template>
 

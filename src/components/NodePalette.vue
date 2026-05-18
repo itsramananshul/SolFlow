@@ -1,46 +1,157 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { paletteByCategory, CATEGORY_LABELS, categoryColor } from '@/graph/kinds';
-import type { Category } from '@/graph/kinds';
+import { computed, ref } from 'vue';
+import { paletteByCategory, CATEGORY_LABELS, categoryColor, PALETTE } from '@/graph/kinds';
+import type { Category, PaletteEntry } from '@/graph/kinds';
 import type { NodeKind } from '@/graph/schema';
 
 const grouped = computed(() => paletteByCategory());
+const order: Category[] = [
+  'flow',
+  'variable',
+  'operator',
+  'literal',
+  'access',
+  'call',
+  'io',
+];
 
-const order: Category[] = ['flow', 'variable', 'operator', 'literal', 'access', 'call', 'io'];
+const query = ref('');
+
+// When user types in the search input, show a flat filtered list.
+const filtered = computed<PaletteEntry[]>(() => {
+  const q = query.value.trim().toLowerCase();
+  if (q === '') return [];
+  return PALETTE.filter(
+    (p) =>
+      p.draggable &&
+      (p.label.toLowerCase().includes(q) ||
+        p.description.toLowerCase().includes(q) ||
+        p.kind.toLowerCase().includes(q)),
+  );
+});
 
 function onDragStart(event: DragEvent, kind: NodeKind) {
   event.dataTransfer?.setData('application/x-solflow-kind', kind);
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
 }
+
+function clearSearch() {
+  query.value = '';
+}
 </script>
 
 <template>
   <div class="palette">
-    <div v-for="cat in order" :key="cat" class="cat">
-      <div class="cat-header">{{ CATEGORY_LABELS[cat] }}</div>
+    <div class="search">
+      <svg viewBox="0 0 16 16" width="11" height="11" class="search-icon" fill="none">
+        <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5" />
+        <path d="M10.5 10.5 L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+      </svg>
+      <input
+        v-model="query"
+        type="search"
+        placeholder="Search nodes…"
+        spellcheck="false"
+        class="search-input"
+      />
+      <button v-if="query" class="search-clear" @click="clearSearch" title="Clear">
+        <svg viewBox="0 0 12 12" width="9" height="9" fill="none">
+          <path d="M3 3 9 9 M9 3 3 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- Filtered flat list when searching -->
+    <div v-if="query.trim()" class="results">
+      <div v-if="filtered.length === 0" class="empty">
+        No nodes match "{{ query }}"
+      </div>
       <div
-        v-for="entry in grouped[cat]"
+        v-for="entry in filtered"
         :key="entry.kind"
         class="palette-item"
         draggable="true"
         @dragstart="onDragStart($event, entry.kind)"
         :title="entry.description"
       >
-        <span class="dot" :style="{ background: categoryColor(cat) }" />
+        <span class="dot" :style="{ background: categoryColor(entry.category) }" />
         <span class="label">{{ entry.label }}</span>
+        <span class="cat-tag">{{ CATEGORY_LABELS[entry.category] }}</span>
       </div>
     </div>
+
+    <!-- Grouped categories when not searching -->
+    <template v-else>
+      <div v-for="cat in order" :key="cat" class="cat">
+        <div class="cat-header">{{ CATEGORY_LABELS[cat] }}</div>
+        <div
+          v-for="entry in grouped[cat]"
+          :key="entry.kind"
+          class="palette-item"
+          draggable="true"
+          @dragstart="onDragStart($event, entry.kind)"
+          :title="entry.description"
+        >
+          <span class="dot" :style="{ background: categoryColor(cat) }" />
+          <span class="label">{{ entry.label }}</span>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
 .palette {
-  padding: 12px 10px;
+  padding: 8px 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   overflow-y: auto;
   font-size: 0.75rem;
+}
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.search-icon {
+  position: absolute;
+  left: 8px;
+  color: var(--sf-text-3);
+  pointer-events: none;
+}
+.search-input {
+  width: 100%;
+  background: var(--sf-bg-0);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+  padding: 6px 26px 6px 24px;
+  font-size: 0.75rem;
+  color: var(--sf-text-0);
+}
+.search-input::-webkit-search-cancel-button {
+  display: none;
+}
+.search-clear {
+  position: absolute;
+  right: 6px;
+  background: transparent;
+  border: none;
+  color: var(--sf-text-3);
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.search-clear:hover {
+  color: var(--sf-text-0);
+  background: var(--sf-bg-3);
+  border-radius: 2px;
+}
+.cat {
+  display: flex;
+  flex-direction: column;
 }
 .cat-header {
   font-size: 0.5625rem;
@@ -79,5 +190,24 @@ function onDragStart(event: DragEvent, kind: NodeKind) {
 }
 .label {
   font-size: 0.75rem;
+}
+.cat-tag {
+  margin-left: auto;
+  font-family: var(--sf-font-mono);
+  font-size: 0.5625rem;
+  color: var(--sf-text-3);
+  padding: 1px 5px;
+  background: var(--sf-bg-2);
+  border-radius: 2px;
+}
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.empty {
+  padding: 12px 6px;
+  color: var(--sf-text-3);
+  font-style: italic;
 }
 </style>
