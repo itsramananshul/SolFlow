@@ -12,13 +12,9 @@
  * that event, and pans the canvas to the relevant node.
  */
 import { computed, ref, watch } from 'vue';
-import { useGraphStore } from '@/stores/graph.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useUIStore } from '@/stores/ui.store';
-import type { StepEvent } from '@/runtime/simulate';
-import type { GraphNode } from '@/graph/schema';
 
-const graph = useGraphStore();
 const sim = useSimulationStore();
 const ui = useUIStore();
 
@@ -33,66 +29,46 @@ interface TimelineRow {
   nodeLabel: string;
 }
 
-function nodeShortLabel(n: GraphNode): string {
-  const d = n.data;
-  switch (d.kind) {
-    case 'start':       return 'start()';
-    case 'trigger':     return `${d.triggerKind} trigger`;
-    case 'let':         return `let ${d.varName}`;
-    case 'assign':      return `${d.varName} =`;
-    case 'print':       return 'print';
-    case 'return':      return 'return';
-    case 'branch':      return 'branch';
-    case 'while':       return 'while';
-    case 'forEach':     return `for ${d.iteratorName}`;
-    case 'binaryOp':    return `op ${d.op}`;
-    case 'unaryOp':     return `op ${d.op}`;
-    case 'varGet':      return d.varName || 'varGet';
-    case 'literal':     return `${d.value}`;
-    case 'arrayLiteral':  return `array[${d.length}]`;
-    case 'structLiteral': return d.structName || 'struct';
-    case 'fieldAccess': return `.${d.fieldName}`;
-    case 'fieldSet':    return `.${d.fieldName} =`;
-    case 'indexRead':   return 'arr[i]';
-    case 'indexSet':    return 'arr[i] =';
-    case 'enumVariant': return `${d.enumName}::${d.variantName}`;
-    case 'call':        return 'call()';
-    case 'note':        return 'note';
-    case 'frame':       return d.title || 'Section';
-  }
-}
-
+/**
+ * Build the timeline rows from the loaded trace. Labels come from the
+ * sim store's labelSnapshot — captured once at play() time — instead
+ * of reaching into the live graph. That way editing a node during
+ * playback doesn't invalidate this computed and re-render the panel.
+ *
+ * Computed dependencies: loadedTrace identity + labelSnapshot identity.
+ * Both are set once per run, so rows is effectively stable for the
+ * lifetime of a single trace.
+ */
 const rows = computed<TimelineRow[]>(() => {
   const trace = sim.loadedTrace;
   if (!trace) return [];
-  const fn = graph.activeFunction;
-  if (!fn) return [];
-  const nodeMap = new Map<string, GraphNode>();
-  for (const n of fn.nodes) nodeMap.set(n.id, n);
+  const labelOf = (id: string): string => sim.getNodeLabel(id) ?? id;
 
   const out: TimelineRow[] = [];
   trace.events.forEach((ev, i) => {
     let row: TimelineRow | null = null;
     switch (ev.type) {
       case 'enter': {
-        const n = nodeMap.get(ev.id);
-        if (!n) return;
-        // Suppress enters for purely transient nodes — start fires
-        // an enter but offers no insight; same for trigger entries.
-        // Other enters become the row header for the value event
-        // that follows.
-        if (n.data.kind === 'start') {
-          row = { index: i, kind: 'enter', summary: 'execution started', nodeId: ev.id, nodeLabel: 'start' };
+        const label = sim.getNodeLabel(ev.id);
+        if (!label) return;
+        // Only surface 'execution started' for the entry node so the
+        // timeline doesn't get noisy with every node-enter.
+        if (label === 'start()' || label.endsWith('trigger')) {
+          row = {
+            index: i,
+            kind: 'enter',
+            summary: 'execution started',
+            nodeId: ev.id,
+            nodeLabel: label,
+          };
         }
         break;
       }
       case 'value': {
-        const n = nodeMap.get(ev.id);
-        if (!n) return;
-        const label = nodeShortLabel(n);
+        const label = labelOf(ev.id);
         row = {
           index: i,
-          kind: n.data.kind === 'return' ? 'return' : 'value',
+          kind: label === 'return' ? 'return' : 'value',
           summary: ev.summary,
           nodeId: ev.id,
           nodeLabel: label,
@@ -100,14 +76,12 @@ const rows = computed<TimelineRow[]>(() => {
         break;
       }
       case 'error': {
-        const n = nodeMap.get(ev.id);
-        if (!n) return;
         row = {
           index: i,
           kind: 'error',
           summary: ev.message,
           nodeId: ev.id,
-          nodeLabel: nodeShortLabel(n),
+          nodeLabel: labelOf(ev.id),
         };
         break;
       }

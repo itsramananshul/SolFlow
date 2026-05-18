@@ -26,6 +26,7 @@ import type {
   StructDecl,
 } from '@/graph/schema';
 import { createNode, rebuildPorts, type WorkflowCtx } from '@/graph/factory';
+import { bindingsInScope, type ScopeBinding } from '@/graph/scope';
 import { emit } from '@/emit/emit';
 import { validateWorkflow, type Diagnostic } from '@/graph/validate';
 
@@ -865,8 +866,52 @@ export const useGraphStore = defineStore('graph', () => {
     }
   }
 
+  /**
+   * Monotonic version counter that ticks on every store mutation. Used
+   * as a cheap reactive cache key — see getScopeBindings below. Vue's
+   * computed system can depend on this single ref instead of doing
+   * deep reactivity sweeps across the whole workflow.
+   */
+  const version = ref(0);
+
   function touch() {
     workflow.value.meta.updatedAt = nowIso();
+    version.value++;
+  }
+
+  // -----------------------------------------------------------
+  // Memoized scope bindings
+  // -----------------------------------------------------------
+  // `bindingsInScope` does a BFS over a function's control edges every
+  // time it's called. Inspector, ExpressionHelper, and BranchCondition-
+  // Builder all call it — on the enterprise sample (47 nodes) that's
+  // ~150 BFS walks per Inspector render when typing in an inline
+  // expression. Most of those return the same answer.
+  //
+  // This shared cache keys by (functionId, nodeId, version) and clears
+  // itself when version moves forward. Consumers wrap calls in a
+  // computed; Vue's tracker sees `version.value` and re-evaluates
+  // exactly when the graph structure changes — but only the FIRST
+  // consumer pays the BFS cost; the rest hit the cache.
+  const _scopeCache = new Map<string, ScopeBinding[]>();
+  let _scopeCacheVersion = -1;
+  function getScopeBindings(nodeId: string): ScopeBinding[] {
+    // Reactive dep so Vue computeds that wrap this call re-run on
+    // every store mutation. Without it the cache would stay warm
+    // forever from the consumer's perspective.
+    void version.value;
+    if (_scopeCacheVersion !== version.value) {
+      _scopeCache.clear();
+      _scopeCacheVersion = version.value;
+    }
+    const fn = activeFunction.value;
+    if (!fn) return [];
+    const key = `${fn.id}::${nodeId}`;
+    const hit = _scopeCache.get(key);
+    if (hit) return hit;
+    const result = bindingsInScope(fn, nodeId);
+    _scopeCache.set(key, result);
+    return result;
   }
 
   // -----------------------------------------------------------
@@ -997,6 +1042,8 @@ export const useGraphStore = defineStore('graph', () => {
     hasClipboard,
     insertBlock,
     snapshotSelection,
+    getScopeBindings,
+    version,
     removeNode,
     addEdge,
     removeEdge,

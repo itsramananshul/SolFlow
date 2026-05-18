@@ -17,6 +17,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 
 import type { StepEvent, Trace } from '@/runtime/simulate';
+import type { GraphNode, NodeData, SolWorkflow } from '@/graph/schema';
 
 const STEP_MS = 180; // pace per event during playback
 
@@ -53,6 +54,53 @@ export const useSimulationStore = defineStore('simulation', () => {
   const loadedTrace = ref<Trace | null>(null);
   const speed = ref(1);
 
+  /**
+   * Snapshot of node labels at the moment a trace started playing.
+   * The execution timeline reads from this instead of the live graph
+   * so it doesn't re-render every time the user types in a node
+   * during playback. Cleared on reset().
+   */
+  const labelSnapshot = ref<Map<string, string>>(new Map());
+
+  function captureLabelSnapshot(workflow: SolWorkflow): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const fn of workflow.functions) {
+      for (const n of fn.nodes) {
+        map.set(n.id, shortLabel(n));
+      }
+    }
+    return map;
+  }
+
+  function shortLabel(n: GraphNode): string {
+    const d: NodeData = n.data;
+    switch (d.kind) {
+      case 'start':         return 'start()';
+      case 'trigger':       return `${d.triggerKind} trigger`;
+      case 'let':           return `let ${d.varName}`;
+      case 'assign':        return `${d.varName} =`;
+      case 'print':         return 'print';
+      case 'return':        return 'return';
+      case 'branch':        return 'branch';
+      case 'while':         return 'while';
+      case 'forEach':       return `for ${d.iteratorName}`;
+      case 'binaryOp':      return `op ${d.op}`;
+      case 'unaryOp':       return `op ${d.op}`;
+      case 'varGet':        return d.varName || 'varGet';
+      case 'literal':       return `${d.value}`;
+      case 'arrayLiteral':  return `array[${d.length}]`;
+      case 'structLiteral': return d.structName || 'struct';
+      case 'fieldAccess':   return `.${d.fieldName}`;
+      case 'fieldSet':      return `.${d.fieldName} =`;
+      case 'indexRead':     return 'arr[i]';
+      case 'indexSet':      return 'arr[i] =';
+      case 'enumVariant':   return `${d.enumName}::${d.variantName}`;
+      case 'call':          return 'call()';
+      case 'note':          return 'note';
+      case 'frame':         return d.title || 'Section';
+    }
+  }
+
   let playTimer: number | undefined;
   let clearTimer: number | undefined;
 
@@ -84,12 +132,16 @@ export const useSimulationStore = defineStore('simulation', () => {
     totalSteps.value = 0;
     stepIndex.value = 0;
     loadedTrace.value = null;
+    labelSnapshot.value = new Map();
   }
 
-  function play(trace: Trace, opts?: { speed?: number }) {
+  function play(trace: Trace, opts?: { speed?: number; workflow?: SolWorkflow }) {
     reset();
     if (trace.events.length === 0) return;
     loadedTrace.value = trace;
+    if (opts?.workflow) {
+      labelSnapshot.value = captureLabelSnapshot(opts.workflow);
+    }
     totalSteps.value = trace.events.length;
     speed.value = opts?.speed ?? 1;
     isPlaying.value = true;
@@ -240,6 +292,10 @@ export const useSimulationStore = defineStore('simulation', () => {
     return errorByNodeId.value.get(id);
   }
 
+  function getNodeLabel(id: string): string | undefined {
+    return labelSnapshot.value.get(id);
+  }
+
   return {
     // state
     runningNodeId,
@@ -270,5 +326,7 @@ export const useSimulationStore = defineStore('simulation', () => {
     getValueFor,
     getTakenPath,
     getErrorFor,
+    getNodeLabel,
+    labelSnapshot,
   };
 });

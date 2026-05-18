@@ -22,7 +22,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
-import { bindingsInScope, type ScopeBinding } from '@/graph/scope';
+import type { ScopeBinding } from '@/graph/scope';
 import { portMeta } from '@/graph/portMeta';
 import type { NodeKind } from '@/graph/schema';
 
@@ -111,11 +111,9 @@ watch(open, (now) => {
 //  Content: variables / payload / operators / literals / examples
 // =============================================================
 
-const fnScope = computed<ScopeBinding[]>(() => {
-  const fn = graph.activeFunction;
-  if (!fn) return [];
-  return bindingsInScope(fn, props.nodeId);
-});
+const fnScope = computed<ScopeBinding[]>(() =>
+  graph.getScopeBindings(props.nodeId),
+);
 
 interface ValueChip {
   insert: string;

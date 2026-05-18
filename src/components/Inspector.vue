@@ -15,7 +15,6 @@ import {
   type SolPrimitive,
   type SolType,
 } from '@/graph/schema';
-import { bindingsInScope } from '@/graph/scope';
 import { recordTrace } from '@/runtime/simulate';
 import { portMeta } from '@/graph/portMeta';
 import type { GraphEdge, GraphNode } from '@/graph/schema';
@@ -104,7 +103,7 @@ function triggerEvent() {
   const trace = recordTrace(graph.workflow, {
     entryTriggerId: selectedNode.value.id,
   });
-  sim.play(trace);
+  sim.play(trace, { workflow: graph.workflow });
 }
 
 const selectedNode = computed(() => {
@@ -135,7 +134,7 @@ function typeFromString(s: string): SolType {
 
 const inScopeVars = computed(() => {
   if (!selectedNode.value || !graph.activeFunction) return [];
-  return bindingsInScope(graph.activeFunction, selectedNode.value.id);
+  return graph.getScopeBindings(selectedNode.value.id);
 });
 
 const structOptions = computed(() => graph.workflow.structs);

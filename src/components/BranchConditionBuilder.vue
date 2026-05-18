@@ -20,7 +20,6 @@ import { computed, ref, watch } from 'vue';
 import ExpressionHelper from './ExpressionHelper.vue';
 import type { NodeKind } from '@/graph/schema';
 import { useGraphStore } from '@/stores/graph.store';
-import { bindingsInScope } from '@/graph/scope';
 
 const props = defineProps<{
   /** Node id (for scope lookup). */
@@ -53,11 +52,7 @@ const COMPARE_OPS: { sym: string; label: string }[] = [
 ];
 
 const graph = useGraphStore();
-const scope = computed(() => {
-  const fn = graph.activeFunction;
-  if (!fn) return [];
-  return bindingsInScope(fn, props.nodeId);
-});
+const scope = computed(() => graph.getScopeBindings(props.nodeId));
 const hasTrigger = computed(() => {
   const fn = graph.activeFunction;
   return !!fn?.nodes.some((n) => n.data.kind === 'trigger');

@@ -25,7 +25,7 @@ function execute() {
     try {
       trace.value = recordTrace(graph.workflow);
       // Kick off canvas playback alongside the modal display.
-      if (trace.value) sim.play(trace.value);
+      if (trace.value) sim.play(trace.value, { workflow: graph.workflow });
     } finally {
       isRunning.value = false;
     }
@@ -33,7 +33,7 @@ function execute() {
 }
 
 function replay() {
-  if (trace.value) sim.play(trace.value);
+  if (trace.value) sim.play(trace.value, { workflow: graph.workflow });
 }
 
 const copyState = ref<'idle' | 'copied'>('idle');
