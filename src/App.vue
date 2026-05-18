@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import Toolbar from '@/components/Toolbar.vue';
@@ -12,6 +12,7 @@ import DiagnosticsDrawer from '@/components/DiagnosticsDrawer.vue';
 import RunModal from '@/components/RunModal.vue';
 import StatusBar from '@/components/StatusBar.vue';
 import HelpModal from '@/components/HelpModal.vue';
+import Splitter from '@/components/Splitter.vue';
 import { useSimulationStore } from '@/stores/simulation.store';
 
 const graph = useGraphStore();
@@ -20,17 +21,97 @@ const sim = useSimulationStore();
 const runOpen = ref(false);
 const helpOpen = ref(false);
 
+// =============================================================
+//  Resizable layout — left sidebar / right panel / inspector split
+// =============================================================
+// Persistence keys; tied to the workspace shell so we never collide
+// with feature-level localStorage entries.
+const LS_LEFT = 'solflow.layout.leftWidth';
+const LS_RIGHT = 'solflow.layout.rightWidth';
+const LS_INSPECTOR_RATIO = 'solflow.layout.inspectorRatio';
+
+const LEFT_MIN = 220;
+const LEFT_MAX = 420;
+const LEFT_DEFAULT = 260;
+
+const RIGHT_MIN = 320;
+const RIGHT_MAX = 700;
+const RIGHT_DEFAULT = 420;
+
+const INS_MIN = 0.2;
+const INS_MAX = 0.85;
+const INS_DEFAULT = 0.55;
+
+function readNum(key: string, fallback: number): number {
+  if (typeof localStorage === 'undefined') return fallback;
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return n;
+}
+
+const leftWidth = ref(readNum(LS_LEFT, LEFT_DEFAULT));
+const rightWidth = ref(readNum(LS_RIGHT, RIGHT_DEFAULT));
+const inspectorRatio = ref(readNum(LS_INSPECTOR_RATIO, INS_DEFAULT));
+
+// Cap right panel against viewport so a previously-persisted huge size
+// doesn't crush the canvas on a small screen. Re-evaluated whenever the
+// browser resizes; reads from window each time so SSR-safe.
+const viewportW = ref(typeof window !== 'undefined' ? window.innerWidth : 1440);
+function onResize() {
+  if (typeof window === 'undefined') return;
+  viewportW.value = window.innerWidth;
+}
+
+const effectiveRightMax = computed(() =>
+  Math.min(RIGHT_MAX, Math.floor(viewportW.value * 0.6)),
+);
+const effectiveLeftMax = computed(() =>
+  Math.min(LEFT_MAX, Math.floor(viewportW.value * 0.32)),
+);
+const clampedLeft = computed(() =>
+  Math.max(LEFT_MIN, Math.min(effectiveLeftMax.value, leftWidth.value)),
+);
+const clampedRight = computed(() =>
+  Math.max(RIGHT_MIN, Math.min(effectiveRightMax.value, rightWidth.value)),
+);
+
+// Right-pane height in CSS px — passed to the inner Splitter so its
+// fractional drag math knows the container size. Refreshed whenever
+// the right pane DOM ref updates.
+const rightPaneRef = ref<HTMLDivElement | null>(null);
+const rightPaneHeight = ref(0);
+function measureRightPane() {
+  if (!rightPaneRef.value) return;
+  rightPaneHeight.value = rightPaneRef.value.getBoundingClientRect().height;
+}
+
+watch(leftWidth, (n) => localStorage.setItem(LS_LEFT, String(Math.round(n))));
+watch(rightWidth, (n) => localStorage.setItem(LS_RIGHT, String(Math.round(n))));
+watch(inspectorRatio, (n) =>
+  localStorage.setItem(LS_INSPECTOR_RATIO, n.toFixed(3)),
+);
+
 onMounted(() => {
   graph.bootstrap();
   window.addEventListener('keydown', onKey);
+  window.addEventListener('resize', onResize);
+  // Initial measure after the layout has settled.
+  requestAnimationFrame(measureRightPane);
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey);
+  window.removeEventListener('resize', onResize);
+});
+
+// Re-measure the right pane when its width changes (splitter drag).
+watch(clampedRight, () => {
+  requestAnimationFrame(measureRightPane);
 });
 
 function onKey(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
-  // Cmd/Ctrl+Z → undo / Cmd+Shift+Z (or Ctrl+Y) → redo
   if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
     e.preventDefault();
     graph.undo();
@@ -41,25 +122,21 @@ function onKey(e: KeyboardEvent) {
     graph.redo();
     return;
   }
-  // Cmd/Ctrl+S → download workflow JSON
   if (mod && e.key.toLowerCase() === 's') {
     e.preventDefault();
     downloadGraph();
     return;
   }
-  // Cmd/Ctrl+Enter → run
   if (mod && e.key === 'Enter') {
     e.preventDefault();
     runOpen.value = true;
     return;
   }
-  // Cmd/Ctrl+E → export .sol
   if (mod && e.key.toLowerCase() === 'e') {
     e.preventDefault();
     downloadSol();
     return;
   }
-  // ? → help (with no modifier; skip if user is in an input)
   if (e.key === '?' && !mod) {
     const t = e.target as HTMLElement;
     if (
@@ -72,7 +149,6 @@ function onKey(e: KeyboardEvent) {
       return;
     }
   }
-  // Esc → cancel sim → close modal → close drawer → deselect
   if (e.key === 'Escape') {
     if (sim.isPlaying) {
       sim.cancel();
@@ -124,15 +200,56 @@ function downloadSol() {
       @open-help="helpOpen = true"
     />
     <FunctionTabs />
-    <div class="workspace">
+    <div
+      class="workspace"
+      :style="{
+        gridTemplateColumns: `${clampedLeft}px auto 1fr auto ${clampedRight}px`,
+      }"
+    >
       <Sidebar />
+      <Splitter
+        orientation="vertical"
+        :size="leftWidth"
+        :min="LEFT_MIN"
+        :max="effectiveLeftMax"
+        :default-size="LEFT_DEFAULT"
+        @update:size="(v) => (leftWidth = v)"
+      />
       <div class="canvas-region">
         <Canvas />
         <DiagnosticsDrawer v-if="ui.drawerOpen" />
       </div>
-      <div class="right-pane">
-        <Inspector />
-        <SourcePreview />
+      <Splitter
+        orientation="vertical"
+        :size="rightWidth"
+        :min="RIGHT_MIN"
+        :max="effectiveRightMax"
+        :default-size="RIGHT_DEFAULT"
+        @update:size="(v) => (rightWidth = v)"
+      />
+      <div class="right-pane" ref="rightPaneRef">
+        <div
+          class="inspector-slot"
+          :style="{ flexBasis: `${inspectorRatio * 100}%` }"
+        >
+          <Inspector />
+        </div>
+        <Splitter
+          orientation="horizontal"
+          :size="inspectorRatio"
+          :min="INS_MIN"
+          :max="INS_MAX"
+          :default-size="INS_DEFAULT"
+          :fraction="true"
+          :container-px="rightPaneHeight"
+          @update:size="(v) => (inspectorRatio = v)"
+        />
+        <div
+          class="source-slot"
+          :style="{ flexBasis: `${(1 - inspectorRatio) * 100}%` }"
+        >
+          <SourcePreview />
+        </div>
       </div>
     </div>
     <StatusBar />
@@ -151,14 +268,10 @@ function downloadSol() {
 }
 .workspace {
   display: grid;
-  grid-template-columns: minmax(220px, 16vw) 1fr minmax(360px, 28vw);
+  /* Columns: sidebar | splitter | canvas | splitter | right-pane.
+     Sized inline so the px tracks come straight from reactive refs. */
   flex: 1;
   min-height: 0;
-}
-@media (min-width: 2200px) {
-  .workspace {
-    grid-template-columns: 320px 1fr 520px;
-  }
 }
 .canvas-region {
   position: relative;
@@ -172,5 +285,25 @@ function downloadSol() {
   border-left: 1px solid var(--sf-border);
   background: var(--sf-bg-1);
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.inspector-slot,
+.source-slot {
+  flex-grow: 0;
+  flex-shrink: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+</style>
+
+<style>
+/* Global helper applied to <body> during a splitter drag so text
+   highlighting doesn't follow the cursor across the page. */
+body.sf-splitter-drag {
+  user-select: none;
+  -webkit-user-select: none;
 }
 </style>
