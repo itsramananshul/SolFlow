@@ -20,8 +20,9 @@ import {
   specToInsertSnapshot,
   specToWorkflow,
 } from '@/sol-man/applyGraph';
-import type { GeneratedGraphSpec } from '@/sol-man/types';
+import type { GeneratedGraphSpec, ProviderSummary } from '@/sol-man/types';
 import { useGraphStore } from '@/stores/graph.store';
+import { useSolManConfigStore } from '@/stores/sol-man-config.store';
 
 export type SolManStatus = 'idle' | 'generating' | 'preview' | 'error';
 
@@ -30,8 +31,10 @@ export const useSolManStore = defineStore('solMan', () => {
   const status = ref<SolManStatus>('idle');
   const errorMessage = ref<string | null>(null);
   const configMissing = ref(false);
+  const availableProviders = ref<ProviderSummary[]>([]);
   const spec = ref<GeneratedGraphSpec | null>(null);
   const lastModel = ref<string | null>(null);
+  const lastProvider = ref<{ id: string; name: string } | null>(null);
   const translationWarnings = ref<string[]>([]);
 
   // Recent prompts for quick re-use. Held in memory only — localStorage
@@ -47,9 +50,11 @@ export const useSolManStore = defineStore('solMan', () => {
     status.value = 'idle';
     errorMessage.value = null;
     configMissing.value = false;
+    availableProviders.value = [];
     spec.value = null;
     translationWarnings.value = [];
     lastModel.value = null;
+    lastProvider.value = null;
   }
 
   function clearPrompt() {
@@ -71,19 +76,27 @@ export const useSolManStore = defineStore('solMan', () => {
     status.value = 'generating';
     errorMessage.value = null;
     configMissing.value = false;
+    availableProviders.value = [];
     spec.value = null;
     translationWarnings.value = [];
 
-    const resp = await callSolMan(text);
+    // BYO-key: forward the user's locally-stored provider config so
+    // the server uses it instead of any deployer env vars. When the
+    // user has no local config saved, this is null and the server
+    // falls back to env vars.
+    const cfg = useSolManConfigStore().toRequestConfig();
+    const resp = await callSolMan(text, cfg);
     if (!resp.ok) {
       errorMessage.value = resp.error;
       configMissing.value = !!resp.configMissing;
+      availableProviders.value = resp.availableProviders ?? [];
       status.value = 'error';
       return status.value;
     }
     rememberPrompt(text);
     spec.value = resp.spec;
     lastModel.value = resp.model;
+    lastProvider.value = resp.provider ?? null;
     status.value = 'preview';
     return status.value;
   }
@@ -137,8 +150,10 @@ export const useSolManStore = defineStore('solMan', () => {
     status,
     errorMessage,
     configMissing,
+    availableProviders,
     spec,
     lastModel,
+    lastProvider,
     translationWarnings,
     history,
     // derived

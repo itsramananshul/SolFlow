@@ -16,11 +16,13 @@ import Splitter from '@/components/Splitter.vue';
 import SolManModal from '@/components/SolManModal.vue';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useBlocksStore } from '@/stores/blocks.store';
+import { useSolManConfigStore } from '@/stores/sol-man-config.store';
 
 const graph = useGraphStore();
 const ui = useUIStore();
 const sim = useSimulationStore();
 const blocks = useBlocksStore();
+const solManConfig = useSolManConfigStore();
 const runOpen = ref(false);
 const helpOpen = ref(false);
 const solManOpen = ref(false);
@@ -100,6 +102,7 @@ watch(inspectorRatio, (n) =>
 onMounted(() => {
   graph.bootstrap();
   blocks.bootstrap();
+  solManConfig.bootstrap();
   window.addEventListener('keydown', onKey);
   window.addEventListener('resize', onResize);
   // Initial measure after the layout has settled.

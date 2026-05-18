@@ -6,15 +6,22 @@
 import type {
   GenerateRequestBody,
   GenerateResponseBody,
+  InlineProviderConfig,
 } from './types';
 
-export async function callSolMan(prompt: string): Promise<GenerateResponseBody> {
+export async function callSolMan(
+  prompt: string,
+  config?: InlineProviderConfig | null,
+): Promise<GenerateResponseBody> {
+  const request: GenerateRequestBody = config
+    ? { prompt, config }
+    : { prompt };
   let resp: Response;
   try {
     resp = await fetch('/api/sol-man/generate', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt } satisfies GenerateRequestBody),
+      body: JSON.stringify(request),
     });
   } catch (e) {
     return {
@@ -22,21 +29,20 @@ export async function callSolMan(prompt: string): Promise<GenerateResponseBody> 
       error: `Network error reaching Sol Man: ${(e as Error).message}. Are you running 'vercel dev'? Vite alone doesn't serve /api routes.`,
     };
   }
-  let body: unknown;
+  let parsed: unknown;
   try {
-    body = await resp.json();
+    parsed = await resp.json();
   } catch {
     return {
       ok: false,
       error: `Sol Man returned a non-JSON response (HTTP ${resp.status})`,
     };
   }
-  // Trust the server validation; if the shape is off, surface as error.
-  if (typeof body !== 'object' || body === null) {
+  if (typeof parsed !== 'object' || parsed === null) {
     return {
       ok: false,
       error: 'Sol Man returned a malformed response',
     };
   }
-  return body as GenerateResponseBody;
+  return parsed as GenerateResponseBody;
 }

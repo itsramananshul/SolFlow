@@ -123,9 +123,40 @@ export interface GeneratedGraphSpec {
 //  API contract
 // =============================================================
 
+/**
+ * Optional per-request provider config. When present, OVERRIDES any
+ * server-side env-var configuration. This is the BYO-key path —
+ * the user supplies their own provider/key in the SolFlow UI and we
+ * proxy it to the LLM on each request without persisting it.
+ *
+ * Falls back to env vars when this field is absent or incomplete,
+ * so self-hosted deployments with a shared key still work.
+ */
+export interface InlineProviderConfig {
+  providerId: string;
+  apiKey: string;
+  model?: string;
+  baseUrl?: string;
+}
+
 export interface GenerateRequestBody {
   /** Free-form prompt from the user. */
   prompt: string;
+  /** Optional BYO-key config; takes priority over server env vars. */
+  config?: InlineProviderConfig;
+}
+
+/**
+ * Lightweight summary of one provider — shipped to the client when
+ * configMissing is true so the modal can render a structured "set
+ * one of these keys" panel.
+ */
+export interface ProviderSummary {
+  id: string;
+  name: string;
+  envKey: string;
+  envBase?: string;
+  defaultModel: string;
 }
 
 export type GenerateResponseBody =
@@ -133,6 +164,7 @@ export type GenerateResponseBody =
       ok: true;
       spec: GeneratedGraphSpec;
       model: string;
+      provider?: { id: string; name: string };
       usage?: {
         inputTokens: number;
         outputTokens: number;
@@ -144,4 +176,7 @@ export type GenerateResponseBody =
       /** True when the failure is configuration (missing key, etc.) so
        *  the client can show a "set up your provider" hint. */
       configMissing?: boolean;
+      /** When configMissing, the full list of providers SolFlow knows
+       *  about. The modal renders this as a checklist. */
+      availableProviders?: ProviderSummary[];
     };

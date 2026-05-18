@@ -1,20 +1,35 @@
 /**
  * POST /api/sol-man/generate
  *
- * Server-side LLM call. Takes a user prompt, returns a validated
- * GeneratedGraphSpec the client can render.
- *
- * Provider: Anthropic Claude (REST API, no SDK dependency). Env vars:
- *   ANTHROPIC_API_KEY  — required
- *   SOL_MAN_MODEL      — optional, defaults to claude-sonnet-4-6
+ * Provider-agnostic LLM call. Resolves which provider to use from the
+ * environment (see _providers.ts) and invokes its native API. Returns
+ * a validated GeneratedGraphSpec the client renders into a real
+ * workflow graph.
  *
  * Honesty contract:
- *   - If the API key is missing, returns 503 with configMissing:true.
- *     The client surfaces this verbatim — no fallback templates, no
- *     fake responses, no demo mode.
- *   - If the LLM returns invalid JSON or fails schema validation,
- *     we return the error message so the user knows what happened.
- *   - All responses are GenerateResponseBody-shaped.
+ *   - No provider configured → 503 { configMissing: true, availableProviders }
+ *   - Malformed LLM output → 502 with the specific parse/validation error
+ *   - Upstream API error → 502 with the provider's own message
+ *   - No fake responses, no fallback templates, no demo mode
+ *
+ * Configuration via environment variables (set in Vercel project env
+ * or .env.local for `vercel dev`):
+ *
+ *   ANTHROPIC_API_KEY   — Anthropic Claude       (default: claude-sonnet-4-6)
+ *   OPENAI_API_KEY      — OpenAI                  (default: gpt-4o)
+ *   GEMINI_API_KEY      — Google Gemini           (default: gemini-2.0-flash)
+ *   GROK_API_KEY        — xAI Grok                (default: grok-3)
+ *   SOL_MAN_API_KEY     ─┐
+ *   SOL_MAN_API_BASE    ─┴─ generic OpenAI-compatible (OpenRouter, etc.)
+ *                          requires SOL_MAN_PROVIDER=openai-compatible
+ *                          and SOL_MAN_MODEL
+ *
+ *   SOL_MAN_PROVIDER    — optional explicit selector
+ *                          (anthropic|openai|gemini|grok|openai-compatible)
+ *   SOL_MAN_MODEL       — optional override of the provider's default
+ *
+ * Set any ONE of the provider API keys and Sol Man works. The first
+ * key found in the order above wins (auto-detection).
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -24,19 +39,7 @@ import type {
 } from '../../src/sol-man/types';
 import { SYSTEM_PROMPT } from './_prompt';
 import { SpecValidationError, validateSpec } from './_validate';
-
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
-const ANTHROPIC_VERSION = '2023-06-01';
-
-interface AnthropicTextBlock {
-  type: 'text';
-  text: string;
-}
-interface AnthropicResponse {
-  content?: AnthropicTextBlock[];
-  usage?: { input_tokens?: number; output_tokens?: number };
-  error?: { type?: string; message?: string };
-}
+import { providerSummaries, resolveProvider } from './_providers';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -61,85 +64,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  // Pull optional inline (BYO-key) config from the request body so the
+  // user's browser-stored provider settings take precedence over any
+  // server env vars. Never echo the key back; never log it.
+  const inline = body?.config;
+
+  const resolved = resolveProvider(inline ?? null);
+  if (!resolved) {
     return send(res, 503, {
       ok: false,
       error:
-        'Sol Man is not configured on this deployment. Set ANTHROPIC_API_KEY to enable workflow generation.',
+        'No LLM provider is configured. Open Sol Man settings (gear icon) and enter an API key from any supported provider — or set one of the provider env vars on this deployment.',
       configMissing: true,
+      availableProviders: providerSummaries(),
+    });
+  }
+  if (!resolved.model) {
+    return send(res, 400, {
+      ok: false,
+      error: `${resolved.provider.name} needs a model name. Open Sol Man settings and set a Model value (or override the default via SOL_MAN_MODEL on the server).`,
     });
   }
 
-  const model = process.env.SOL_MAN_MODEL || DEFAULT_MODEL;
-
-  // Anthropic Messages API — straight REST, no SDK. Sized 60s in
-  // vercel.json's `functions` config; matches the longest reasonable
-  // generation latency.
-  let llmResp: Response;
+  let llmResult;
   try {
-    llmResp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 4096,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: prompt }],
-      }),
+    llmResult = await resolved.provider.call({
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt: prompt,
+      apiKey: resolved.apiKey,
+      model: resolved.model,
+      baseUrl: resolved.baseUrl,
     });
   } catch (e) {
     return send(res, 502, {
       ok: false,
-      error: `Failed to reach the LLM provider: ${(e as Error).message}`,
+      error: `LLM provider (${resolved.provider.name}) failed: ${(e as Error).message}`,
     });
   }
 
-  if (!llmResp.ok) {
-    const text = await safeText(llmResp);
-    return send(res, llmResp.status, {
-      ok: false,
-      error: `LLM provider returned ${llmResp.status}: ${text || llmResp.statusText}`,
-    });
-  }
-
-  let parsedResponse: AnthropicResponse;
-  try {
-    parsedResponse = (await llmResp.json()) as AnthropicResponse;
-  } catch {
+  const text = llmResult.text;
+  if (!text || text.length === 0) {
     return send(res, 502, {
       ok: false,
-      error: 'LLM provider returned an unparseable response',
+      error: `${resolved.provider.name} returned an empty response`,
     });
   }
 
-  if (parsedResponse.error) {
-    return send(res, 502, {
-      ok: false,
-      error: `LLM provider error: ${parsedResponse.error.message ?? parsedResponse.error.type ?? 'unknown'}`,
-    });
-  }
-
-  const text =
-    parsedResponse.content
-      ?.filter((c): c is AnthropicTextBlock => c.type === 'text')
-      .map((c) => c.text)
-      .join('')
-      .trim() ?? '';
-
-  if (text.length === 0) {
-    return send(res, 502, {
-      ok: false,
-      error: 'LLM returned an empty response',
-    });
-  }
-
-  // Defensive: some models still wrap output in ```json fences even
-  // when told not to. Strip if present so the parser doesn't choke.
+  // Some models still wrap JSON in ```json fences despite the prompt
+  // saying not to. Strip if present so the parser doesn't choke.
   const stripped = stripCodeFences(text);
 
   let raw: unknown;
@@ -148,7 +120,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (e) {
     return send(res, 502, {
       ok: false,
-      error: `LLM returned non-JSON output: ${(e as Error).message}. Raw start: ${stripped.slice(0, 200)}`,
+      error: `${resolved.provider.name} returned non-JSON output: ${(e as Error).message}. Raw start: ${stripped.slice(0, 200)}`,
     });
   }
 
@@ -159,7 +131,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (e instanceof SpecValidationError) {
       return send(res, 502, {
         ok: false,
-        error: `LLM output failed validation: ${e.message}`,
+        error: `${resolved.provider.name} output failed validation: ${e.message}`,
       });
     }
     return send(res, 500, {
@@ -171,13 +143,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   return send(res, 200, {
     ok: true,
     spec,
-    model,
-    usage: parsedResponse.usage
-      ? {
-          inputTokens: parsedResponse.usage.input_tokens ?? 0,
-          outputTokens: parsedResponse.usage.output_tokens ?? 0,
-        }
-      : undefined,
+    model: resolved.model,
+    provider: { id: resolved.provider.id, name: resolved.provider.name },
+    usage: llmResult.usage,
   });
 }
 
@@ -187,14 +155,6 @@ function send(
   body: GenerateResponseBody,
 ): void {
   res.status(status).json(body);
-}
-
-async function safeText(r: Response): Promise<string> {
-  try {
-    return await r.text();
-  } catch {
-    return '';
-  }
 }
 
 function stripCodeFences(text: string): string {

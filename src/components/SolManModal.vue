@@ -23,10 +23,40 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useSolManStore } from '@/stores/sol-man.store';
+import { useSolManConfigStore } from '@/stores/sol-man-config.store';
 import { useVueFlow } from '@vue-flow/core';
 
 const sm = useSolManStore();
+const cfg = useSolManConfigStore();
 const { getViewport, screenToFlowCoordinate } = useVueFlow();
+
+// Screen modes inside the modal: 'generate' is the prompt + preview
+// flow we already had; 'settings' is the new BYO-key configuration
+// panel.
+type Screen = 'generate' | 'settings';
+const screen = ref<Screen>('generate');
+
+// On open, route to settings automatically when nothing is configured
+// yet — both client (browser config) and server (env vars) absent.
+// The server tells us via configMissing on first generate attempt;
+// here on initial open we only know the CLIENT state.
+function ensureScreenOnOpen() {
+  if (!cfg.isConfigured && screen.value === 'generate') {
+    // Stay on generate; first generate attempt will route to settings
+    // if the server has no fallback env either. This avoids forcing
+    // the panel on every open when env vars are providing a shared
+    // key.
+  }
+}
+
+// When the server returns configMissing, jump to settings so the user
+// can fix it without hunting for the gear icon.
+watch(
+  () => sm.configMissing,
+  (missing) => {
+    if (missing) screen.value = 'settings';
+  },
+);
 
 defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -95,6 +125,78 @@ function onCancelPreview() {
   sm.spec = null;
 }
 
+// =============================================================
+//  Settings screen state
+// =============================================================
+// Local form state; copied from the config store on open, written
+// back on save so a half-edited field doesn't leak into the next
+// generate attempt.
+
+const PROVIDER_OPTIONS = [
+  { id: 'anthropic', name: 'Anthropic Claude',          envKey: 'ANTHROPIC_API_KEY',  defaultModel: 'claude-sonnet-4-6',                        needsBase: false, note: '' },
+  { id: 'openai',    name: 'OpenAI',                    envKey: 'OPENAI_API_KEY',     defaultModel: 'gpt-4o',                                    needsBase: false, note: '' },
+  { id: 'gemini',    name: 'Google Gemini',             envKey: 'GEMINI_API_KEY',     defaultModel: 'gemini-2.0-flash',                          needsBase: false, note: '' },
+  { id: 'grok',      name: 'xAI Grok',                  envKey: 'GROK_API_KEY',       defaultModel: 'grok-3',                                    needsBase: false, note: '' },
+  { id: 'openrouter', name: 'OpenRouter',               envKey: 'OPENROUTER_API_KEY', defaultModel: 'meta-llama/llama-3.3-70b-instruct:free',    needsBase: false, note: 'Aggregator with many free models. Default is Llama 3.3 70B (free).' },
+  { id: 'openai-compatible', name: 'OpenAI-compatible (custom)', envKey: 'SOL_MAN_API_KEY', defaultModel: '', needsBase: true, note: 'For local Ollama, Together, vLLM, or any OpenAI-protocol endpoint.' },
+];
+
+const formProvider = ref('');
+const formApiKey = ref('');
+const formModel = ref('');
+const formBaseUrl = ref('');
+const showKey = ref(false);
+const saveFlash = ref<'idle' | 'saved'>('idle');
+
+function syncFormFromStore() {
+  formProvider.value = cfg.providerId || 'anthropic';
+  formApiKey.value = cfg.apiKey;
+  formModel.value = cfg.model;
+  formBaseUrl.value = cfg.baseUrl;
+}
+
+watch(screen, (s) => {
+  if (s === 'settings') {
+    syncFormFromStore();
+    showKey.value = false;
+  }
+});
+
+const formProviderInfo = computed(() =>
+  PROVIDER_OPTIONS.find((p) => p.id === formProvider.value) ?? PROVIDER_OPTIONS[0],
+);
+
+function onSaveConfig() {
+  cfg.providerId = formProvider.value;
+  cfg.apiKey = formApiKey.value.trim();
+  cfg.model = formModel.value.trim();
+  cfg.baseUrl = formBaseUrl.value.trim();
+  cfg.save();
+  saveFlash.value = 'saved';
+  setTimeout(() => (saveFlash.value = 'idle'), 1200);
+  // Reset error/config state so the next generate attempts cleanly.
+  sm.errorMessage = null;
+  sm.configMissing = false;
+  // Hop back to generate so the user can immediately try their setup.
+  screen.value = 'generate';
+}
+
+function onClearConfig() {
+  if (!window.confirm('Forget your saved provider + API key on this browser?')) return;
+  cfg.clear();
+  syncFormFromStore();
+}
+
+const formIsComplete = computed<boolean>(() => {
+  if (!formProvider.value) return false;
+  if (!formApiKey.value.trim()) return false;
+  if (formProviderInfo.value.needsBase) {
+    if (!formBaseUrl.value.trim()) return false;
+    if (!formModel.value.trim()) return false; // custom requires explicit model
+  }
+  return true;
+});
+
 const nodeCount = computed(() => sm.spec?.nodes.length ?? 0);
 const frameCount = computed(() => sm.spec?.frames?.length ?? 0);
 const noteCount = computed(() => sm.spec?.notes?.length ?? 0);
@@ -131,13 +233,16 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault();
     onClose();
   } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-    if (sm.status === 'idle' || sm.status === 'error') {
+    if (screen.value === 'generate' && (sm.status === 'idle' || sm.status === 'error')) {
       e.preventDefault();
       void onGenerate();
     }
   }
 }
-onMounted(() => document.addEventListener('keydown', onKey));
+onMounted(() => {
+  document.addEventListener('keydown', onKey);
+  ensureScreenOnOpen();
+});
 onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 
 // Autofocus the textarea when the modal opens
@@ -162,17 +267,157 @@ function onBackdrop(e: MouseEvent) {
         <header class="modal-header">
           <div class="title-block">
             <span class="title">Sol Man ✨</span>
-            <span class="sub">describe a workflow; get an editable graph</span>
+            <span class="sub">
+              <template v-if="screen === 'settings'">configure your AI provider</template>
+              <template v-else>describe a workflow; get an editable graph</template>
+            </span>
           </div>
-          <button class="ghost" :aria-label="'Close Sol Man'" @click="onClose">
-            <svg viewBox="0 0 12 12" width="11" height="11" fill="none" aria-hidden="true">
-              <path d="M3 3 9 9 M9 3 3 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            </svg>
-          </button>
+          <div class="header-actions">
+            <!-- Provider chip when configured — click to manage. Reads
+                 "Claude · sk-…abcd" or "GPT · sk-…abcd" so the user
+                 can see at a glance what's plugged in. -->
+            <button
+              v-if="screen === 'generate' && cfg.isConfigured"
+              class="provider-chip"
+              :title="`Using ${PROVIDER_OPTIONS.find((p) => p.id === cfg.providerId)?.name ?? cfg.providerId}. Click to change.`"
+              :aria-label="'Manage Sol Man provider settings'"
+              @click="screen = 'settings'"
+            >
+              <span class="chip-dot" />
+              <span class="chip-name">
+                {{ PROVIDER_OPTIONS.find((p) => p.id === cfg.providerId)?.name ?? cfg.providerId }}
+              </span>
+              <span class="chip-key">{{ cfg.maskedKey() }}</span>
+            </button>
+            <button
+              v-if="screen === 'generate'"
+              class="icon-btn"
+              :aria-label="'Open Sol Man settings'"
+              title="Provider settings"
+              @click="screen = 'settings'"
+            >
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+                <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.3" />
+                <path d="M8 1.5 V3.5 M8 12.5 V14.5 M1.5 8 H3.5 M12.5 8 H14.5 M3.5 3.5 L4.9 4.9 M11.1 11.1 L12.5 12.5 M3.5 12.5 L4.9 11.1 M11.1 4.9 L12.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button
+              v-if="screen === 'settings'"
+              class="icon-btn"
+              :aria-label="'Back to prompt'"
+              title="Back"
+              @click="screen = 'generate'"
+            >
+              <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+                <path d="M10 3 L5 8 L10 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+            <button class="icon-btn" :aria-label="'Close Sol Man'" @click="onClose">
+              <svg viewBox="0 0 12 12" width="11" height="11" fill="none" aria-hidden="true">
+                <path d="M3 3 9 9 M9 3 3 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
         </header>
 
+        <!-- SETTINGS — BYO-key configuration -->
+        <div v-if="screen === 'settings'" class="body settings-body">
+          <div class="settings-blurb">
+            Sol Man uses your own API key. It's stored only in this browser's local
+            storage; SolFlow proxies it to your chosen provider on each request and
+            <strong>never logs or persists it server-side</strong>. Change providers
+            or rotate keys any time.
+          </div>
+
+          <label class="field">
+            <span class="field-label">Provider</span>
+            <select v-model="formProvider">
+              <option v-for="p in PROVIDER_OPTIONS" :key="p.id" :value="p.id">
+                {{ p.name }}
+              </option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="field-label">
+              API key
+              <button
+                type="button"
+                class="link-btn"
+                @click="showKey = !showKey"
+              >{{ showKey ? 'Hide' : 'Show' }}</button>
+            </span>
+            <input
+              v-model="formApiKey"
+              :type="showKey ? 'text' : 'password'"
+              autocomplete="off"
+              spellcheck="false"
+              :placeholder="`Paste your ${formProviderInfo.name} API key`"
+            />
+            <span class="field-hint">
+              Stored in this browser only. Cleared with "Forget key" or by
+              clearing site data.
+            </span>
+          </label>
+
+          <label class="field">
+            <span class="field-label">
+              Model
+              <span class="dim">(optional)</span>
+            </span>
+            <input
+              v-model="formModel"
+              type="text"
+              spellcheck="false"
+              :placeholder="
+                formProviderInfo.defaultModel
+                  ? `Default: ${formProviderInfo.defaultModel}`
+                  : 'Required — e.g. anthropic/claude-3.5-sonnet for OpenRouter'
+              "
+            />
+          </label>
+
+          <label v-if="formProviderInfo.needsBase" class="field">
+            <span class="field-label">Base URL</span>
+            <input
+              v-model="formBaseUrl"
+              type="text"
+              spellcheck="false"
+              placeholder="https://openrouter.ai/api/v1 — or your Ollama / Together / custom endpoint"
+            />
+            <span class="field-hint">
+              Must speak the OpenAI Chat Completions protocol
+              (POST <code>/chat/completions</code>).
+            </span>
+          </label>
+
+          <div v-if="cfg.savedAt" class="saved-stamp">
+            Last saved {{ new Date(cfg.savedAt).toLocaleString() }}
+          </div>
+
+          <div class="settings-actions">
+            <button
+              class="primary"
+              :disabled="!formIsComplete"
+              @click="onSaveConfig"
+            >
+              <template v-if="saveFlash === 'saved'">✓ Saved</template>
+              <template v-else>Save &amp; use</template>
+            </button>
+            <button
+              v-if="cfg.isConfigured"
+              class="ghost"
+              @click="onClearConfig"
+            >Forget key</button>
+            <button class="ghost" @click="screen = 'generate'">Cancel</button>
+          </div>
+        </div>
+
         <!-- IDLE / ERROR : prompt screen -->
-        <div v-if="sm.status === 'idle' || sm.status === 'error'" class="body">
+        <div
+          v-if="screen === 'generate' && (sm.status === 'idle' || sm.status === 'error')"
+          class="body"
+        >
           <textarea
             ref="promptRef"
             v-model="sm.prompt"
@@ -199,11 +444,41 @@ function onBackdrop(e: MouseEvent) {
                 <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3" />
                 <path d="M8 5 V8.5 M8 10.5 V11.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
               </svg>
-              <span>{{ sm.configMissing ? 'Sol Man not configured' : 'Generation failed' }}</span>
+              <span>{{ sm.configMissing ? 'Sol Man has no provider configured' : 'Generation failed' }}</span>
             </div>
             <div class="error-body">{{ sm.errorMessage }}</div>
-            <div v-if="sm.configMissing" class="error-hint">
-              Set <code>ANTHROPIC_API_KEY</code> in your Vercel project's environment variables (or in <code>.env.local</code> for <code>vercel dev</code>), then redeploy / restart.
+
+            <!-- Structured config screen when no provider is set.
+                 Lists every supported provider with its env var so the
+                 deployer can pick whichever LLM they prefer. -->
+            <div
+              v-if="sm.configMissing && sm.availableProviders.length > 0"
+              class="provider-list"
+            >
+              <div class="provider-list-head">
+                Set ONE of the following in your Vercel project environment
+                (or <code>.env.local</code> for <code>vercel dev</code>):
+              </div>
+              <div
+                v-for="p in sm.availableProviders"
+                :key="p.id"
+                class="provider-row"
+              >
+                <div class="provider-name">{{ p.name }}</div>
+                <div class="provider-envs">
+                  <code>{{ p.envKey }}</code>
+                  <code v-if="p.envBase">+ {{ p.envBase }}</code>
+                </div>
+                <div class="provider-model" :title="`Default model. Override with SOL_MAN_MODEL.`">
+                  <span v-if="p.defaultModel">default · <code>{{ p.defaultModel }}</code></span>
+                  <span v-else class="dim">requires <code>SOL_MAN_MODEL</code></span>
+                </div>
+              </div>
+              <div class="provider-hint">
+                Auto-detection picks the first key set. To force a
+                specific provider, also set <code>SOL_MAN_PROVIDER</code>
+                (e.g. <code>openai</code>, <code>gemini</code>, <code>grok</code>).
+              </div>
             </div>
           </div>
 
@@ -236,7 +511,10 @@ function onBackdrop(e: MouseEvent) {
         </div>
 
         <!-- GENERATING -->
-        <div v-else-if="sm.status === 'generating'" class="body generating">
+        <div
+          v-else-if="screen === 'generate' && sm.status === 'generating'"
+          class="body generating"
+        >
           <div class="loading-block">
             <div class="loading-dots" aria-hidden="true">
               <span /><span /><span />
@@ -247,7 +525,10 @@ function onBackdrop(e: MouseEvent) {
         </div>
 
         <!-- PREVIEW -->
-        <div v-else-if="sm.status === 'preview' && sm.spec" class="body">
+        <div
+          v-else-if="screen === 'generate' && sm.status === 'preview' && sm.spec"
+          class="body"
+        >
           <div class="preview-meta">
             <div class="preview-name">{{ sm.spec.meta.name }}</div>
             <div class="preview-desc">{{ sm.spec.meta.description }}</div>
@@ -274,7 +555,12 @@ function onBackdrop(e: MouseEvent) {
             <button class="ghost" @click="onCancelPreview">Back to prompt</button>
           </div>
           <div v-if="sm.lastModel" class="footer-note">
-            Generated by <code>{{ sm.lastModel }}</code>. The workflow is fully editable — change any field, disconnect any wire, save as a reusable block. Cmd+Z always undoes.
+            Generated by
+            <code v-if="sm.lastProvider">{{ sm.lastProvider.name }}</code>
+            <code v-else>{{ sm.lastModel }}</code>
+            <span v-if="sm.lastProvider"> · </span>
+            <code v-if="sm.lastProvider">{{ sm.lastModel }}</code>.
+            The workflow is fully editable — change any field, disconnect any wire, save as a reusable block. Cmd+Z always undoes.
           </div>
         </div>
       </div>
@@ -472,6 +758,91 @@ function onBackdrop(e: MouseEvent) {
   color: var(--sf-text-0);
 }
 
+/* Structured provider-config list shown when no API key is set. */
+.provider-list {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-md);
+  padding: 10px 12px;
+}
+.provider-list-head {
+  font-size: 0.625rem;
+  color: var(--sf-text-2);
+  line-height: 1.5;
+  margin-bottom: 2px;
+}
+.provider-list-head code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-3);
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--sf-text-1);
+}
+.provider-row {
+  display: grid;
+  grid-template-columns: 130px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-top: 1px solid var(--sf-border);
+}
+.provider-row:first-of-type {
+  border-top: none;
+}
+.provider-name {
+  font-size: 0.6875rem;
+  color: var(--sf-text-0);
+  font-weight: 500;
+}
+.provider-envs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.provider-envs code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-3);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.625rem;
+  color: var(--sf-accent);
+}
+.provider-model {
+  font-size: 0.5625rem;
+  color: var(--sf-text-3);
+  text-align: right;
+}
+.provider-model code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-3);
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--sf-text-2);
+  font-size: 0.5625rem;
+}
+.provider-model .dim {
+  font-style: italic;
+}
+.provider-hint {
+  font-size: 0.5625rem;
+  color: var(--sf-text-3);
+  line-height: 1.5;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--sf-border);
+}
+.provider-hint code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-3);
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--sf-text-2);
+}
+
 /* Generating animation */
 .loading-block {
   display: flex;
@@ -572,5 +943,142 @@ function onBackdrop(e: MouseEvent) {
   padding: 1px 5px;
   border-radius: 3px;
   color: var(--sf-text-2);
+}
+
+/* =================================================================
+ *  Header actions — provider chip + icon buttons
+ * ================================================================= */
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.provider-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  border-radius: 999px;
+  padding: 3px 10px 3px 8px;
+  font-size: 0.625rem;
+  color: var(--sf-text-1);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.provider-chip:hover {
+  background: var(--sf-bg-3);
+  color: var(--sf-text-0);
+  border-color: var(--sf-border-strong);
+}
+.chip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--sf-success);
+}
+.chip-name {
+  font-weight: 500;
+}
+.chip-key {
+  font-family: var(--sf-font-mono);
+  color: var(--sf-text-3);
+}
+.icon-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  color: var(--sf-text-2);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.icon-btn:hover {
+  background: var(--sf-bg-3);
+  color: var(--sf-text-0);
+  border-color: var(--sf-border);
+}
+
+/* =================================================================
+ *  Settings screen
+ * ================================================================= */
+.settings-body {
+  gap: 12px;
+}
+.settings-blurb {
+  font-size: 0.6875rem;
+  color: var(--sf-text-2);
+  line-height: 1.55;
+  padding: 8px 10px;
+  background: var(--sf-bg-0);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+}
+.settings-blurb strong {
+  color: var(--sf-text-0);
+  font-weight: 600;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.6875rem;
+  color: var(--sf-text-1);
+  font-weight: 500;
+}
+.field-label .dim {
+  font-size: 0.5625rem;
+  font-weight: 400;
+  color: var(--sf-text-3);
+}
+.field-hint {
+  font-size: 0.5625rem;
+  color: var(--sf-text-3);
+  line-height: 1.5;
+}
+.field-hint code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-3);
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--sf-text-2);
+}
+.link-btn {
+  background: transparent;
+  border: none;
+  color: var(--sf-accent);
+  font-size: 0.5625rem;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.link-btn:hover {
+  color: var(--sf-accent-hover);
+}
+.saved-stamp {
+  font-size: 0.5625rem;
+  color: var(--sf-text-3);
+  font-family: var(--sf-font-mono);
+}
+.settings-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 4px;
+  border-top: 1px dashed var(--sf-border);
+}
+.settings-actions .primary {
+  font-weight: 600;
 }
 </style>
