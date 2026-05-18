@@ -185,11 +185,16 @@ watch(
   },
 );
 onMounted(() => {
-  document.addEventListener('mousedown', onDocClick);
+  // Capture phase, not bubble: Vue Flow's node drag-start handler calls
+  // event.stopPropagation() on mousedown in the bubble phase, which
+  // otherwise prevents this listener from ever firing when the user
+  // clicks a node. Capture phase runs first, so this always fires
+  // regardless of who later stops propagation.
+  document.addEventListener('mousedown', onDocClick, true);
   window.addEventListener('keydown', onWinKey);
 });
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', onDocClick);
+  document.removeEventListener('mousedown', onDocClick, true);
   window.removeEventListener('keydown', onWinKey);
 });
 

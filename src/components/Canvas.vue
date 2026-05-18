@@ -48,10 +48,12 @@ function onMouseMove(e: MouseEvent) {
 // Auto-fit the viewport whenever the active function changes (e.g. when
 // loading a sample workflow, switching function tab, or creating a new
 // workflow). nextTick lets Vue Flow finish rendering the new node set
-// before we measure.
+// before we measure. Also dismiss any open Quick-Add palette so it
+// doesn't hover stale over the new graph.
 watch(
   () => graph.activeFunctionId,
   async () => {
+    if (qaOpen.value) closeQuickAdd();
     await nextTick();
     setTimeout(() => {
       try {
@@ -271,10 +273,15 @@ function onNodeDragStop(event: { node: VueFlowNode }) {
 
 function onNodeClick(event: { node: VueFlowNode }) {
   ui.selectNode(event.node.id);
+  // Explicit close: the capture-phase listener in QuickAdd already
+  // catches this, but having the canvas drive the close too gives a
+  // clear single-place audit trail for popover lifecycle.
+  if (qaOpen.value) closeQuickAdd();
 }
 
 function onPaneClick() {
   ui.selectNode(null);
+  if (qaOpen.value) closeQuickAdd();
 }
 
 function onEdgeClick(event: { edge: Edge }) {
