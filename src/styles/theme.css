@@ -150,10 +150,25 @@ button.ghost:hover {
 /* Vue Flow theme override */
 .vue-flow__edge-path {
   stroke-width: 1.6;
+  transition: stroke 0.12s ease;
+}
+.vue-flow__edge:hover .vue-flow__edge-path {
+  filter: brightness(1.4);
 }
 .vue-flow__edge.selected .vue-flow__edge-path {
   stroke: var(--sf-accent) !important;
   stroke-width: 2.5;
+  filter: drop-shadow(0 0 4px rgba(50, 145, 255, 0.4));
+}
+.vue-flow__node.selected {
+  /* SolNode already styles its own selected state; this is just for the
+     outer Vue Flow wrapper used during multi-select / marquee drag. */
+  outline: none;
+}
+.vue-flow__selection {
+  background: rgba(50, 145, 255, 0.08);
+  border: 1px solid var(--sf-accent);
+  border-radius: 3px;
 }
 .vue-flow__handle {
   width: 9px;

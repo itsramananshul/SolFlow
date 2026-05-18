@@ -124,6 +124,17 @@ onBeforeUnmount(() => {
   view?.destroy();
   view = null;
 });
+
+const copyState = ref<'idle' | 'copied'>('idle');
+async function copySource() {
+  try {
+    await navigator.clipboard.writeText(graph.emitted.source);
+    copyState.value = 'copied';
+    setTimeout(() => (copyState.value = 'idle'), 1200);
+  } catch {
+    /* clipboard refused */
+  }
+}
 </script>
 
 <template>
@@ -133,11 +144,16 @@ onBeforeUnmount(() => {
         <span class="title">SOL</span>
         <span class="hint">live preview</span>
       </div>
-      <span class="warnings" v-if="graph.emitted.warnings.length > 0">
-        {{ graph.emitted.warnings.length }} warning{{
-          graph.emitted.warnings.length === 1 ? '' : 's'
-        }}
-      </span>
+      <div class="header-right">
+        <span v-if="graph.emitted.warnings.length > 0" class="warnings">
+          {{ graph.emitted.warnings.length }} warning{{
+            graph.emitted.warnings.length === 1 ? '' : 's'
+          }}
+        </span>
+        <button class="copy-btn" :class="{ copied: copyState === 'copied' }" @click="copySource">
+          {{ copyState === 'copied' ? '✓ Copied' : 'Copy' }}
+        </button>
+      </div>
     </div>
     <div ref="editorContainer" class="editor" />
   </div>
@@ -175,10 +191,35 @@ onBeforeUnmount(() => {
   font-size: 0.625rem;
   color: var(--sf-text-3);
 }
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .warnings {
   font-size: 0.625rem;
   color: var(--sf-warning);
   font-family: var(--sf-font-mono);
+}
+.copy-btn {
+  background: transparent;
+  border: 1px solid var(--sf-border);
+  color: var(--sf-text-1);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 0.625rem;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.copy-btn:hover {
+  background: var(--sf-bg-2);
+  color: var(--sf-text-0);
+  border-color: var(--sf-border-strong);
+}
+.copy-btn.copied {
+  background: rgba(0, 204, 136, 0.1);
+  border-color: rgba(0, 204, 136, 0.3);
+  color: var(--sf-success);
 }
 .editor {
   flex: 1;

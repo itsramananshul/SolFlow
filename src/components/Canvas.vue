@@ -100,9 +100,11 @@ const flowEdges = computed<Edge[]>(() => {
       type: 'smoothstep',
       style: {
         stroke: strokeColor,
-        strokeWidth: isControl ? 2.5 : 2,
+        strokeWidth: isControl ? 2.4 : 1.8,
       },
       animated: false,
+      // Widen the invisible interaction stroke so edges are easy to click/select.
+      interactionWidth: 22,
       markerEnd: { type: MarkerType.ArrowClosed, color: strokeColor, width: 14, height: 14 },
     } as Edge;
   });
@@ -443,9 +445,15 @@ onBeforeUnmount(() => {
       @nodes-delete="onNodesDelete"
       @edges-delete="onEdgesDelete"
       @node-context-menu="onNodeContextMenu"
-      :connection-line-style="{ stroke: '#3291ff', strokeWidth: 2 }"
+      :connection-line-style="{
+        stroke: '#3291ff',
+        strokeWidth: 2,
+        strokeDasharray: '6 4',
+      }"
       :selection-mode-key-code="'Shift'"
       :pan-on-drag="[1, 2]"
+      :zoom-on-double-click="false"
+      :delete-key-code="['Backspace', 'Delete']"
     >
       <Background variant="dots" :pattern-color="'rgba(255, 255, 255, 0.06)'" :gap="20" :size="1" />
       <Controls :show-interactive="false" />
