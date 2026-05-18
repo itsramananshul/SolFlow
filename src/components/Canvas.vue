@@ -36,6 +36,7 @@ const {
   onConnectEnd,
   setCenter,
   getNode,
+  getViewport,
 } = useVueFlow();
 const flowContainerRef = ref<HTMLDivElement | null>(null);
 
@@ -470,17 +471,39 @@ function closeSearch() {
   searchOpen.value = false;
 }
 function onSearchJump(nodeId: string) {
+  focusOnNode(nodeId);
+}
+
+/**
+ * Pan + select a node by id. Used by the search palette and by any
+ * component that calls ui.requestFocus(). Centralized here so the
+ * setCenter math (account for node dimensions; preserve sane zoom)
+ * lives in one place.
+ */
+function focusOnNode(nodeId: string) {
   const flowNode = getNode.value(nodeId);
   if (!flowNode) return;
-  // Pan to the node and select it. setCenter accepts flow coords and
-  // animates the viewport over the requested time.
   setCenter(
     flowNode.position.x + (flowNode.dimensions?.width ?? 110),
     flowNode.position.y + (flowNode.dimensions?.height ?? 28),
-    { duration: 350, zoom: 1.1 },
+    { duration: 350, zoom: Math.max(getViewport().zoom, 1.0) },
   );
   ui.selectNode(nodeId);
 }
+
+// Listen for focus requests from anywhere in the app (diagnostics row
+// click, future outline panel, etc.). After acting on the request,
+// clear it so subsequent same-node requests still trigger via the
+// bumpId-driven re-fire pattern in the UI store.
+watch(
+  () => ui.focusRequest,
+  (req) => {
+    if (!req) return;
+    focusOnNode(req.nodeId);
+    ui.clearFocusRequest();
+  },
+  { deep: true },
+);
 
 // Fit-selection: zoom to whatever's currently selected. Falls back to
 // the standard fitView when nothing is selected.

@@ -14,8 +14,12 @@ const warningCount = computed(
 );
 
 function jumpTo(d: { nodeId?: string; functionId?: string }) {
+  // Switch function tab first so the node exists in the active graph
+  // before the Canvas tries to focus it. A nextTick wait isn't needed:
+  // the Canvas's focus-request watcher reads getNode() lazily and the
+  // function switch is synchronous in the store.
   if (d.functionId) graph.setActiveFunction(d.functionId);
-  if (d.nodeId) ui.selectNode(d.nodeId);
+  if (d.nodeId) ui.requestFocus(d.nodeId);
 }
 </script>
 
