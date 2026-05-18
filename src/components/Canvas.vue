@@ -186,7 +186,75 @@ function onConnect(c: Connection) {
   });
 }
 
+// Track each frame node's pre-drag position so we can compute the delta
+// and apply it to every node that was inside the frame's bounds.
+const frameDragStarts = ref<Map<string, { x: number; y: number; ids: string[] }>>(
+  new Map(),
+);
+
+function onNodeDragStart(event: { node: VueFlowNode }) {
+  const fn = graph.activeFunction;
+  if (!fn) return;
+  const dragged = fn.nodes.find((n) => n.id === event.node.id);
+  if (!dragged || dragged.data.kind !== 'frame') return;
+  // Record the frame's starting position + which nodes are visually
+  // inside it. Dragging the frame will then translate them together so
+  // sections move as a unit — without the heavy machinery of true
+  // Vue Flow parent/child hierarchies.
+  const fx = dragged.position.x;
+  const fy = dragged.position.y;
+  const fw = dragged.data.width;
+  const fh = dragged.data.height;
+  const containedIds: string[] = [];
+  for (const n of fn.nodes) {
+    if (n.id === dragged.id) continue;
+    // Center-of-node test: cheap and matches user intent — "if the dot
+    // of the node sits inside the frame, it's part of the section."
+    const cx = n.position.x + 110; // approximate half-width of standard node
+    const cy = n.position.y + 28; // approximate half-height
+    if (cx >= fx && cx <= fx + fw && cy >= fy && cy <= fy + fh) {
+      containedIds.push(n.id);
+    }
+  }
+  frameDragStarts.value.set(dragged.id, { x: fx, y: fy, ids: containedIds });
+}
+
 function onNodeDragStop(event: { node: VueFlowNode }) {
+  const fn = graph.activeFunction;
+  if (!fn) {
+    graph.updateNodePosition(event.node.id, {
+      x: event.node.position.x,
+      y: event.node.position.y,
+    });
+    return;
+  }
+  const dragged = fn.nodes.find((n) => n.id === event.node.id);
+
+  // Frame moved → translate every contained node by the same delta.
+  if (dragged && dragged.data.kind === 'frame') {
+    const start = frameDragStarts.value.get(dragged.id);
+    graph.updateNodePosition(event.node.id, {
+      x: event.node.position.x,
+      y: event.node.position.y,
+    });
+    if (start) {
+      const dx = event.node.position.x - start.x;
+      const dy = event.node.position.y - start.y;
+      if (dx !== 0 || dy !== 0) {
+        for (const id of start.ids) {
+          const n = fn.nodes.find((nn) => nn.id === id);
+          if (!n) continue;
+          graph.updateNodePosition(id, {
+            x: n.position.x + dx,
+            y: n.position.y + dy,
+          });
+        }
+      }
+      frameDragStarts.value.delete(dragged.id);
+    }
+    return;
+  }
+
   graph.updateNodePosition(event.node.id, {
     x: event.node.position.x,
     y: event.node.position.y,
@@ -566,6 +634,7 @@ onBeforeUnmount(() => {
       :snap-grid="[16, 16]"
       :is-valid-connection="isValidConnection"
       @connect="onConnect"
+      @node-drag-start="onNodeDragStart"
       @node-drag-stop="onNodeDragStop"
       @node-click="onNodeClick"
       @pane-click="onPaneClick"
