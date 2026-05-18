@@ -910,6 +910,24 @@ function onGlobalKey(e: KeyboardEvent) {
     setViewport({ x: vp.x, y: vp.y, zoom: 1 }, { duration: 220 });
     return;
   }
+  // Cmd/Ctrl+= or +  → zoom in
+  // Cmd/Ctrl+-       → zoom out
+  // Standard browser-style zoom keystrokes. Step by 1.2× per press;
+  // clamped to Vue Flow's configured min/max via setViewport.
+  if (mod && (e.key === '=' || e.key === '+') && !isTypingInInput()) {
+    e.preventDefault();
+    const vp = getViewport();
+    const next = Math.min(2, vp.zoom * 1.2);
+    setViewport({ x: vp.x, y: vp.y, zoom: next }, { duration: 160 });
+    return;
+  }
+  if (mod && e.key === '-' && !isTypingInInput()) {
+    e.preventDefault();
+    const vp = getViewport();
+    const next = Math.max(0.2, vp.zoom / 1.2);
+    setViewport({ x: vp.x, y: vp.y, zoom: next }, { duration: 160 });
+    return;
+  }
   // Home → fit whole graph (no-selection fitView)
   if (!mod && e.key === 'Home' && !isTypingInInput()) {
     e.preventDefault();

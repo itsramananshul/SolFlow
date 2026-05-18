@@ -53,6 +53,8 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Fit selection (or whole graph)</span><kbd>1</kbd></div>
             <div class="row"><span>Fit whole graph</span><kbd>Home</kbd></div>
             <div class="row"><span>Reset zoom to 100%</span><kbd>{{ modKey }}</kbd><kbd>0</kbd></div>
+            <div class="row"><span>Zoom in</span><kbd>{{ modKey }}</kbd><kbd>=</kbd></div>
+            <div class="row"><span>Zoom out</span><kbd>{{ modKey }}</kbd><kbd>-</kbd></div>
             <div class="row"><span>Select all nodes</span><kbd>{{ modKey }}</kbd><kbd>A</kbd></div>
           </section>
           <section>

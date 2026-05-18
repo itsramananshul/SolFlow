@@ -126,16 +126,18 @@ function onDoubleClick() {
   touch-action: none;
 }
 .sf-splitter.vertical {
-  width: 7px;
-  margin-left: -3px;
-  margin-right: -3px;
+  /* 10px hit area centered on a 1px hairline — wide enough to grab
+     comfortably on a touchpad without precision aiming. */
+  width: 10px;
+  margin-left: -4px;
+  margin-right: -5px;
   cursor: col-resize;
   z-index: 2;
 }
 .sf-splitter.horizontal {
-  height: 7px;
-  margin-top: -3px;
-  margin-bottom: -3px;
+  height: 10px;
+  margin-top: -4px;
+  margin-bottom: -5px;
   cursor: row-resize;
   z-index: 2;
 }
