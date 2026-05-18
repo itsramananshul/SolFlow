@@ -141,6 +141,13 @@ export const useGraphStore = defineStore('graph', () => {
     touch();
   }
 
+  function updateWorkflowMeta(patch: { name?: string; description?: string }) {
+    if (patch.name !== undefined) workflow.value.meta.name = patch.name;
+    if (patch.description !== undefined)
+      workflow.value.meta.description = patch.description;
+    touch();
+  }
+
   function updateFunctionSignature(
     id: string,
     params: Param[],
@@ -815,6 +822,7 @@ export const useGraphStore = defineStore('graph', () => {
     renameFunction,
     updateFunctionSignature,
     setActiveFunction,
+    updateWorkflowMeta,
     addNode,
     addNodeAt,
     updateNodePosition,

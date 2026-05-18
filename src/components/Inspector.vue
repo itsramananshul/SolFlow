@@ -160,6 +160,89 @@ const dataInPorts = computed(() => {
   return selectedNode.value.ports.in.filter((p) => p.kind === 'data');
 });
 
+/**
+ * One-line summary of what the selected node *currently* does, with
+ * actual configured values (event name, cron, variable, etc.) baked in.
+ * Different from the SolNode hover tooltip (which explains the kind in
+ * the abstract). This is "what does THIS instance do, right now?"
+ */
+const nodeSummary = computed<string>(() => {
+  const n = selectedNode.value;
+  if (!n) return '';
+  const d = n.data;
+  switch (d.kind) {
+    case 'start':
+      return 'Function entry — execution starts here.';
+    case 'trigger': {
+      if (d.triggerKind === 'webhook') return `Runs when someone POSTs to ${d.webhookPath || 'your webhook URL'}.`;
+      if (d.triggerKind === 'timer') {
+        const preset = describeCron(d.cronExpr ?? '');
+        return preset ? `Runs ${preset.toLowerCase()}.` : `Runs on schedule "${d.cronExpr}".`;
+      }
+      if (d.triggerKind === 'event') return `Runs when "${d.eventName}" happens.`;
+      if (d.triggerKind === 'http') return `Runs on ${d.httpMethod ?? 'POST'} ${d.httpPath || '/'}.`;
+      return 'Runs when manually triggered.';
+    }
+    case 'let':
+      return `Declares variable "${d.varName}" of type ${typeAsString(d.varType)}.`;
+    case 'assign':
+      return d.varName ? `Updates variable "${d.varName}".` : 'Assigns a value to a variable.';
+    case 'print':
+      return 'Writes a value to the run log.';
+    case 'return':
+      return d.hasValue ? 'Returns a value from this function.' : 'Ends this function with no value.';
+    case 'branch':
+      return d.hasElse
+        ? 'Goes one of two ways: then if true, else if false.'
+        : 'Continues only if the condition is true.';
+    case 'while':
+      return 'Repeats the body while the condition stays true.';
+    case 'forEach':
+      return `Walks through each item as "${d.iteratorName}".`;
+    case 'binaryOp':
+      return `Computes lhs ${d.op} rhs.`;
+    case 'unaryOp':
+      return `Computes ${d.op}operand.`;
+    case 'varGet':
+      return d.varName ? `Reads the current value of "${d.varName}".` : 'Reads a variable.';
+    case 'literal':
+      return `A constant ${d.litType} value: ${d.value}.`;
+    case 'arrayLiteral':
+      return `Builds a ${d.length}-item array of ${typeAsString(d.itemType)}.`;
+    case 'structLiteral':
+      return d.structName ? `Constructs a ${d.structName}.` : 'Constructs a struct (pick which one).';
+    case 'fieldAccess':
+      return d.fieldName ? `Reads .${d.fieldName} from a ${d.structName}.` : 'Reads a struct field.';
+    case 'fieldSet':
+      return d.fieldName ? `Writes into .${d.fieldName} of a ${d.structName}.` : 'Writes a struct field.';
+    case 'indexRead':
+      return 'Reads an array element at an index.';
+    case 'indexSet':
+      return 'Writes an array element at an index.';
+    case 'enumVariant':
+      return d.enumName && d.variantName ? `The "${d.enumName}::${d.variantName}" variant.` : 'An enum variant.';
+    case 'call':
+      return d.functionId
+        ? `Calls function "${graph.workflow.functions.find((f) => f.id === d.functionId)?.name ?? '?'}".`
+        : 'Calls another function (pick which one).';
+    case 'note':
+      return 'A sticky note. Does not affect execution.';
+    case 'frame':
+      return `Visually groups nodes under "${d.title || 'this section'}".`;
+  }
+});
+
+function describeCron(cron: string): string | null {
+  const map: Record<string, string> = {
+    '* * * * *': 'Every minute',
+    '*/5 * * * *': 'Every 5 minutes',
+    '*/15 * * * *': 'Every 15 minutes',
+    '0 * * * *': 'Every hour',
+    '0 9 * * *': 'Every day at 9am',
+  };
+  return map[cron] ?? null;
+}
+
 function exprFor(portId: string): string {
   if (!selectedNode.value) return '';
   return selectedNode.value.expressions?.[portId] ?? '';
@@ -228,7 +311,17 @@ const placeholderFor = (portId: string, kind: string): string => {
     </div>
 
     <div v-else class="body">
-      <!-- Inline expressions section — shown FIRST if the node has data inputs. -->
+      <!--
+        Plain-English summary banner — shown FIRST so users immediately
+        know what the selected node does *with its current settings*,
+        before they have to read individual fields. Different from the
+        hover tooltip (which explains the kind in the abstract).
+      -->
+      <section class="section summary-section">
+        <p class="summary">{{ nodeSummary }}</p>
+      </section>
+
+      <!-- Inline expressions section — shown next if the node has data inputs. -->
       <section v-if="dataInPorts.length > 0" class="section">
         <div class="section-header">
           <span>Inputs</span>
@@ -999,5 +1092,14 @@ const placeholderFor = (portId: string, kind: string): string => {
   font-weight: 400;
   font-size: 0.5625rem;
   letter-spacing: 0.3px;
+}
+.summary-section {
+  background: var(--sf-bg-1);
+}
+.summary {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--sf-text-1);
 }
 </style>

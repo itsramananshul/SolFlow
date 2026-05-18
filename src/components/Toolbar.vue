@@ -125,6 +125,28 @@ function toggleSampleMenu() {
       <span class="version">v0.1</span>
     </div>
 
+    <!--
+      Workflow header — editable name + optional one-line description.
+      Sits between the brand mark and the action cluster so the workflow
+      identity is the visual anchor of the top bar, not the SolFlow logo.
+    -->
+    <div class="workflow-header">
+      <input
+        class="wf-name"
+        :value="graph.workflow.meta.name"
+        placeholder="Untitled workflow"
+        spellcheck="false"
+        @input="(e) => graph.updateWorkflowMeta({ name: (e.target as HTMLInputElement).value })"
+      />
+      <input
+        class="wf-desc"
+        :value="graph.workflow.meta.description ?? ''"
+        placeholder="Add a description…"
+        spellcheck="false"
+        @input="(e) => graph.updateWorkflowMeta({ description: (e.target as HTMLInputElement).value })"
+      />
+    </div>
+
     <div class="actions">
       <button class="ghost" @click="newWorkflow">New</button>
       <button class="ghost" @click="openFilePicker">Open</button>
@@ -256,6 +278,52 @@ function toggleSampleMenu() {
   padding: 2px 6px;
   border: 1px solid var(--sf-border);
   border-radius: 3px;
+}
+.workflow-header {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0 24px;
+  min-width: 0;
+}
+.wf-name,
+.wf-desc {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--sf-radius-sm);
+  outline: none;
+  text-align: center;
+  width: 100%;
+  max-width: 480px;
+  padding: 2px 8px;
+  font-family: var(--sf-font-sans);
+}
+.wf-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--sf-text-0);
+  letter-spacing: -0.005em;
+}
+.wf-desc {
+  font-size: 0.625rem;
+  color: var(--sf-text-2);
+  margin-top: 1px;
+}
+.wf-name:hover,
+.wf-desc:hover {
+  border-color: var(--sf-border);
+}
+.wf-name:focus,
+.wf-desc:focus {
+  border-color: var(--sf-accent);
+  background: var(--sf-bg-1);
+}
+.wf-name::placeholder,
+.wf-desc::placeholder {
+  color: var(--sf-text-3);
+  font-weight: 400;
 }
 .actions {
   display: flex;

@@ -43,6 +43,8 @@ export interface SolWorkflow {
   schemaVersion: 1;
   meta: {
     name: string;
+    /** Optional one-line description shown at the top of the canvas. */
+    description?: string;
     createdAt: string;
     updatedAt: string;
   };
