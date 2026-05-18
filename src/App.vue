@@ -10,6 +10,7 @@ import Inspector from '@/components/Inspector.vue';
 import SourcePreview from '@/components/SourcePreview.vue';
 import DiagnosticsDrawer from '@/components/DiagnosticsDrawer.vue';
 import RunModal from '@/components/RunModal.vue';
+import StatusBar from '@/components/StatusBar.vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
@@ -94,6 +95,7 @@ function downloadSol() {
         <SourcePreview />
       </div>
     </div>
+    <StatusBar />
     <RunModal :open="runOpen" @close="runOpen = false" />
   </div>
 </template>
