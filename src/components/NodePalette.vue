@@ -1,19 +1,26 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { paletteByCategory, CATEGORY_LABELS, categoryColor, PALETTE } from '@/graph/kinds';
+import {
+  paletteByCategory,
+  CATEGORY_LABELS,
+  categoryColor,
+  isAdvancedCategory,
+  PALETTE,
+} from '@/graph/kinds';
 import type { Category, PaletteEntry } from '@/graph/kinds';
 
 const grouped = computed(() => paletteByCategory());
-const order: Category[] = [
-  'trigger',
-  'flow',
-  'variable',
-  'operator',
-  'literal',
-  'access',
-  'call',
-  'io',
-];
+
+// Primary categories rendered top-level. Operator / Literal / Access live
+// behind the Advanced toggle because their names lean on SOL's AST and
+// they're rarely the first thing a new user needs.
+const primaryOrder: Category[] = ['trigger', 'flow', 'variable', 'call', 'io'];
+const advancedOrder: Category[] = ['operator', 'literal', 'access'];
+
+const advancedOpen = ref(false);
+function toggleAdvanced() {
+  advancedOpen.value = !advancedOpen.value;
+}
 
 const query = ref('');
 
@@ -88,7 +95,7 @@ function clearSearch() {
 
     <!-- Grouped categories when not searching -->
     <template v-else>
-      <div v-for="cat in order" :key="cat" class="cat">
+      <div v-for="cat in primaryOrder" :key="cat" class="cat">
         <div class="cat-header">{{ CATEGORY_LABELS[cat] }}</div>
         <div
           v-for="entry in grouped[cat]"
@@ -100,6 +107,40 @@ function clearSearch() {
         >
           <span class="dot" :style="{ background: categoryColor(cat) }" />
           <span class="label">{{ entry.label }}</span>
+        </div>
+      </div>
+
+      <!--
+        Advanced disclosure: operator / literal / access nodes are useful
+        but their labels echo SOL's AST (binaryOp, structLiteral, etc.).
+        Hidden by default so new users see a short approachable list.
+      -->
+      <div class="advanced-section">
+        <button
+          type="button"
+          class="advanced-toggle"
+          :class="{ open: advancedOpen }"
+          @click="toggleAdvanced"
+        >
+          <span class="caret">{{ advancedOpen ? '▾' : '▸' }}</span>
+          <span class="advanced-label">Advanced</span>
+          <span class="advanced-sub">expression nodes</span>
+        </button>
+        <div v-if="advancedOpen" class="advanced-body">
+          <div v-for="cat in advancedOrder" :key="cat" class="cat">
+            <div class="cat-header">{{ CATEGORY_LABELS[cat] }}</div>
+            <div
+              v-for="entry in grouped[cat]"
+              :key="entry.kind"
+              class="palette-item"
+              draggable="true"
+              @dragstart="onDragStart($event, entry)"
+              :title="entry.description"
+            >
+              <span class="dot" :style="{ background: categoryColor(cat) }" />
+              <span class="label">{{ entry.label }}</span>
+            </div>
+          </div>
         </div>
       </div>
     </template>
@@ -215,5 +256,42 @@ function clearSearch() {
   padding: 12px 6px;
   color: var(--sf-text-3);
   font-style: italic;
+}
+.advanced-section {
+  margin-top: 4px;
+  border-top: 1px dashed var(--sf-border);
+  padding-top: 8px;
+}
+.advanced-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 4px 4px;
+  cursor: pointer;
+  color: var(--sf-text-2);
+  font-size: 0.6875rem;
+  letter-spacing: 0.2px;
+  border-radius: var(--sf-radius-sm);
+}
+.advanced-toggle:hover {
+  color: var(--sf-text-0);
+  background: var(--sf-bg-2);
+}
+.advanced-toggle .caret {
+  font-family: var(--sf-font-mono);
+}
+.advanced-toggle .advanced-label {
+  font-weight: 600;
+}
+.advanced-toggle .advanced-sub {
+  color: var(--sf-text-3);
+  font-size: 0.625rem;
+  margin-left: auto;
+}
+.advanced-body {
+  margin-top: 4px;
 }
 </style>

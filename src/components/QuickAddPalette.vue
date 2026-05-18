@@ -24,6 +24,7 @@ import {
   PALETTE,
   CATEGORY_LABELS,
   categoryColor,
+  isAdvancedCategory,
   type PaletteEntry,
 } from '@/graph/kinds';
 import type { NodeData, NodeKind, SolType } from '@/graph/schema';
@@ -58,8 +59,17 @@ const activeIdx = ref(0);
 const inputRef = ref<HTMLInputElement | null>(null);
 const listRef = ref<HTMLDivElement | null>(null);
 
-// All draggable palette entries (Start is not user-insertable).
+// All draggable palette entries (Start is not user-insertable). Advanced
+// categories are filtered out when the user hasn't typed a query yet —
+// the empty-query list should bias toward common, human-friendly nodes.
+// As soon as the user types anything, every kind becomes searchable so
+// no one is gated from finding what they need.
 const baseEntries = computed(() => PALETTE.filter((p) => p.draggable));
+const visibleEntries = computed<PaletteEntry[]>(() => {
+  const q = query.value.trim();
+  if (q !== '') return baseEntries.value;
+  return baseEntries.value.filter((p) => !isAdvancedCategory(p.category));
+});
 
 // Score each entry against the query. 0 means "doesn't match".
 function score(q: string, entry: PaletteEntry): number {
@@ -86,7 +96,7 @@ function score(q: string, entry: PaletteEntry): number {
 
 const filtered = computed<PaletteEntry[]>(() => {
   const q = query.value.trim();
-  const scored = baseEntries.value
+  const scored = visibleEntries.value
     .map((e) => ({ e, s: score(q, e) }))
     .filter((x) => x.s > 0)
     .sort((a, b) => b.s - a.s);

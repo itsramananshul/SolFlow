@@ -170,17 +170,34 @@ export function paletteByCategory(): Record<Category, PaletteEntry[]> {
   return map;
 }
 
+/**
+ * User-facing category names. Internal NodeKind names stay technical
+ * (`binaryOp`, `structLiteral`, etc.) because they're tied to SOL's AST;
+ * these labels are what humans read in the palette.
+ */
 export const CATEGORY_LABELS: Record<Category, string> = {
   trigger: 'Triggers',
-  flow: 'Flow',
+  flow: 'Decisions & loops',
   variable: 'Variables',
-  operator: 'Operators',
-  literal: 'Literals',
-  access: 'Access',
-  call: 'Calls',
-  io: 'I/O',
+  operator: 'Math & logic',
+  literal: 'Fixed values',
+  access: 'Read & update',
+  call: 'Reuse a workflow',
+  io: 'Output',
   entry: 'Entry',
 };
+
+/**
+ * Categories that are useful but heavy on language-theory terminology
+ * (binary ops, struct/enum literals, field/index access). Hidden behind
+ * an "Advanced" disclosure in the palette so first-time users see a
+ * short, human-friendly list instead of a wall of AST nodes.
+ */
+export const ADVANCED_CATEGORIES: Category[] = ['operator', 'literal', 'access'];
+
+export function isAdvancedCategory(c: Category): boolean {
+  return ADVANCED_CATEGORIES.includes(c);
+}
 
 export function categoryColor(c: Category): string {
   switch (c) {
