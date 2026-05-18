@@ -89,6 +89,12 @@ function handleDelete() {
   if (ui.selectedNodeId === node.value.id) ui.selectNode(null);
 }
 
+function handleDuplicate() {
+  if (node.value.data.kind === 'start') return;
+  const dup = graph.duplicateNode(node.value.id);
+  if (dup) ui.selectNode(dup.id);
+}
+
 function labelForKind(data: NodeData): string {
   switch (data.kind) {
     case 'start':
@@ -151,21 +157,34 @@ function formatLiteralPreview(t: string, v: string): string {
     <div class="header">
       <span class="cat-dot" :style="{ background: categoryDot }" />
       <span class="title" :title="kindLabel">{{ kindLabel }}</span>
-      <button
-        v-if="node.data.kind !== 'start'"
-        class="close nodrag"
-        title="Delete node"
-        @click.stop="handleDelete"
-      >
-        <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
-          <path
-            d="M3 3 9 9 M9 3 3 9"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-          />
-        </svg>
-      </button>
+      <div v-if="node.data.kind !== 'start'" class="quick-actions nodrag">
+        <button
+          class="qa-btn"
+          title="Duplicate"
+          @click.stop="handleDuplicate"
+          @mousedown.stop
+        >
+          <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+            <rect x="2.5" y="2.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2" />
+            <rect x="4.5" y="4.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2" />
+          </svg>
+        </button>
+        <button
+          class="qa-btn"
+          title="Delete"
+          @click.stop="handleDelete"
+          @mousedown.stop
+        >
+          <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+            <path
+              d="M3 3 9 9 M9 3 3 9"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div v-if="dataIns.length > 0 || dataOuts.length > 0" class="body">
@@ -293,10 +312,21 @@ function formatLiteralPreview(t: string, v: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.close {
+.quick-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.sf-node:hover .quick-actions,
+.sf-node.selected .quick-actions {
+  opacity: 1;
+}
+.qa-btn {
   background: transparent;
   border: none;
-  padding: 2px;
+  padding: 3px;
   border-radius: 2px;
   color: var(--sf-text-3);
   cursor: pointer;
@@ -304,9 +334,13 @@ function formatLiteralPreview(t: string, v: string): string {
   align-items: center;
   justify-content: center;
 }
-.close:hover {
+.qa-btn:hover {
   color: var(--sf-text-0);
   background: var(--sf-bg-4);
+}
+.qa-btn:last-child:hover {
+  color: var(--sf-error);
+  background: rgba(255, 77, 79, 0.12);
 }
 
 .body {

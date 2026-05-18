@@ -386,11 +386,22 @@ function isTypingInInput(): boolean {
 
 function onGlobalKey(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
-  // Cmd/Ctrl+K
+  // Cmd/Ctrl+K → Quick-Add at cursor
   if (mod && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     const flow = screenToFlowCoordinate(lastCursor.value);
     openQuickAdd(lastCursor.value.x, lastCursor.value.y, flow);
+    return;
+  }
+  // Cmd/Ctrl+D → duplicate current selection
+  if (mod && e.key.toLowerCase() === 'd' && !isTypingInInput()) {
+    e.preventDefault();
+    const selectedIds = getSelectedNodes.value.map((n) => n.id);
+    const fallbackId = ui.selectedNodeId ? [ui.selectedNodeId] : [];
+    const ids = selectedIds.length > 0 ? selectedIds : fallbackId;
+    if (ids.length === 0) return;
+    const newIds = graph.duplicateNodes(ids);
+    if (newIds.length > 0) ui.selectNode(newIds[newIds.length - 1]);
     return;
   }
   // Space (no modifier, not in input, no edge being dragged)

@@ -49,15 +49,18 @@ function onBackdrop(e: MouseEvent) {
           </section>
           <section>
             <div class="section-title">Canvas</div>
+            <div class="row"><span>Quick-add node at cursor</span><kbd>Space</kbd></div>
+            <div class="row"><span>Quick-add (alt)</span><kbd>{{ modKey }}</kbd><kbd>K</kbd></div>
+            <div class="row"><span>Quick-add at click</span><kbd>Double-click</kbd></div>
+            <div class="row"><span>Add node + auto-connect</span><kbd>Drag edge to empty</kbd></div>
+            <div class="row"><span>Duplicate selection</span><kbd>{{ modKey }}</kbd><kbd>D</kbd></div>
             <div class="row"><span>Drag node from palette</span><kbd>Click + Drag</kbd></div>
-            <div class="row"><span>Select node</span><kbd>Click</kbd></div>
             <div class="row"><span>Multi-select</span><kbd>⇧</kbd><kbd>Click</kbd></div>
             <div class="row"><span>Marquee select</span><kbd>⇧</kbd><kbd>Drag</kbd></div>
-            <div class="row"><span>Delete selected</span><kbd>Del</kbd></div>
-            <div class="row"><span>Pan canvas</span><kbd>Space + Drag</kbd></div>
-            <div class="row"><span>Zoom</span><kbd>Scroll</kbd></div>
+            <div class="row"><span>Pan canvas</span><kbd>Middle/Right-Drag</kbd></div>
+            <div class="row"><span>Delete selection</span><kbd>Del</kbd></div>
             <div class="row"><span>Right-click for actions</span><kbd>R-Click</kbd></div>
-            <div class="row"><span>Drop workflow JSON from desktop</span><kbd>Drag + Drop</kbd></div>
+            <div class="row"><span>Drop workflow JSON</span><kbd>Drag from desktop</kbd></div>
           </section>
         </div>
       </div>
