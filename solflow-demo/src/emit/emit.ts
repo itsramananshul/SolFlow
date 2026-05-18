@@ -274,6 +274,13 @@ function emitStatement(ctx: EmitCtx, node: GraphNode, indent: number): string {
 // =============================================================
 
 function emitDataInput(ctx: EmitCtx, nodeId: string, portId: string): string {
+  // Inline expression (Phase A authoring escape hatch) takes precedence.
+  const node = ctx.nodeMap.get(nodeId);
+  const inline = node?.expressions?.[portId];
+  if (inline !== undefined && inline.trim() !== '') {
+    return inline.trim();
+  }
+  // Otherwise fall back to a wired data edge.
   const edge = ctx.incoming.get(key(nodeId, portId));
   if (!edge) {
     ctx.warnings.push(`${nodeId}::${portId}: missing input`);

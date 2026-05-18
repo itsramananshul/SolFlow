@@ -206,7 +206,34 @@ export const useGraphStore = defineStore('graph', () => {
       return true;
     });
 
+    // Drop inline expressions for ports that no longer exist.
+    if (node.expressions) {
+      const cleaned: Record<string, string> = {};
+      for (const [portId, expr] of Object.entries(node.expressions)) {
+        if (validInIds.has(portId)) cleaned[portId] = expr;
+      }
+      node.expressions = cleaned;
+    }
+
     node.ports = newPorts;
+    touch();
+  }
+
+  /**
+   * Set/clear an inline SOL expression for a node's input port.
+   * Empty string clears it (so the emitter falls back to wired data).
+   */
+  function updateNodeExpression(nodeId: string, portId: string, text: string) {
+    const fn = activeFunction.value;
+    if (!fn) return;
+    const node = fn.nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    if (!node.expressions) node.expressions = {};
+    if (text.trim() === '') {
+      delete node.expressions[portId];
+    } else {
+      node.expressions[portId] = text;
+    }
     touch();
   }
 
@@ -433,6 +460,7 @@ export const useGraphStore = defineStore('graph', () => {
     addNode,
     updateNodePosition,
     updateNodeData,
+    updateNodeExpression,
     removeNode,
     addEdge,
     removeEdge,

@@ -165,6 +165,18 @@ export interface GraphNode {
   data: NodeData;
   position: { x: number; y: number };
   ports: NodePorts;
+  /**
+   * Inline SOL expression text keyed by input port id. Non-empty values
+   * take precedence over wired data edges during emit. This is the
+   * Phase A escape hatch for fast workflow authoring — users can type
+   * `status == AppHealth::Stable` directly into the condition field
+   * instead of wiring a Binary Op + two Var Gets + an Enum Variant.
+   *
+   * Phase B keeps this field; the WASM analyzer will parse + type-check
+   * each inline expression and integrate it into the same diagnostics
+   * pipeline that wired graphs use today.
+   */
+  expressions?: Record<string, string>;
 }
 
 export interface GraphEdge {
