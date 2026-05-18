@@ -255,8 +255,8 @@ function formatLiteralPreview(t: string, v: string): string {
   background: var(--sf-bg-2);
   border: 1px solid var(--sf-border);
   border-radius: var(--sf-radius-md);
-  min-width: 200px;
-  max-width: 320px;
+  min-width: 220px;
+  max-width: 400px;
   font-size: 0.6875rem;
   position: relative;
   user-select: none;

@@ -26,6 +26,17 @@ onBeforeUnmount(() => {
 
 function onKey(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
+  // Cmd/Ctrl+Z → undo / Cmd+Shift+Z (or Ctrl+Y) → redo
+  if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    graph.undo();
+    return;
+  }
+  if (mod && ((e.key.toLowerCase() === 'z' && e.shiftKey) || e.key.toLowerCase() === 'y')) {
+    e.preventDefault();
+    graph.redo();
+    return;
+  }
   // Cmd/Ctrl+S → download workflow JSON
   if (mod && e.key.toLowerCase() === 's') {
     e.preventDefault();

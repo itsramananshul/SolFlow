@@ -128,6 +128,31 @@ function toggleSampleMenu() {
 
       <div class="separator" />
 
+      <button
+        class="ghost icon-btn"
+        :disabled="!graph.canUndo()"
+        @click="graph.undo()"
+        :title="`Undo (${modKey}+Z)`"
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none">
+          <path d="M3 8 L8 8 A4 4 0 1 1 4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M5 6 L3 8 L5 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button
+        class="ghost icon-btn"
+        :disabled="!graph.canRedo()"
+        @click="graph.redo()"
+        :title="`Redo (${modKey}+Shift+Z)`"
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none">
+          <path d="M13 8 L8 8 A4 4 0 1 0 12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M11 6 L13 8 L11 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <div class="separator" />
+
       <div class="sample-dropdown">
         <button class="ghost" @click="toggleSampleMenu">
           Samples
@@ -298,5 +323,21 @@ function toggleSampleMenu() {
 }
 .diag-btn.has-issues {
   border-color: rgba(255, 77, 79, 0.3);
+}
+.icon-btn {
+  padding: 5px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: transparent;
+}
+.icon-btn:disabled:hover {
+  background: transparent;
+  border-color: var(--sf-border);
 }
 </style>

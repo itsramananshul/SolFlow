@@ -424,11 +424,75 @@ export const useGraphStore = defineStore('graph', () => {
     workflow.value.meta.updatedAt = nowIso();
   }
 
-  // Debounced autosave.
+  // -----------------------------------------------------------
+  // Undo / redo
+  // -----------------------------------------------------------
+  // Snapshot-based history. Every settled change pushes a JSON snapshot
+  // onto the stack; undo() restores the previous snapshot, redo() the next.
+  // 200ms debounce coalesces rapid typing into single undo entries.
+
+  const HISTORY_LIMIT = 80;
+  const history: string[] = [];
+  let historyIndex = -1;
+  let isReplaying = false;
+  let historyTimer: number | undefined;
+
+  function pushHistory() {
+    const snap = JSON.stringify(workflow.value);
+    if (history[historyIndex] === snap) return;
+    history.splice(historyIndex + 1);
+    history.push(snap);
+    if (history.length > HISTORY_LIMIT) {
+      history.shift();
+    }
+    historyIndex = history.length - 1;
+  }
+  // Seed history with the initial state so the very first undo is a no-op
+  // rather than restoring a phantom "empty" workflow.
+  pushHistory();
+
+  function canUndo(): boolean {
+    return historyIndex > 0;
+  }
+  function canRedo(): boolean {
+    return historyIndex < history.length - 1;
+  }
+  function undo() {
+    if (!canUndo()) return;
+    isReplaying = true;
+    historyIndex--;
+    const snap = history[historyIndex];
+    const parsed = JSON.parse(snap) as SolWorkflow;
+    workflow.value = parsed;
+    if (!parsed.functions.find((f) => f.id === activeFunctionId.value)) {
+      activeFunctionId.value = parsed.functions[0]?.id ?? '';
+    }
+    // Allow the deep watcher to fire & finish before re-enabling capture.
+    setTimeout(() => {
+      isReplaying = false;
+    }, 0);
+  }
+  function redo() {
+    if (!canRedo()) return;
+    isReplaying = true;
+    historyIndex++;
+    const snap = history[historyIndex];
+    const parsed = JSON.parse(snap) as SolWorkflow;
+    workflow.value = parsed;
+    if (!parsed.functions.find((f) => f.id === activeFunctionId.value)) {
+      activeFunctionId.value = parsed.functions[0]?.id ?? '';
+    }
+    setTimeout(() => {
+      isReplaying = false;
+    }, 0);
+  }
+
+  // Debounced autosave + history snapshot. Replays skip both.
   let saveTimer: number | undefined;
   watch(
     () => workflow.value,
     () => {
+      if (isReplaying) return;
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(() => {
         try {
@@ -437,6 +501,11 @@ export const useGraphStore = defineStore('graph', () => {
           /* quota or unavailable — ignore */
         }
       }, 600);
+
+      if (historyTimer !== undefined) window.clearTimeout(historyTimer);
+      historyTimer = window.setTimeout(() => {
+        pushHistory();
+      }, 220);
     },
     { deep: true },
   );
@@ -475,5 +544,9 @@ export const useGraphStore = defineStore('graph', () => {
     deleteImport,
     loadWorkflow,
     newWorkflow,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
   };
 });
