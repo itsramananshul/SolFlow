@@ -171,10 +171,31 @@ function onDragOver(event: DragEvent) {
 
 function onDrop(event: DragEvent) {
   event.preventDefault();
-  const kind = event.dataTransfer?.getData('application/x-solflow-kind') as NodeKind | undefined;
+
+  // Case 1: user dropped a .solgraph.json file from the desktop.
+  const files = event.dataTransfer?.files;
+  if (files && files.length > 0) {
+    const file = files[0];
+    if (file.name.endsWith('.json') || file.type === 'application/json') {
+      file
+        .text()
+        .then((text) => {
+          const parsed = JSON.parse(text);
+          if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.functions)) {
+            throw new Error('Not a SolFlow workflow file');
+          }
+          graph.loadWorkflow(parsed);
+        })
+        .catch((e) => alert(`Could not load workflow: ${(e as Error).message}`));
+      return;
+    }
+  }
+
+  // Case 2: user dropped a palette item.
+  const kind = event.dataTransfer?.getData('application/x-solflow-kind') as
+    | NodeKind
+    | undefined;
   if (!kind) return;
-  // Convert drop coordinates to flow coordinates via the flow's own helper.
-  // For simplicity we just place at the cursor relative to the canvas.
   const target = event.currentTarget as HTMLDivElement;
   const rect = target.getBoundingClientRect();
   const pos = {

@@ -11,10 +11,12 @@ import SourcePreview from '@/components/SourcePreview.vue';
 import DiagnosticsDrawer from '@/components/DiagnosticsDrawer.vue';
 import RunModal from '@/components/RunModal.vue';
 import StatusBar from '@/components/StatusBar.vue';
+import HelpModal from '@/components/HelpModal.vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
 const runOpen = ref(false);
+const helpOpen = ref(false);
 
 onMounted(() => {
   graph.bootstrap();
@@ -55,8 +57,25 @@ function onKey(e: KeyboardEvent) {
     downloadSol();
     return;
   }
+  // ? → help (with no modifier; skip if user is in an input)
+  if (e.key === '?' && !mod) {
+    const t = e.target as HTMLElement;
+    if (
+      t.tagName !== 'INPUT' &&
+      t.tagName !== 'TEXTAREA' &&
+      !t.isContentEditable
+    ) {
+      e.preventDefault();
+      helpOpen.value = !helpOpen.value;
+      return;
+    }
+  }
   // Esc → close any open modal / drawer
   if (e.key === 'Escape') {
+    if (helpOpen.value) {
+      helpOpen.value = false;
+      return;
+    }
     if (runOpen.value) {
       runOpen.value = false;
       return;
@@ -108,6 +127,7 @@ function downloadSol() {
     </div>
     <StatusBar />
     <RunModal :open="runOpen" @close="runOpen = false" />
+    <HelpModal :open="helpOpen" @close="helpOpen = false" />
   </div>
 </template>
 
