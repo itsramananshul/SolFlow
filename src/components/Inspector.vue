@@ -500,8 +500,19 @@ const placeholderFor = (portId: string, kind: string): string => {
     </div>
 
     <div v-if="!selectedNode" class="empty">
-      <p>Select a node to edit its parameters.</p>
-      <p class="muted-note">Or drag a node from the palette to begin.</p>
+      <div class="empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
+          <rect x="3" y="6" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.4" />
+          <path d="M3 10 H21" stroke="currentColor" stroke-width="1.4" />
+          <circle cx="7" cy="8" r="0.8" fill="currentColor" />
+          <circle cx="10" cy="8" r="0.8" fill="currentColor" />
+        </svg>
+      </div>
+      <p class="empty-title">Nothing selected</p>
+      <p class="empty-sub">
+        Click a node on the canvas to edit it, or drag one in from the
+        <strong>Nodes</strong> panel. Press <kbd>Space</kbd> for Quick Add.
+      </p>
     </div>
 
     <div v-else class="body">
@@ -1336,12 +1347,45 @@ const placeholderFor = (portId: string, kind: string): string => {
   border: 1px solid var(--sf-border);
 }
 .empty {
-  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 36px 24px;
   color: var(--sf-text-3);
-  font-size: 0.75rem;
+  gap: 10px;
 }
-.empty p {
-  margin: 0 0 6px 0;
+.empty-icon {
+  color: var(--sf-text-3);
+  opacity: 0.7;
+}
+.empty-title {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--sf-text-1);
+  font-weight: 500;
+}
+.empty-sub {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--sf-text-3);
+  line-height: 1.55;
+  max-width: 260px;
+}
+.empty-sub strong {
+  color: var(--sf-text-2);
+  font-weight: 600;
+}
+.empty-sub kbd {
+  display: inline-block;
+  font-family: var(--sf-font-mono);
+  font-size: 0.5625rem;
+  padding: 1px 5px;
+  background: var(--sf-bg-3);
+  border: 1px solid var(--sf-border-strong);
+  border-radius: 3px;
+  color: var(--sf-text-1);
+  margin: 0 2px;
 }
 .body {
   display: flex;

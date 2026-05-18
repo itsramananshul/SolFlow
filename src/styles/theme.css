@@ -110,7 +110,13 @@ button {
   border-radius: var(--sf-radius-sm);
   padding: 5px 10px;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  /* Standard transition tokens — same curve everywhere so the editor
+     feels visually consistent under pressure. */
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease,
+    transform 0.08s ease;
   color: var(--sf-text-1);
   font-weight: 500;
   white-space: nowrap;
@@ -122,6 +128,12 @@ button:hover {
 }
 button:active {
   background: var(--sf-bg-4);
+  /* Subtle tactile feedback — the button retracts ~3% on press so
+     users feel the click without an obnoxious scale animation. */
+  transform: scale(0.97);
+}
+button:active:disabled {
+  transform: none;
 }
 button:focus-visible {
   outline: none;

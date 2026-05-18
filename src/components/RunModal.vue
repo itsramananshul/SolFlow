@@ -235,7 +235,7 @@ function formatReturn(v: unknown): string {
   border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-lg);
   box-shadow: var(--sf-shadow-3);
-  width: min(720px, 100%);
+  width: min(720px, calc(100% - 32px));
   max-height: 80vh;
   display: flex;
   flex-direction: column;

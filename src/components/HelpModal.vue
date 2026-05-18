@@ -115,11 +115,12 @@ function onBackdrop(e: MouseEvent) {
 <style scoped>
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.12s ease;
+  transition: opacity 0.16s ease, transform 0.16s ease;
 }
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+  transform: scale(0.985);
 }
 .backdrop {
   position: fixed;

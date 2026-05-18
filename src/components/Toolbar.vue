@@ -354,11 +354,17 @@ function toggleSampleMenu() {
   font-weight: 600;
   color: var(--sf-text-0);
   letter-spacing: -0.005em;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .wf-desc {
   font-size: 0.625rem;
   color: var(--sf-text-2);
   margin-top: 1px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .wf-name:hover,
 .wf-desc:hover {
