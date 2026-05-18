@@ -1,0 +1,30 @@
+# Local reference material — never push.
+# Holds notes Claude built for itself + .sol fixtures borrowed from
+# the open-prem-main repo. Not part of SolFlow's deliverables.
+reference/
+
+# Standard ignores (will grow as MVP scaffolds)
+node_modules/
+dist/
+build/
+.turbo/
+.cache/
+coverage/
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Rust / WASM artifacts (Phase 2+)
+target/
+pkg/
+**/*.rs.bk

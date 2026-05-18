@@ -1,0 +1,83 @@
+/*
+ * SolFlow design tokens — Phase A.
+ * Dark theme by default. Colors picked for high contrast against canvas.
+ */
+
+:root {
+  /* surfaces */
+  --sf-bg-0: #0b0c10;            /* deepest — body */
+  --sf-bg-1: #11141b;            /* sidebars, panels */
+  --sf-bg-2: #161a23;            /* node bodies, inputs */
+  --sf-bg-3: #1d2330;            /* hover, secondary surfaces */
+  --sf-bg-4: #252d3d;            /* selected node, active tab */
+  --sf-bg-5: #2f3a4f;            /* highest elevation */
+
+  /* canvas — slightly different than panels so it reads as a workspace */
+  --sf-canvas-bg: #0e1117;
+  --sf-canvas-grid: #1a1f2b;
+
+  /* text */
+  --sf-text-0: #e7eaf2;          /* primary */
+  --sf-text-1: #b9c0d0;          /* secondary */
+  --sf-text-2: #828a9e;          /* muted */
+  --sf-text-3: #545b6c;          /* placeholders */
+
+  /* borders */
+  --sf-border: #1f2433;
+  --sf-border-strong: #2a3142;
+
+  /* accents */
+  --sf-accent: #5b8def;          /* primary action / selection */
+  --sf-accent-hover: #7aa0ff;
+  --sf-accent-muted: #2a3a5e;
+
+  /* status colors */
+  --sf-success: #38c172;
+  --sf-warning: #f9a826;
+  --sf-error: #e06c75;
+
+  /* type-coded data colors (for data flow edges + ports) */
+  --sf-type-int: #f2c97d;
+  --sf-type-float: #d19a66;
+  --sf-type-bool: #c678dd;
+  --sf-type-str: #98c379;
+  --sf-type-char: #8edc8a;
+  --sf-type-array: #e5c07b;
+  --sf-type-struct: #61afef;
+  --sf-type-enum: #56b6c2;
+  --sf-type-any: #abb2bf;
+
+  /* node category colors (header tint) */
+  --sf-cat-flow: #5b8def;
+  --sf-cat-variable: #e5c07b;
+  --sf-cat-operator: #c678dd;
+  --sf-cat-literal: #98c379;
+  --sf-cat-access: #56b6c2;
+  --sf-cat-call: #61afef;
+  --sf-cat-io: #e06c75;
+  --sf-cat-entry: #38c172;
+
+  /* spacing */
+  --sf-space-1: 4px;
+  --sf-space-2: 8px;
+  --sf-space-3: 12px;
+  --sf-space-4: 16px;
+  --sf-space-5: 24px;
+  --sf-space-6: 32px;
+
+  /* radii */
+  --sf-radius-sm: 4px;
+  --sf-radius-md: 8px;
+  --sf-radius-lg: 12px;
+
+  /* typography */
+  --sf-font-sans:
+    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sf-font-mono:
+    'JetBrains Mono', 'Fira Code', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* shadows */
+  --sf-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --sf-shadow-2: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --sf-shadow-3: 0 8px 24px rgba(0, 0, 0, 0.6);
+}

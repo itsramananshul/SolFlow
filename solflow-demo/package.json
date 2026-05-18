@@ -1,0 +1,36 @@
+{
+  "name": "solflow-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SolFlow Phase A — visual IDE for the SOL language (demo vertical slice)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint . --ext .ts,.vue"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.6.0",
+    "@codemirror/language": "^6.10.2",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.28.6",
+    "@lezer/highlight": "^1.2.0",
+    "@vue-flow/background": "^1.3.2",
+    "@vue-flow/controls": "^1.1.2",
+    "@vue-flow/core": "^1.42.0",
+    "@vue-flow/minimap": "^1.5.2",
+    "codemirror": "^6.0.1",
+    "nanoid": "^5.0.7",
+    "pinia": "^2.2.2",
+    "vue": "^3.5.6"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.4",
+    "@vue/tsconfig": "^0.5.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.6",
+    "vue-tsc": "^2.1.6"
+  }
+}

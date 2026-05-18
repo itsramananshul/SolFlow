@@ -1,0 +1,177 @@
+@import './tokens.css';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--sf-bg-0);
+  color: var(--sf-text-0);
+  font-family: var(--sf-font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--sf-bg-1);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--sf-bg-3);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sf-bg-4);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+input,
+select,
+textarea {
+  background: var(--sf-bg-2);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+  padding: 4px 8px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--sf-accent);
+}
+
+button {
+  background: var(--sf-bg-3);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+button:hover {
+  background: var(--sf-bg-4);
+  border-color: var(--sf-border-strong);
+}
+button:active {
+  background: var(--sf-bg-5);
+}
+button.primary {
+  background: var(--sf-accent);
+  border-color: var(--sf-accent);
+  color: white;
+  font-weight: 500;
+}
+button.primary:hover {
+  background: var(--sf-accent-hover);
+  border-color: var(--sf-accent-hover);
+}
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+button.ghost:hover {
+  background: var(--sf-bg-3);
+}
+
+/* Vue Flow theme override */
+.vue-flow__edge-path {
+  stroke-width: 2;
+}
+.vue-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--sf-bg-2);
+}
+.vue-flow__handle.control {
+  background: #cbd1de;
+}
+.vue-flow__handle.data-int {
+  background: var(--sf-type-int);
+}
+.vue-flow__handle.data-float {
+  background: var(--sf-type-float);
+}
+.vue-flow__handle.data-bool {
+  background: var(--sf-type-bool);
+}
+.vue-flow__handle.data-str {
+  background: var(--sf-type-str);
+}
+.vue-flow__handle.data-char {
+  background: var(--sf-type-char);
+}
+.vue-flow__handle.data-array {
+  background: var(--sf-type-array);
+}
+.vue-flow__handle.data-struct {
+  background: var(--sf-type-struct);
+}
+.vue-flow__handle.data-enum {
+  background: var(--sf-type-enum);
+}
+.vue-flow__handle.data-any {
+  background: var(--sf-type-any);
+}
+
+.vue-flow__minimap {
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+}
+.vue-flow__controls {
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+  box-shadow: var(--sf-shadow-2);
+}
+.vue-flow__controls-button {
+  background: var(--sf-bg-1);
+  color: var(--sf-text-1);
+  border-bottom-color: var(--sf-border);
+}
+.vue-flow__controls-button:hover {
+  background: var(--sf-bg-3);
+}
+.vue-flow__controls-button svg {
+  fill: currentColor;
+}
+
+/* shared utility classes */
+.muted {
+  color: var(--sf-text-2);
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sf-space-2);
+}
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sf-space-2);
+}
