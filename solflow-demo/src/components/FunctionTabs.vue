@@ -102,30 +102,35 @@ function updateReturnType(fnId: string, typeStr: string) {
         :class="{ active: fn.id === graph.activeFunctionId }"
         @click="setActive(fn.id)"
       >
+        <span class="fn-prefix">fn</span>
         <input
           class="fn-name"
           :value="fn.name"
           @input="(e) => rename(fn.id, e)"
           @click.stop
         />
-        <span class="muted fn-sig">
+        <span class="fn-sig">
           ({{ fn.params.length }}){{
             fn.returnType.kind !== 'void' ? ' → ' + typeLabel(fn.returnType) : ''
           }}
         </span>
         <button class="ghost icon" @click.stop="toggleSig(fn.id)" title="Edit signature">
-          ⚙
+          <svg viewBox="0 0 12 12" width="11" height="11" fill="none">
+            <path d="M2 10l3-1 5-5-2-2-5 5-1 3z" stroke="currentColor" stroke-width="1.2" />
+          </svg>
         </button>
         <button
-          class="ghost icon"
           v-if="graph.workflow.functions.length > 1"
+          class="ghost icon"
           @click.stop="deleteFn(fn.id)"
           title="Delete function"
         >
-          ×
+          <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+            <path d="M3 3 9 9 M9 3 3 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          </svg>
         </button>
       </div>
-      <button class="ghost add" @click="newFn">+ Function</button>
+      <button class="ghost add-fn" @click="newFn">+ Function</button>
     </div>
 
     <div v-if="signatureOpenFor" class="signature-editor">
@@ -149,9 +154,13 @@ function updateReturnType(fnId: string, typeStr: string) {
               >
                 <option v-for="t in namedTypeOptions().filter((x) => x !== 'void')" :key="t" :value="t">{{ t }}</option>
               </select>
-              <button class="ghost" @click="removeParam(fn.id, idx)">×</button>
+              <button class="ghost icon" @click="removeParam(fn.id, idx)" title="Remove param">
+                <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+                  <path d="M3 3 9 9 M9 3 3 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                </svg>
+              </button>
             </div>
-            <button class="ghost add" @click="addParam(fn.id)">+ param</button>
+            <button class="ghost add-fn" @click="addParam(fn.id)">+ param</button>
           </div>
         </div>
         <div class="sig-row">
@@ -171,32 +180,41 @@ function updateReturnType(fnId: string, typeStr: string) {
 
 <style scoped>
 .fn-tabs-wrap {
-  background: var(--sf-bg-1);
+  background: var(--sf-bg-0);
   border-bottom: 1px solid var(--sf-border);
 }
 .fn-tabs {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 4px 12px;
   overflow-x: auto;
+  min-height: 36px;
 }
 .fn-tab {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: 4px 8px;
-  border-radius: var(--sf-radius-sm) var(--sf-radius-sm) 0 0;
-  background: var(--sf-bg-2);
-  border: 1px solid var(--sf-border);
-  border-bottom: none;
+  border-radius: var(--sf-radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
   cursor: pointer;
   min-width: 0;
   font-size: 12px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.fn-tab:hover {
+  background: var(--sf-bg-2);
 }
 .fn-tab.active {
   background: var(--sf-bg-3);
-  border-color: var(--sf-accent);
+  border-color: var(--sf-border-strong);
+}
+.fn-prefix {
+  color: var(--sf-text-3);
+  font-family: var(--sf-font-mono);
+  font-size: 11px;
 }
 .fn-name {
   background: transparent;
@@ -207,49 +225,65 @@ function updateReturnType(fnId: string, typeStr: string) {
   font-size: 12px;
   width: 110px;
   min-width: 60px;
+  outline: none;
 }
 .fn-name:focus {
   background: var(--sf-bg-1);
   border-radius: var(--sf-radius-sm);
+  box-shadow: 0 0 0 1px var(--sf-border-strong);
 }
 .fn-sig {
-  font-size: 10px;
   font-family: var(--sf-font-mono);
+  font-size: 10px;
+  color: var(--sf-text-3);
 }
 .icon {
-  padding: 0 4px;
+  padding: 3px;
   min-width: 20px;
-  font-size: 11px;
   background: transparent;
   border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--sf-text-2);
 }
-.add {
+.icon:hover {
+  background: var(--sf-bg-4);
+  color: var(--sf-text-0);
+}
+.add-fn {
   font-size: 11px;
-  padding: 4px 8px;
+  padding: 4px 10px;
   background: transparent;
-  border: 1px dashed var(--sf-border);
+  border: 1px dashed var(--sf-border-strong);
+  color: var(--sf-text-2);
+}
+.add-fn:hover {
+  color: var(--sf-text-0);
+  border-color: var(--sf-border-bright);
+  background: var(--sf-bg-2);
 }
 .signature-editor {
-  padding: 8px 12px;
-  background: var(--sf-bg-0);
+  padding: 10px 14px;
+  background: var(--sf-bg-1);
   border-top: 1px solid var(--sf-border);
   font-size: 11px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .sig-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 .sig-label {
   width: 60px;
   color: var(--sf-text-2);
-  font-weight: 600;
+  font-weight: 500;
   text-transform: uppercase;
   font-size: 10px;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
 }
 .sig-params {
   display: flex;
@@ -261,18 +295,24 @@ function updateReturnType(fnId: string, typeStr: string) {
   gap: 2px;
   align-items: center;
   background: var(--sf-bg-2);
-  padding: 2px 4px;
+  padding: 1px 1px 1px 4px;
   border-radius: var(--sf-radius-sm);
   border: 1px solid var(--sf-border);
 }
 .sig-param-name {
-  width: 70px;
+  width: 80px;
   font-family: var(--sf-font-mono);
   font-size: 11px;
+  background: transparent;
+  border: none;
+  padding: 3px 4px;
 }
 .sig-param-type {
-  width: 90px;
+  width: 100px;
   font-family: var(--sf-font-mono);
   font-size: 11px;
+  background: transparent;
+  border: none;
+  padding: 3px 20px 3px 4px;
 }
 </style>

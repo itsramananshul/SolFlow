@@ -1,20 +1,14 @@
 <script setup lang="ts">
 /**
- * Single Vue Flow custom node component that renders ALL 22 SolFlow node
- * kinds. The body switches on `data.data.kind`; handles are derived from
- * `data.data.ports`.
- *
- * Vue Flow passes the entire registered-node data via the component's
- * default `data` prop. We accept it typed.
+ * Vue Flow custom node renderer. One component handles all 22 SolFlow node
+ * kinds; the body switches on `data.data.kind`. Handles are derived from
+ * `data.data.ports`. Inline expressions (from data.data.expressions) are
+ * rendered next to their port labels — what you see is what gets emitted.
  */
 import { computed } from 'vue';
 import { Handle, Position } from '@vue-flow/core';
 
-import type {
-  GraphNode,
-  NodeData,
-  Port,
-} from '@/graph/schema';
+import type { GraphNode, NodeData, Port } from '@/graph/schema';
 import { typeCssClass, typeLabel } from '@/graph/schema';
 import { categoryColor, categoryForKind } from '@/graph/kinds';
 import { useGraphStore } from '@/stores/graph.store';
@@ -32,17 +26,27 @@ const ui = useUIStore();
 
 const node = computed(() => props.data);
 const kindLabel = computed(() => labelForKind(node.value.data));
-const headerColor = computed(() =>
+const categoryDot = computed(() =>
   categoryColor(categoryForKind(node.value.data.kind)),
 );
 
-const inputs = computed<Port[]>(() => node.value.ports.in);
-const outputs = computed<Port[]>(() => node.value.ports.out);
+const dataIns = computed<Port[]>(() =>
+  node.value.ports.in.filter((p) => p.kind === 'data'),
+);
+const dataOuts = computed<Port[]>(() =>
+  node.value.ports.out.filter((p) => p.kind === 'data'),
+);
+const controlIns = computed<Port[]>(() =>
+  node.value.ports.in.filter((p) => p.kind === 'control'),
+);
+const controlOuts = computed<Port[]>(() =>
+  node.value.ports.out.filter((p) => p.kind === 'control'),
+);
 
-const dataIns = computed(() => inputs.value.filter((p) => p.kind === 'data'));
-const dataOuts = computed(() => outputs.value.filter((p) => p.kind === 'data'));
-const controlIns = computed(() => inputs.value.filter((p) => p.kind === 'control'));
-const controlOuts = computed(() => outputs.value.filter((p) => p.kind === 'control'));
+function inlineExprFor(portId: string): string | undefined {
+  const v = node.value.expressions?.[portId];
+  return v && v.trim() !== '' ? v : undefined;
+}
 
 function handleDelete() {
   if (node.value.data.kind === 'start') return;
@@ -55,50 +59,53 @@ function labelForKind(data: NodeData): string {
     case 'start':
       return 'Start';
     case 'let':
-      return `Let ${data.varName || '(unnamed)'}: ${typeLabel(data.varType)}`;
+      return `let ${data.varName || '_'}: ${typeLabel(data.varType)}`;
     case 'assign':
-      return `Assign ${data.varName || '?'}`;
+      return `${data.varName || '_'} =`;
     case 'print':
-      return 'Print';
+      return 'print';
     case 'return':
-      return data.hasValue ? 'Return ⏎' : 'Return';
+      return 'return';
     case 'branch':
-      return data.hasElse ? 'If / Else' : 'If';
+      return data.hasElse ? 'if / else' : 'if';
     case 'while':
-      return 'While';
+      return 'while';
     case 'forEach':
-      return `For ${data.iteratorName || 'item'} in …`;
+      return `for ${data.iteratorName || 'item'} in`;
     case 'binaryOp':
-      return `${data.op}`;
+      return data.op;
     case 'unaryOp':
       return `${data.op}x`;
     case 'varGet':
-      return data.varName || '(var)';
+      return data.varName || 'var';
     case 'literal':
-      return `${data.litType}: ${formatLiteralPreview(data.litType, data.value)}`;
+      return formatLiteralPreview(data.litType, data.value);
     case 'arrayLiteral':
       return `[${data.length}] ${typeLabel(data.itemType)}`;
     case 'structLiteral':
-      return `${data.structName || '?'} { … }`;
+      return `${data.structName || 'struct'} { }`;
     case 'fieldAccess':
       return `.${data.fieldName || 'field'}`;
     case 'fieldSet':
-      return `.${data.fieldName || 'field'} ←`;
+      return `.${data.fieldName || 'field'} =`;
     case 'indexRead':
-      return '[ ] →';
+      return '[i]';
     case 'indexSet':
-      return '[ ] ←';
+      return '[i] =';
     case 'enumVariant':
       return `${data.enumName || '?'}::${data.variantName || '?'}`;
     case 'call': {
       const fn = useGraphStore().workflow.functions.find((f) => f.id === data.functionId);
-      return `Call ${fn?.name ?? '?'}()`;
+      return `${fn?.name ?? 'call'}()`;
     }
   }
 }
 
 function formatLiteralPreview(t: string, v: string): string {
-  if (t === 'str') return `"${(v ?? '').slice(0, 18)}${(v ?? '').length > 18 ? '…' : ''}"`;
+  if (t === 'str') {
+    const s = v ?? '';
+    return `"${s.length > 20 ? s.slice(0, 20) + '…' : s}"`;
+  }
   if (t === 'char') return `'${(v ?? ' ')[0] ?? ' '}'`;
   return v || '0';
 }
@@ -106,51 +113,46 @@ function formatLiteralPreview(t: string, v: string): string {
 
 <template>
   <div :class="['sf-node', { selected }]">
-    <div class="header" :style="{ background: headerColor }">
-      <span class="title">{{ kindLabel }}</span>
+    <div class="header">
+      <span class="cat-dot" :style="{ background: categoryDot }" />
+      <span class="title" :title="kindLabel">{{ kindLabel }}</span>
       <button
         v-if="node.data.kind !== 'start'"
         class="close"
         title="Delete node"
         @click.stop="handleDelete"
       >
-        ✕
+        <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+          <path d="M3 3 9 9 M9 3 3 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
       </button>
     </div>
 
-    <div class="body">
-      <!-- Inputs section -->
-      <div v-if="dataIns.length > 0" class="ports col">
-        <div
-          v-for="p in dataIns"
-          :key="`in:${p.id}`"
-          class="port-row in"
-          :class="{ required: p.required }"
-        >
+    <div v-if="dataIns.length > 0 || dataOuts.length > 0" class="body">
+      <!-- Data inputs (left side) -->
+      <div v-if="dataIns.length > 0" class="ports in">
+        <div v-for="p in dataIns" :key="`in:${p.id}`" class="port-row">
           <Handle
             :id="p.id"
             type="target"
             :position="Position.Left"
             :class="['handle', typeCssClass(p.type)]"
           />
-          <span class="port-label">{{ p.name }}</span>
-          <span class="port-type" :class="typeCssClass(p.type)">{{
-            p.type ? typeLabel(p.type) : ''
-          }}</span>
+          <div class="port-meta">
+            <span class="port-label">{{ p.name }}</span>
+            <span v-if="inlineExprFor(p.id)" class="inline-expr">{{ inlineExprFor(p.id) }}</span>
+            <span v-else class="port-type">{{ p.type ? typeLabel(p.type) : '' }}</span>
+          </div>
         </div>
       </div>
 
-      <!-- Outputs section -->
-      <div v-if="dataOuts.length > 0" class="ports col">
-        <div
-          v-for="p in dataOuts"
-          :key="`out:${p.id}`"
-          class="port-row out"
-        >
-          <span class="port-type" :class="typeCssClass(p.type)">{{
-            p.type ? typeLabel(p.type) : ''
-          }}</span>
-          <span class="port-label">{{ p.name }}</span>
+      <!-- Data outputs (right side) -->
+      <div v-if="dataOuts.length > 0" class="ports out">
+        <div v-for="p in dataOuts" :key="`out:${p.id}`" class="port-row">
+          <div class="port-meta right">
+            <span class="port-type">{{ p.type ? typeLabel(p.type) : '' }}</span>
+            <span class="port-label">{{ p.name }}</span>
+          </div>
           <Handle
             :id="p.id"
             type="source"
@@ -161,7 +163,7 @@ function formatLiteralPreview(t: string, v: string): string {
       </div>
     </div>
 
-    <!-- Control flow handles (top for in, bottom for out) -->
+    <!-- Control flow handles -->
     <Handle
       v-for="p in controlIns"
       :key="`cin:${p.id}`"
@@ -197,103 +199,139 @@ function formatLiteralPreview(t: string, v: string): string {
   background: var(--sf-bg-2);
   border: 1px solid var(--sf-border);
   border-radius: var(--sf-radius-md);
-  box-shadow: var(--sf-shadow-1);
-  min-width: 180px;
+  min-width: 160px;
+  max-width: 280px;
   font-size: 11px;
   position: relative;
   user-select: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.sf-node:hover {
+  border-color: var(--sf-border-strong);
 }
 .sf-node.selected {
   border-color: var(--sf-accent);
-  box-shadow: 0 0 0 2px var(--sf-accent-muted), var(--sf-shadow-2);
+  box-shadow: 0 0 0 1px var(--sf-accent-dim);
 }
 
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
-  border-radius: var(--sf-radius-md) var(--sf-radius-md) 0 0;
-  color: white;
-  font-weight: 600;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--sf-border);
+}
+.cat-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.title {
+  flex: 1;
+  color: var(--sf-text-0);
+  font-family: var(--sf-font-mono);
   font-size: 11px;
-  letter-spacing: 0.2px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.header .title {
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
-}
-.header .close {
+.close {
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.7);
+  padding: 2px;
+  border-radius: 2px;
+  color: var(--sf-text-3);
   cursor: pointer;
-  padding: 0 4px;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.header .close:hover {
-  color: white;
+.close:hover {
+  color: var(--sf-text-0);
+  background: var(--sf-bg-4);
 }
 
 .body {
-  padding: 8px;
+  padding: 8px 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .ports {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
 }
 .port-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   position: relative;
-  min-height: 20px;
+  min-height: 18px;
 }
-.port-row.in {
-  justify-content: flex-start;
-  padding-left: 4px;
+.ports.in .port-row {
+  padding-left: 10px;
+  padding-right: 8px;
 }
-.port-row.out {
+.ports.out .port-row {
+  padding-left: 8px;
+  padding-right: 10px;
   justify-content: flex-end;
-  padding-right: 4px;
+}
+.port-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.port-meta.right {
+  align-items: flex-end;
 }
 .port-label {
+  font-family: var(--sf-font-mono);
+  font-size: 10px;
   color: var(--sf-text-1);
 }
 .port-type {
   font-family: var(--sf-font-mono);
   font-size: 9px;
-  opacity: 0.7;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: var(--sf-bg-3);
+  color: var(--sf-text-3);
 }
-.port-row.in .port-type {
-  margin-left: auto;
-}
-.port-row.out .port-type {
-  margin-right: auto;
+.inline-expr {
+  font-family: var(--sf-font-mono);
+  font-size: 10px;
+  color: var(--sf-accent);
+  background: var(--sf-accent-dim);
+  padding: 1px 5px;
+  border-radius: 2px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .control-out-row {
   position: relative;
-  height: 14px;
+  height: 12px;
 }
 .control-out-label {
   position: absolute;
   bottom: -16px;
   transform: translateX(-50%);
   font-size: 9px;
-  color: var(--sf-text-2);
+  font-family: var(--sf-font-mono);
+  color: var(--sf-text-3);
   white-space: nowrap;
   pointer-events: none;
 }
 
 .handle.control {
-  background: #cbd1de;
+  background: var(--sf-text-2);
   border-color: var(--sf-bg-2);
+  border-radius: 2px;
 }
 .handle.data-int { background: var(--sf-type-int); }
 .handle.data-float { background: var(--sf-type-float); }

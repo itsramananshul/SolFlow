@@ -1,83 +1,85 @@
 /*
- * SolFlow design tokens — Phase A.
- * Dark theme by default. Colors picked for high contrast against canvas.
+ * SolFlow design tokens — Vercel-inspired dark theme.
+ * One accent (blue), neutral grays only, no per-category rainbow.
  */
 
 :root {
-  /* surfaces */
-  --sf-bg-0: #0b0c10;            /* deepest — body */
-  --sf-bg-1: #11141b;            /* sidebars, panels */
-  --sf-bg-2: #161a23;            /* node bodies, inputs */
-  --sf-bg-3: #1d2330;            /* hover, secondary surfaces */
-  --sf-bg-4: #252d3d;            /* selected node, active tab */
-  --sf-bg-5: #2f3a4f;            /* highest elevation */
+  /* surfaces — true black to graphite */
+  --sf-bg-0: #000000;
+  --sf-bg-1: #0a0a0a;
+  --sf-bg-2: #111111;
+  --sf-bg-3: #171717;
+  --sf-bg-4: #1f1f1f;
+  --sf-bg-5: #2a2a2a;
 
-  /* canvas — slightly different than panels so it reads as a workspace */
-  --sf-canvas-bg: #0e1117;
-  --sf-canvas-grid: #1a1f2b;
+  --sf-canvas-bg: #000000;
+  --sf-canvas-dot: rgba(255, 255, 255, 0.05);
 
-  /* text */
-  --sf-text-0: #e7eaf2;          /* primary */
-  --sf-text-1: #b9c0d0;          /* secondary */
-  --sf-text-2: #828a9e;          /* muted */
-  --sf-text-3: #545b6c;          /* placeholders */
+  /* text scale */
+  --sf-text-0: #ededed;
+  --sf-text-1: #a1a1a1;
+  --sf-text-2: #707070;
+  --sf-text-3: #4a4a4a;
 
   /* borders */
-  --sf-border: #1f2433;
-  --sf-border-strong: #2a3142;
+  --sf-border: rgba(255, 255, 255, 0.08);
+  --sf-border-strong: rgba(255, 255, 255, 0.14);
+  --sf-border-bright: rgba(255, 255, 255, 0.22);
 
-  /* accents */
-  --sf-accent: #5b8def;          /* primary action / selection */
-  --sf-accent-hover: #7aa0ff;
-  --sf-accent-muted: #2a3a5e;
+  /* single accent (Vercel-ish blue) */
+  --sf-accent: #3291ff;
+  --sf-accent-hover: #52a8ff;
+  --sf-accent-dim: rgba(50, 145, 255, 0.14);
+  --sf-accent-ring: rgba(50, 145, 255, 0.32);
 
-  /* status colors */
-  --sf-success: #38c172;
-  --sf-warning: #f9a826;
-  --sf-error: #e06c75;
+  /* status — used sparingly, only for diagnostics */
+  --sf-success: #00cc88;
+  --sf-warning: #f5a623;
+  --sf-error: #ff4d4f;
 
-  /* type-coded data colors (for data flow edges + ports) */
-  --sf-type-int: #f2c97d;
-  --sf-type-float: #d19a66;
-  --sf-type-bool: #c678dd;
-  --sf-type-str: #98c379;
-  --sf-type-char: #8edc8a;
-  --sf-type-array: #e5c07b;
-  --sf-type-struct: #61afef;
-  --sf-type-enum: #56b6c2;
-  --sf-type-any: #abb2bf;
+  /* type indicator colors — muted, only used for handle dots */
+  --sf-type-int: #d4a76a;
+  --sf-type-float: #bf8a5d;
+  --sf-type-bool: #a07ec3;
+  --sf-type-str: #7ea66a;
+  --sf-type-char: #7ea66a;
+  --sf-type-array: #d4a76a;
+  --sf-type-struct: #5d8acf;
+  --sf-type-enum: #4a9aac;
+  --sf-type-any: #888888;
 
-  /* node category colors (header tint) */
-  --sf-cat-flow: #5b8def;
-  --sf-cat-variable: #e5c07b;
-  --sf-cat-operator: #c678dd;
-  --sf-cat-literal: #98c379;
-  --sf-cat-access: #56b6c2;
-  --sf-cat-call: #61afef;
-  --sf-cat-io: #e06c75;
-  --sf-cat-entry: #38c172;
+  /* category indicators — muted dots only, NOT used for big colored headers */
+  --sf-cat-flow: #5d8acf;
+  --sf-cat-variable: #d4a76a;
+  --sf-cat-operator: #a07ec3;
+  --sf-cat-literal: #7ea66a;
+  --sf-cat-access: #4a9aac;
+  --sf-cat-call: #5d8acf;
+  --sf-cat-io: #c97e7e;
+  --sf-cat-entry: #00cc88;
 
-  /* spacing */
+  /* spacing scale (4px base) */
   --sf-space-1: 4px;
   --sf-space-2: 8px;
   --sf-space-3: 12px;
   --sf-space-4: 16px;
   --sf-space-5: 24px;
   --sf-space-6: 32px;
+  --sf-space-7: 48px;
 
   /* radii */
   --sf-radius-sm: 4px;
-  --sf-radius-md: 8px;
-  --sf-radius-lg: 12px;
+  --sf-radius-md: 6px;
+  --sf-radius-lg: 8px;
 
   /* typography */
   --sf-font-sans:
-    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --sf-font-mono:
-    'JetBrains Mono', 'Fira Code', Menlo, Consolas, 'Liberation Mono', monospace;
+    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
-  /* shadows */
-  --sf-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  /* shadows — minimal, only for elevated panels */
+  --sf-shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
   --sf-shadow-2: 0 4px 12px rgba(0, 0, 0, 0.5);
-  --sf-shadow-3: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --sf-shadow-3: 0 12px 32px rgba(0, 0, 0, 0.6);
 }

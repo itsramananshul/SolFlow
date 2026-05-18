@@ -81,22 +81,35 @@ function toggleSampleMenu() {
 <template>
   <header class="toolbar">
     <div class="brand">
-      <span class="logo">▸</span>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <path
+          d="M6 6h8a4 4 0 010 8h-4a4 4 0 000 8h0"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+        />
+        <circle cx="6" cy="6" r="2" fill="currentColor" />
+        <circle cx="18" cy="22" r="2" fill="currentColor" />
+      </svg>
       <span class="name">SolFlow</span>
-      <span class="muted version">phase A</span>
+      <span class="version">v0.1</span>
     </div>
 
     <div class="actions">
-      <button class="ghost" @click="newWorkflow" title="Start fresh">New</button>
-      <button class="ghost" @click="openFilePicker" title="Load workflow JSON">
-        Load
-      </button>
-      <button class="ghost" @click="downloadGraph" title="Save workflow JSON">
-        Save
-      </button>
+      <button class="ghost" @click="newWorkflow">New</button>
+      <button class="ghost" @click="openFilePicker">Open</button>
+      <button class="ghost" @click="downloadGraph">Save</button>
+
+      <div class="separator" />
+
       <div class="sample-dropdown">
-        <button class="ghost" @click="toggleSampleMenu">Load sample ▾</button>
-        <div v-if="sampleMenuOpen" class="dropdown-menu">
+        <button class="ghost" @click="toggleSampleMenu">
+          Samples
+          <svg viewBox="0 0 8 5" width="8" height="5" style="margin-left: 4px;">
+            <path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" />
+          </svg>
+        </button>
+        <div v-if="sampleMenuOpen" class="dropdown-menu" @click.stop>
           <button
             v-for="s in SAMPLES"
             :key="s.id"
@@ -108,19 +121,17 @@ function toggleSampleMenu() {
           </button>
         </div>
       </div>
-      <button class="primary" @click="downloadSol" title="Download canonical .sol">
-        Export .sol
-      </button>
-      <button
-        class="ghost"
-        @click="ui.toggleDrawer"
-        :title="ui.drawerOpen ? 'Hide diagnostics' : 'Show diagnostics'"
-      >
+
+      <button class="ghost" @click="ui.toggleDrawer">
         <span v-if="graph.diagnostics.length > 0" class="badge">
           {{ graph.diagnostics.length }}
         </span>
         Diagnostics
       </button>
+
+      <div class="separator" />
+
+      <button class="primary" @click="downloadSol">Export .sol</button>
     </div>
 
     <input
@@ -138,48 +149,57 @@ function toggleSampleMenu() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 0 16px;
   background: var(--sf-bg-0);
   border-bottom: 1px solid var(--sf-border);
-  height: 48px;
+  height: 44px;
   flex-shrink: 0;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 8px;
+  color: var(--sf-text-0);
 }
-.logo {
-  color: var(--sf-accent);
-  font-size: 18px;
-  font-weight: bold;
+.brand svg {
+  color: var(--sf-text-0);
 }
 .name {
   font-weight: 600;
-  letter-spacing: 0.5px;
+  font-size: 13px;
+  letter-spacing: -0.01em;
 }
 .version {
+  font-family: var(--sf-font-mono);
   font-size: 10px;
-  opacity: 0.6;
+  color: var(--sf-text-3);
+  padding: 2px 6px;
+  border: 1px solid var(--sf-border);
+  border-radius: 3px;
 }
 .actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  position: relative;
+  gap: 4px;
+}
+.separator {
+  width: 1px;
+  height: 16px;
+  background: var(--sf-border);
+  margin: 0 6px;
 }
 .sample-dropdown {
   position: relative;
 }
 .dropdown-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 6px);
   right: 0;
   background: var(--sf-bg-2);
-  border: 1px solid var(--sf-border);
-  border-radius: var(--sf-radius-sm);
-  box-shadow: var(--sf-shadow-2);
-  z-index: 10;
+  border: 1px solid var(--sf-border-strong);
+  border-radius: var(--sf-radius-md);
+  box-shadow: var(--sf-shadow-3);
+  z-index: 20;
   min-width: 320px;
   overflow: hidden;
 }
@@ -189,7 +209,7 @@ function toggleSampleMenu() {
   text-align: left;
   background: transparent;
   border: none;
-  padding: 10px 12px;
+  padding: 10px 14px;
   border-radius: 0;
   border-bottom: 1px solid var(--sf-border);
   cursor: pointer;
@@ -201,7 +221,7 @@ function toggleSampleMenu() {
   background: var(--sf-bg-3);
 }
 .menu-title {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 12px;
   color: var(--sf-text-0);
 }
@@ -209,6 +229,7 @@ function toggleSampleMenu() {
   font-size: 11px;
   color: var(--sf-text-2);
   margin-top: 2px;
+  line-height: 1.4;
 }
 .file-hidden {
   display: none;
@@ -217,10 +238,11 @@ function toggleSampleMenu() {
   display: inline-block;
   background: var(--sf-error);
   color: white;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 8px;
   margin-right: 4px;
+  font-family: var(--sf-font-mono);
 }
 </style>

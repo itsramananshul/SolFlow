@@ -15,7 +15,7 @@ const ui = useUIStore();
         :class="{ active: ui.sidebarTab === 'palette' }"
         @click="ui.setSidebarTab('palette')"
       >
-        Palette
+        Nodes
       </button>
       <button
         class="tab"
@@ -52,27 +52,28 @@ const ui = useUIStore();
   display: flex;
   border-bottom: 1px solid var(--sf-border);
   background: var(--sf-bg-0);
+  padding: 0 4px;
+  gap: 2px;
 }
 .tab {
   flex: 1;
   background: transparent;
   border: none;
   border-radius: 0;
-  padding: 8px 0;
+  padding: 9px 0;
   color: var(--sf-text-2);
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
   border-bottom: 2px solid transparent;
+  letter-spacing: 0.1px;
 }
 .tab:hover {
-  background: var(--sf-bg-2);
-  color: var(--sf-text-1);
+  color: var(--sf-text-0);
 }
 .tab.active {
   color: var(--sf-text-0);
   border-bottom-color: var(--sf-accent);
-  background: var(--sf-bg-1);
 }
 .tab-body {
   flex: 1;

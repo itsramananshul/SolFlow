@@ -52,36 +52,42 @@ const solLang = StreamLanguage.define({
 });
 
 const solHighlight = HighlightStyle.define([
-  { tag: t.keyword, color: '#c678dd' },
-  { tag: t.string, color: '#98c379' },
-  { tag: t.comment, color: '#5c6370', fontStyle: 'italic' },
-  { tag: t.number, color: '#d19a66' },
-  { tag: t.typeName, color: '#e5c07b' },
-  { tag: t.variableName, color: '#abb2bf' },
+  { tag: t.keyword, color: '#a07ec3' },
+  { tag: t.string, color: '#7ea66a' },
+  { tag: t.comment, color: '#555', fontStyle: 'italic' },
+  { tag: t.number, color: '#d4a76a' },
+  { tag: t.typeName, color: '#5d8acf' },
+  { tag: t.variableName, color: '#cfcfcf' },
 ]);
 
 const baseTheme = EditorView.theme(
   {
     '&': {
       height: '100%',
-      backgroundColor: 'var(--sf-bg-1)',
+      backgroundColor: 'transparent',
       color: 'var(--sf-text-0)',
       fontFamily: 'var(--sf-font-mono)',
       fontSize: '12px',
     },
     '.cm-content': {
       caretColor: 'var(--sf-accent)',
+      padding: '8px 0',
     },
     '.cm-gutters': {
-      backgroundColor: 'var(--sf-bg-0)',
+      backgroundColor: 'transparent',
       color: 'var(--sf-text-3)',
       borderRight: '1px solid var(--sf-border)',
+      paddingRight: '4px',
+    },
+    '.cm-lineNumbers .cm-gutterElement': {
+      fontFamily: 'var(--sf-font-mono)',
+      fontSize: '10px',
     },
     '.cm-activeLine': {
-      backgroundColor: 'var(--sf-bg-2)',
+      backgroundColor: 'rgba(255, 255, 255, 0.025)',
     },
     '.cm-activeLineGutter': {
-      backgroundColor: 'var(--sf-bg-2)',
+      backgroundColor: 'rgba(255, 255, 255, 0.025)',
     },
   },
   { dark: true },
@@ -123,8 +129,11 @@ onBeforeUnmount(() => {
 <template>
   <div class="source-preview">
     <div class="header">
-      <span class="title">SOL Source (live preview)</span>
-      <span class="muted" v-if="graph.emitted.warnings.length > 0">
+      <div class="header-left">
+        <span class="title">SOL</span>
+        <span class="hint">live preview</span>
+      </div>
+      <span class="warnings" v-if="graph.emitted.warnings.length > 0">
         {{ graph.emitted.warnings.length }} warning{{
           graph.emitted.warnings.length === 1 ? '' : 's'
         }}
@@ -140,21 +149,36 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  background: var(--sf-bg-1);
 }
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 10px 14px;
   background: var(--sf-bg-0);
   border-bottom: 1px solid var(--sf-border);
 }
+.header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
 .title {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 1px;
+  letter-spacing: 0.4px;
   text-transform: uppercase;
   color: var(--sf-text-1);
+}
+.hint {
+  font-size: 10px;
+  color: var(--sf-text-3);
+}
+.warnings {
+  font-size: 10px;
+  color: var(--sf-warning);
+  font-family: var(--sf-font-mono);
 }
 .editor {
   flex: 1;

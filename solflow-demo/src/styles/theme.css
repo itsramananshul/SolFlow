@@ -19,25 +19,27 @@ body {
   color: var(--sf-text-0);
   font-family: var(--sf-font-sans);
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.45;
+  font-feature-settings: 'cv11', 'ss01', 'ss02';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.005em;
 }
 
 /* scrollbar */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--sf-bg-1);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--sf-bg-3);
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--sf-bg-4);
+  background: rgba(255, 255, 255, 0.14);
 }
 
 button,
@@ -45,8 +47,9 @@ input,
 select,
 textarea {
   font-family: inherit;
-  font-size: inherit;
+  font-size: 12px;
   color: inherit;
+  letter-spacing: -0.005em;
 }
 
 input,
@@ -55,36 +58,65 @@ textarea {
   background: var(--sf-bg-2);
   border: 1px solid var(--sf-border);
   border-radius: var(--sf-radius-sm);
-  padding: 4px 8px;
+  padding: 6px 8px;
   outline: none;
-  transition: border-color 0.12s ease;
+  transition: border-color 0.12s ease, background 0.12s ease;
+  color: var(--sf-text-0);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--sf-text-3);
+}
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--sf-border-strong);
 }
 input:focus,
 select:focus,
 textarea:focus {
   border-color: var(--sf-accent);
+  background: var(--sf-bg-3);
+  box-shadow: 0 0 0 1px var(--sf-accent-dim);
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 24px;
+  background-image: url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 8 5' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a1a1a1' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
 }
 
 button {
-  background: var(--sf-bg-3);
+  background: transparent;
   border: 1px solid var(--sf-border);
   border-radius: var(--sf-radius-sm);
-  padding: 6px 12px;
+  padding: 5px 10px;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  color: var(--sf-text-1);
+  font-weight: 500;
+  white-space: nowrap;
 }
 button:hover {
-  background: var(--sf-bg-4);
+  background: var(--sf-bg-3);
   border-color: var(--sf-border-strong);
+  color: var(--sf-text-0);
 }
 button:active {
-  background: var(--sf-bg-5);
+  background: var(--sf-bg-4);
+}
+button:focus-visible {
+  outline: none;
+  border-color: var(--sf-accent);
+  box-shadow: 0 0 0 1px var(--sf-accent-dim);
 }
 button.primary {
   background: var(--sf-accent);
   border-color: var(--sf-accent);
   color: white;
-  font-weight: 500;
 }
 button.primary:hover {
   background: var(--sf-accent-hover);
@@ -93,72 +125,86 @@ button.primary:hover {
 button.ghost {
   background: transparent;
   border-color: transparent;
+  color: var(--sf-text-1);
 }
 button.ghost:hover {
   background: var(--sf-bg-3);
+  color: var(--sf-text-0);
 }
 
 /* Vue Flow theme override */
 .vue-flow__edge-path {
-  stroke-width: 2;
+  stroke-width: 1.6;
+}
+.vue-flow__edge.selected .vue-flow__edge-path {
+  stroke: var(--sf-accent) !important;
+  stroke-width: 2.5;
 }
 .vue-flow__handle {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   border: 2px solid var(--sf-bg-2);
+  background: var(--sf-text-2);
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+.vue-flow__handle:hover {
+  background: var(--sf-accent);
+  transform: scale(1.3);
 }
 .vue-flow__handle.control {
-  background: #cbd1de;
+  background: var(--sf-text-1);
+  border-radius: 2px;
 }
-.vue-flow__handle.data-int {
-  background: var(--sf-type-int);
-}
-.vue-flow__handle.data-float {
-  background: var(--sf-type-float);
-}
-.vue-flow__handle.data-bool {
-  background: var(--sf-type-bool);
-}
-.vue-flow__handle.data-str {
-  background: var(--sf-type-str);
-}
-.vue-flow__handle.data-char {
-  background: var(--sf-type-char);
-}
-.vue-flow__handle.data-array {
-  background: var(--sf-type-array);
-}
-.vue-flow__handle.data-struct {
-  background: var(--sf-type-struct);
-}
-.vue-flow__handle.data-enum {
-  background: var(--sf-type-enum);
-}
-.vue-flow__handle.data-any {
-  background: var(--sf-type-any);
-}
+.vue-flow__handle.data-int { background: var(--sf-type-int); }
+.vue-flow__handle.data-float { background: var(--sf-type-float); }
+.vue-flow__handle.data-bool { background: var(--sf-type-bool); }
+.vue-flow__handle.data-str { background: var(--sf-type-str); }
+.vue-flow__handle.data-char { background: var(--sf-type-char); }
+.vue-flow__handle.data-array { background: var(--sf-type-array); }
+.vue-flow__handle.data-struct { background: var(--sf-type-struct); }
+.vue-flow__handle.data-enum { background: var(--sf-type-enum); }
+.vue-flow__handle.data-any { background: var(--sf-type-any); }
 
 .vue-flow__minimap {
   background: var(--sf-bg-1);
   border: 1px solid var(--sf-border);
-  border-radius: var(--sf-radius-sm);
+  border-radius: var(--sf-radius-md);
+  box-shadow: var(--sf-shadow-2);
 }
 .vue-flow__controls {
   background: var(--sf-bg-1);
   border: 1px solid var(--sf-border);
-  border-radius: var(--sf-radius-sm);
+  border-radius: var(--sf-radius-md);
   box-shadow: var(--sf-shadow-2);
+  overflow: hidden;
 }
 .vue-flow__controls-button {
-  background: var(--sf-bg-1);
+  background: transparent;
   color: var(--sf-text-1);
-  border-bottom-color: var(--sf-border);
+  border-bottom: 1px solid var(--sf-border);
+  width: 28px;
+  height: 28px;
+}
+.vue-flow__controls-button:last-child {
+  border-bottom: none;
 }
 .vue-flow__controls-button:hover {
   background: var(--sf-bg-3);
+  color: var(--sf-text-0);
 }
 .vue-flow__controls-button svg {
   fill: currentColor;
+  width: 12px;
+  height: 12px;
+}
+
+.vue-flow__attribution {
+  display: none;
+}
+.vue-flow__connectionline {
+  stroke: var(--sf-accent);
+  stroke-width: 2;
+  stroke-dasharray: 4 4;
 }
 
 /* shared utility classes */

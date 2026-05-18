@@ -197,13 +197,14 @@ function isValidConnection(c: Connection): boolean {
       @edges-delete="onEdgesDelete"
       :connection-line-style="{ stroke: '#5b8def', strokeWidth: 2 }"
     >
-      <Background pattern-color="var(--sf-canvas-grid)" :gap="20" />
-      <Controls />
+      <Background variant="dots" :pattern-color="'rgba(255, 255, 255, 0.06)'" :gap="20" :size="1" />
+      <Controls :show-interactive="false" />
       <MiniMap
         pannable
         zoomable
-        node-color="#2a3142"
-        mask-color="rgba(11, 12, 16, 0.7)"
+        node-color="#262626"
+        node-stroke-color="rgba(255, 255, 255, 0.1)"
+        mask-color="rgba(0, 0, 0, 0.78)"
       />
     </VueFlow>
     <div v-if="!graph.activeFunction?.nodes.length" class="empty-hint">
@@ -227,5 +228,7 @@ function isValidConnection(c: Connection): boolean {
   color: var(--sf-text-3);
   font-size: 12px;
   pointer-events: none;
+  font-family: var(--sf-font-mono);
+  letter-spacing: 0.5px;
 }
 </style>

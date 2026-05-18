@@ -17,9 +17,7 @@ function onDragStart(event: DragEvent, kind: NodeKind) {
 <template>
   <div class="palette">
     <div v-for="cat in order" :key="cat" class="cat">
-      <div class="cat-header" :style="{ color: categoryColor(cat) }">
-        {{ CATEGORY_LABELS[cat] }}
-      </div>
+      <div class="cat-header">{{ CATEGORY_LABELS[cat] }}</div>
       <div
         v-for="entry in grouped[cat]"
         :key="entry.kind"
@@ -37,45 +35,49 @@ function onDragStart(event: DragEvent, kind: NodeKind) {
 
 <style scoped>
 .palette {
-  padding: 8px;
+  padding: 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   overflow-y: auto;
   font-size: 12px;
 }
 .cat-header {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
-  letter-spacing: 1px;
+  letter-spacing: 0.8px;
   text-transform: uppercase;
-  padding: 2px 4px;
+  padding: 2px 6px;
   margin-bottom: 4px;
+  color: var(--sf-text-3);
 }
 .palette-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 5px 6px;
   border-radius: var(--sf-radius-sm);
   cursor: grab;
-  transition: background 0.1s ease;
+  transition: background 0.1s ease, color 0.1s ease;
   user-select: none;
+  color: var(--sf-text-1);
 }
 .palette-item:hover {
-  background: var(--sf-bg-3);
+  background: var(--sf-bg-2);
+  color: var(--sf-text-0);
 }
 .palette-item:active {
   cursor: grabbing;
-  background: var(--sf-bg-4);
+  background: var(--sf-bg-3);
 }
 .dot {
-  width: 8px;
-  height: 8px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   flex-shrink: 0;
+  opacity: 0.7;
 }
 .label {
-  color: var(--sf-text-1);
+  font-size: 12px;
 }
 </style>
