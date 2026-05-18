@@ -16,14 +16,23 @@ import { MiniMap } from '@vue-flow/minimap';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import { typeCssClass } from '@/graph/schema';
-import type { GraphEdge, NodeKind } from '@/graph/schema';
+import type { GraphEdge, NodeKind, SolType } from '@/graph/schema';
 import SolNode from './SolNode.vue';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
+import QuickAddPalette, { type SourceContext } from './QuickAddPalette.vue';
+import { onMounted, onBeforeUnmount } from 'vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
-const { fitView } = useVueFlow();
+const { fitView, screenToFlowCoordinate, getSelectedNodes, onConnectStart, onConnectEnd } =
+  useVueFlow();
 const flowContainerRef = ref<HTMLDivElement | null>(null);
+
+// Track last cursor screen position so Space hotkey can insert "where I'm looking".
+const lastCursor = ref({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+function onMouseMove(e: MouseEvent) {
+  lastCursor.value = { x: e.clientX, y: e.clientY };
+}
 
 // Auto-fit the viewport whenever the active function changes (e.g. when
 // loading a sample workflow, switching function tab, or creating a new
@@ -115,6 +124,8 @@ function cssVarForType(cls: string): string {
 }
 
 function onConnect(c: Connection) {
+  // Mark that a real connection completed, so connect-end won't open Quick-Add.
+  connectCompleted.value = true;
   if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;
   const fn = graph.activeFunction;
   if (!fn) return;
@@ -270,6 +281,134 @@ function onNodeContextMenu(event: { event: MouseEvent | TouchEvent; node: VueFlo
 function closeCtxMenu() {
   ctxMenu.value = { ...ctxMenu.value, open: false };
 }
+
+// =============================================================
+//  Quick-Add Palette
+// =============================================================
+const qaOpen = ref(false);
+const qaScreenPos = ref({ x: 0, y: 0 });
+const qaSourceContext = ref<SourceContext | undefined>(undefined);
+// Where the inserted node should appear in flow coords.
+const qaFlowPos = ref({ x: 0, y: 0 });
+
+// Track the most recent connect-start so we can detect drag-edge-to-empty.
+const pendingConnect = ref<{
+  nodeId: string;
+  portId: string;
+  edgeKind: 'control' | 'data';
+  type?: SolType;
+} | null>(null);
+const connectCompleted = ref(false);
+
+onConnectStart((event) => {
+  connectCompleted.value = false;
+  const nodeId = event?.nodeId;
+  const portId = event?.handleId;
+  const handleType = event?.handleType; // 'source' | 'target'
+  if (!nodeId || !portId || handleType !== 'source') {
+    pendingConnect.value = null;
+    return;
+  }
+  const fn = graph.activeFunction;
+  const node = fn?.nodes.find((n) => n.id === nodeId);
+  const port = node?.ports.out.find((p) => p.id === portId);
+  if (!node || !port) {
+    pendingConnect.value = null;
+    return;
+  }
+  pendingConnect.value = {
+    nodeId,
+    portId,
+    edgeKind: port.kind,
+    type: port.type,
+  };
+});
+
+onConnectEnd((event) => {
+  // If `onConnect` fired (a real connection was made), bail.
+  if (connectCompleted.value || !pendingConnect.value) {
+    pendingConnect.value = null;
+    return;
+  }
+  // Edge dragged into empty space — open Quick-Add at the drop point.
+  const me = event as MouseEvent;
+  const x = me?.clientX ?? lastCursor.value.x;
+  const y = me?.clientY ?? lastCursor.value.y;
+  const flow = screenToFlowCoordinate({ x, y });
+  openQuickAdd(x, y, flow, pendingConnect.value);
+  pendingConnect.value = null;
+});
+
+function openQuickAdd(
+  screenX: number,
+  screenY: number,
+  flowPos: { x: number; y: number },
+  source?: SourceContext,
+) {
+  qaScreenPos.value = { x: screenX, y: screenY };
+  qaFlowPos.value = flowPos;
+  qaSourceContext.value = source;
+  qaOpen.value = true;
+}
+
+function closeQuickAdd() {
+  qaOpen.value = false;
+  qaSourceContext.value = undefined;
+}
+
+function onQuickAddSelect(kind: NodeKind, source?: SourceContext) {
+  const node = graph.addNodeAt(
+    kind,
+    qaFlowPos.value,
+    source
+      ? { fromNode: source.nodeId, fromPort: source.portId, edgeKind: source.edgeKind }
+      : undefined,
+  );
+  if (node) ui.selectNode(node.id);
+}
+
+// Double-click on pane opens Quick-Add at the clicked spot.
+function onPaneDoubleClick(event: MouseEvent) {
+  const flow = screenToFlowCoordinate({ x: event.clientX, y: event.clientY });
+  openQuickAdd(event.clientX, event.clientY, flow);
+}
+
+// Space / Cmd+K open Quick-Add at the cursor. Guarded so typing in an
+// input or textarea isn't intercepted.
+function isTypingInInput(): boolean {
+  const el = document.activeElement as HTMLElement | null;
+  if (!el) return false;
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) {
+    return true;
+  }
+  return false;
+}
+
+function onGlobalKey(e: KeyboardEvent) {
+  const mod = e.metaKey || e.ctrlKey;
+  // Cmd/Ctrl+K
+  if (mod && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    const flow = screenToFlowCoordinate(lastCursor.value);
+    openQuickAdd(lastCursor.value.x, lastCursor.value.y, flow);
+    return;
+  }
+  // Space (no modifier, not in input, no edge being dragged)
+  if (e.key === ' ' && !mod && !e.repeat && !isTypingInInput() && !pendingConnect.value) {
+    e.preventDefault();
+    const flow = screenToFlowCoordinate(lastCursor.value);
+    openQuickAdd(lastCursor.value.x, lastCursor.value.y, flow);
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKey);
+  window.addEventListener('mousemove', onMouseMove);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKey);
+  window.removeEventListener('mousemove', onMouseMove);
+});
 </script>
 
 <template>
@@ -288,11 +427,14 @@ function closeCtxMenu() {
       @node-drag-stop="onNodeDragStop"
       @node-click="onNodeClick"
       @pane-click="onPaneClick"
+      @pane-double-click="onPaneDoubleClick"
       @edge-click="onEdgeClick"
       @nodes-delete="onNodesDelete"
       @edges-delete="onEdgesDelete"
       @node-context-menu="onNodeContextMenu"
       :connection-line-style="{ stroke: '#3291ff', strokeWidth: 2 }"
+      :selection-mode-key-code="'Shift'"
+      :pan-on-drag="[1, 2]"
     >
       <Background variant="dots" :pattern-color="'rgba(255, 255, 255, 0.06)'" :gap="20" :size="1" />
       <Controls :show-interactive="false" />
@@ -320,6 +462,14 @@ function closeCtxMenu() {
       :y="ctxMenu.y"
       :items="ctxItems"
       @close="closeCtxMenu"
+    />
+    <QuickAddPalette
+      :open="qaOpen"
+      :x="qaScreenPos.x"
+      :y="qaScreenPos.y"
+      :source-context="qaSourceContext"
+      @select="onQuickAddSelect"
+      @close="closeQuickAdd"
     />
   </div>
 </template>

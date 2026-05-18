@@ -191,8 +191,8 @@ export const useGraphStore = defineStore('graph', () => {
 
   /**
    * Duplicate a node. Copies data + ports + inline expressions; gets a
-   * new nanoid + a 30px offset position. Skips the Start node since
-   * there can be only one per function.
+   * new nanoid + a free position near the original. Skips the Start
+   * node since there can be only one per function.
    */
   function duplicateNode(nodeId: string): GraphNode | undefined {
     const fn = activeFunction.value;
@@ -200,16 +200,126 @@ export const useGraphStore = defineStore('graph', () => {
     const orig = fn.nodes.find((n) => n.id === nodeId);
     if (!orig) return undefined;
     if (orig.data.kind === 'start') return undefined;
+    const pos = findFreePosition(
+      { x: orig.position.x + 32, y: orig.position.y + 32 },
+      fn.nodes,
+    );
     const copy: GraphNode = {
       id: nanoid(8),
       data: JSON.parse(JSON.stringify(orig.data)) as NodeData,
-      position: { x: orig.position.x + 30, y: orig.position.y + 30 },
+      position: pos,
       ports: JSON.parse(JSON.stringify(orig.ports)),
       expressions: orig.expressions ? { ...orig.expressions } : undefined,
     };
     fn.nodes.push(copy);
     touch();
     return copy;
+  }
+
+  /**
+   * Duplicate every node id in the array as a single batch (one undo
+   * step). Each copy is offset to avoid overlap; if multiple of the
+   * input ids referenced the same Start node, it's skipped silently.
+   * Returns the new node ids in the same order.
+   */
+  function duplicateNodes(nodeIds: string[]): string[] {
+    const fn = activeFunction.value;
+    if (!fn) return [];
+    const newIds: string[] = [];
+    for (const id of nodeIds) {
+      const dup = duplicateNode(id);
+      if (dup) newIds.push(dup.id);
+    }
+    return newIds;
+  }
+
+  /**
+   * Find a free position near `preferred` that doesn't overlap any
+   * existing node within ~48px. Walks a small spiral if needed.
+   * Cheap O(nodes * steps); good enough for Phase A graph sizes.
+   */
+  function findFreePosition(
+    preferred: { x: number; y: number },
+    nodes: GraphNode[],
+  ): { x: number; y: number } {
+    const minDist = 36;
+    const step = 32;
+    const overlaps = (p: { x: number; y: number }) =>
+      nodes.some(
+        (n) =>
+          Math.abs(n.position.x - p.x) < minDist &&
+          Math.abs(n.position.y - p.y) < minDist,
+      );
+    if (!overlaps(preferred)) return preferred;
+    // Try in a square spiral.
+    for (let r = 1; r <= 8; r++) {
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dy = -r; dy <= r; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const p = { x: preferred.x + dx * step, y: preferred.y + dy * step };
+          if (!overlaps(p)) return p;
+        }
+      }
+    }
+    return preferred;
+  }
+
+  /**
+   * Add a node at an explicit flow-coordinate position. Optionally
+   * auto-create a connecting edge from the given source port. Used by
+   * the Quick-Add palette (Space / dbl-click / drag-edge-to-empty).
+   * Returns the new node so the caller can select it.
+   */
+  function addNodeAt(
+    kind: NodeKind,
+    position: { x: number; y: number },
+    autoConnect?: { fromNode: string; fromPort: string; edgeKind: 'control' | 'data' },
+  ): GraphNode | undefined {
+    const fn = activeFunction.value;
+    if (!fn) return undefined;
+    const safePos = findFreePosition(position, fn.nodes);
+    const node = createNode(kind, safePos, ctx.value);
+    fn.nodes.push(node);
+
+    if (autoConnect) {
+      const srcNode = fn.nodes.find((n) => n.id === autoConnect.fromNode);
+      const srcPort = srcNode?.ports.out.find((p) => p.id === autoConnect.fromPort);
+      // Find first compatible input port on the new node.
+      let target: { node: string; port: string } | undefined;
+      for (const p of node.ports.in) {
+        if (p.kind !== autoConnect.edgeKind) continue;
+        if (p.kind === 'control') {
+          target = { node: node.id, port: p.id };
+          break;
+        }
+        // Data: prefer exact type match, then any.
+        if (srcPort?.type && p.type) {
+          if (
+            srcPort.type.kind === p.type.kind ||
+            srcPort.type.kind === 'any' ||
+            p.type.kind === 'any'
+          ) {
+            target = { node: node.id, port: p.id };
+            break;
+          }
+        } else {
+          target = { node: node.id, port: p.id };
+          break;
+        }
+      }
+      if (target) {
+        const edge: GraphEdge = {
+          id: nanoid(8),
+          source: { node: autoConnect.fromNode, port: autoConnect.fromPort },
+          target,
+          kind: autoConnect.edgeKind,
+        };
+        fn.edges.push(edge);
+      }
+    }
+
+    touch();
+    return node;
   }
 
   function updateNodeData(nodeId: string, patch: Partial<NodeData>) {
@@ -605,10 +715,12 @@ export const useGraphStore = defineStore('graph', () => {
     updateFunctionSignature,
     setActiveFunction,
     addNode,
+    addNodeAt,
     updateNodePosition,
     updateNodeData,
     updateNodeExpression,
     duplicateNode,
+    duplicateNodes,
     removeNode,
     addEdge,
     removeEdge,
