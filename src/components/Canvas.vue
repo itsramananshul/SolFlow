@@ -468,7 +468,7 @@ function getCurrentSelectionIds(): string[] {
 }
 
 // Empty-state hint visibility: only when the function contains just the
-// auto-placed Start node and zero edges. Hides the second any real node
+// auto-placed Start node and zero edges. Hides the moment any real node
 // or edge appears so it never overlaps graph content.
 const isFunctionEmpty = computed(() => {
   const fn = graph.activeFunction;
@@ -476,6 +476,17 @@ const isFunctionEmpty = computed(() => {
   if (fn.edges.length > 0) return false;
   if (fn.nodes.length !== 1) return false;
   return fn.nodes[0].data.kind === 'start';
+});
+
+// Second-step nudge: a trigger has been added but there are no edges yet
+// — point users at the next thing to do (drag a wire). Disappears as
+// soon as any edge exists.
+const needsFirstConnection = computed(() => {
+  const fn = graph.activeFunction;
+  if (!fn) return false;
+  if (fn.edges.length > 0) return false;
+  // Has a trigger but hasn't wired it to anything.
+  return fn.nodes.some((n) => n.data.kind === 'trigger');
 });
 
 function onGlobalKey(e: KeyboardEvent) {
@@ -578,15 +589,20 @@ onBeforeUnmount(() => {
       v-if="isFunctionEmpty"
       class="empty-hint"
     >
-      <span class="kbd">Space</span>
-      <span class="hint-text">to add a node</span>
+      <span class="hint-text">Start by adding a trigger — what should kick this workflow off?</span>
       <span class="dot">·</span>
       <span class="hint-alts">
-        <span class="kbd small">⌘K</span>
-        <span class="alt-sep">·</span>
-        <span class="alt-label">Double-click</span>
-        <span class="alt-sep">·</span>
-        <span class="alt-label">Drag from palette</span>
+        <span class="alt-label">Drag from the left panel</span>
+        <span class="alt-sep">or press</span>
+        <span class="kbd small">Space</span>
+      </span>
+    </div>
+    <div
+      v-else-if="needsFirstConnection"
+      class="empty-hint nudge"
+    >
+      <span class="hint-text">
+        Now connect your trigger — drag from the dot under it to the next step.
       </span>
     </div>
     <ContextMenu
@@ -682,5 +698,18 @@ onBeforeUnmount(() => {
 .empty-hint .alt-label {
   color: var(--sf-text-2);
   font-size: 0.625rem;
+}
+.empty-hint .alt-sep {
+  font-size: 0.625rem;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.empty-hint.nudge {
+  background: rgba(232, 166, 87, 0.10);
+  border-color: rgba(232, 166, 87, 0.28);
+  color: var(--sf-text-1);
+}
+.empty-hint.nudge .hint-text {
+  color: var(--sf-cat-trigger);
 }
 </style>
