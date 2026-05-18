@@ -355,7 +355,30 @@ export const useGraphStore = defineStore('graph', () => {
   ): GraphNode | undefined {
     const fn = activeFunction.value;
     if (!fn) return undefined;
-    const safePos = findFreePosition(position, fn.nodes);
+    // Auto-connect placement: when the user drags from a port and lets go
+    // in empty space, prefer a position that's at least one "node-height"
+    // below (control) or to the right of (data) the source node. The
+    // raw release position can land right on top of the source and look
+    // like a glitch — this gives a clean, predictable drop.
+    let preferred = position;
+    if (autoConnect) {
+      const src = fn.nodes.find((n) => n.id === autoConnect.fromNode);
+      if (src) {
+        const MIN_GAP = 96;
+        if (autoConnect.edgeKind === 'control') {
+          const minY = src.position.y + MIN_GAP;
+          if (preferred.y < minY) {
+            preferred = { x: src.position.x, y: minY };
+          }
+        } else {
+          const minX = src.position.x + 280;
+          if (preferred.x < minX) {
+            preferred = { x: minX, y: src.position.y };
+          }
+        }
+      }
+    }
+    const safePos = findFreePosition(preferred, fn.nodes);
     const node = createNode(kind, safePos, ctx.value, init);
     fn.nodes.push(node);
 

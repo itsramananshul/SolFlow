@@ -251,12 +251,15 @@ function onDrop(event: DragEvent) {
       /* ignore malformed init */
     }
   }
-  const target = event.currentTarget as HTMLDivElement;
-  const rect = target.getBoundingClientRect();
-  const pos = {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
-  };
+  // CRITICAL: convert via screenToFlowCoordinate, not getBoundingClientRect.
+  // The canvas-host rect ignores Vue Flow's viewport transform (pan + zoom),
+  // so HTML-relative coords land in the wrong flow position whenever the
+  // viewport is panned or zoomed. screenToFlowCoordinate is the single
+  // boundary every creation path goes through.
+  const pos = screenToFlowCoordinate({
+    x: event.clientX,
+    y: event.clientY,
+  });
   graph.addNode(kind, pos, init as Partial<NodeData> | undefined);
 }
 
