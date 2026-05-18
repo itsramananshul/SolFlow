@@ -16,6 +16,7 @@ export type Category =
   | 'access'
   | 'call'
   | 'io'
+  | 'annotation'
   | 'entry';
 
 export interface PaletteEntry {
@@ -150,6 +151,22 @@ export const PALETTE: PaletteEntry[] = [
   // io / calls
   { kind: 'print', label: 'Print', category: 'io', description: 'print(…)', draggable: true },
   { kind: 'call', label: 'Call', category: 'call', description: 'call a function', draggable: true },
+
+  // annotations — visual only, don't affect runtime
+  {
+    kind: 'note',
+    label: 'Note',
+    category: 'annotation',
+    description: 'A sticky-note annotation for your team',
+    draggable: true,
+  },
+  {
+    kind: 'frame',
+    label: 'Section',
+    category: 'annotation',
+    description: 'Wraps a region of nodes with a title',
+    draggable: true,
+  },
 ];
 
 export function paletteByCategory(): Record<Category, PaletteEntry[]> {
@@ -162,6 +179,7 @@ export function paletteByCategory(): Record<Category, PaletteEntry[]> {
     access: [],
     call: [],
     io: [],
+    annotation: [],
     entry: [],
   };
   for (const entry of PALETTE) {
@@ -184,6 +202,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   access: 'Read & update',
   call: 'Reuse a workflow',
   io: 'Output',
+  annotation: 'Notes & sections',
   entry: 'Entry',
 };
 
@@ -217,6 +236,8 @@ export function categoryColor(c: Category): string {
       return 'var(--sf-cat-call)';
     case 'io':
       return 'var(--sf-cat-io)';
+    case 'annotation':
+      return 'var(--sf-text-3)';
     case 'entry':
       return 'var(--sf-cat-entry)';
   }

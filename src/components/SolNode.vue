@@ -61,6 +61,10 @@ const headerBadge = computed<string | null>(() => {
 // docs. Kept under ~120 chars per entry so the tooltip stays scan-able.
 function explainKind(d: NodeData): string {
   switch (d.kind) {
+    case 'note':
+      return 'A sticky note for your team. Doesn\'t affect execution.';
+    case 'frame':
+      return 'Visually groups a region of nodes. Doesn\'t affect execution.';
     case 'start':
       return 'Entry point of this function. Execution starts here and follows the wires below.';
     case 'trigger': {
@@ -201,6 +205,10 @@ function handleDuplicate() {
 
 function labelForKind(data: NodeData): string {
   switch (data.kind) {
+    case 'note':
+      return 'note';
+    case 'frame':
+      return data.title || 'Section';
     case 'start':
       return 'start()';
     case 'trigger': {
@@ -265,7 +273,51 @@ function formatLiteralPreview(t: string, v: string): string {
 </script>
 
 <template>
+  <!--
+    Annotation nodes (note / frame) get their own minimal renderers.
+    They have no ports, no execution semantics — just visual aids for
+    large workflows. Falls through to the normal node renderer below.
+  -->
   <div
+    v-if="node.data.kind === 'frame'"
+    class="sf-frame"
+    :class="{ selected }"
+    :style="{
+      width: node.data.width + 'px',
+      height: node.data.height + 'px',
+    }"
+  >
+    <div class="frame-title">
+      <input
+        class="frame-title-input nodrag nopan"
+        :value="node.data.title"
+        placeholder="Section title…"
+        spellcheck="false"
+        @click.stop
+        @mousedown.stop
+        @input="(e) => graph.updateNodeData(node.id, { title: (e.target as HTMLInputElement).value } as Partial<NodeData>)"
+      />
+    </div>
+  </div>
+  <div
+    v-else-if="node.data.kind === 'note'"
+    class="sf-note"
+    :class="{ selected }"
+    @mouseenter="ui.setHovered(node.id)"
+    @mouseleave="ui.setHovered(null)"
+  >
+    <textarea
+      class="note-body nodrag nopan"
+      :value="node.data.text"
+      placeholder="Add a note…"
+      spellcheck="false"
+      @click.stop
+      @mousedown.stop
+      @input="(e) => graph.updateNodeData(node.id, { text: (e.target as HTMLTextAreaElement).value } as Partial<NodeData>)"
+    />
+  </div>
+  <div
+    v-else
     :class="[
       'sf-node',
       `cat-${category}`,
@@ -641,6 +693,97 @@ function formatLiteralPreview(t: string, v: string): string {
 .handle.data-struct { background: var(--sf-type-struct); }
 .handle.data-enum { background: var(--sf-type-enum); }
 .handle.data-any { background: var(--sf-type-any); }
+
+/* =================================================================
+ *  Frame annotation — translucent region wrapper for big workflows
+ * ================================================================= */
+.sf-frame {
+  position: relative;
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: var(--sf-radius-lg);
+  cursor: grab;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.sf-frame:active {
+  cursor: grabbing;
+}
+.sf-frame:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.sf-frame.selected {
+  border-color: var(--sf-accent);
+  background: rgba(50, 145, 255, 0.04);
+}
+.frame-title {
+  position: absolute;
+  top: -12px;
+  left: 14px;
+  background: var(--sf-canvas-bg);
+  padding: 0 6px;
+  display: flex;
+}
+.frame-title-input {
+  background: transparent;
+  border: none;
+  color: var(--sf-text-1);
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 0;
+  outline: none;
+  width: max-content;
+  min-width: 80px;
+}
+.frame-title-input::placeholder {
+  color: var(--sf-text-3);
+}
+
+/* =================================================================
+ *  Note annotation — sticky-note for free-text annotation
+ * ================================================================= */
+.sf-note {
+  background: rgba(245, 200, 90, 0.07);
+  border: 1px solid rgba(245, 200, 90, 0.28);
+  border-radius: var(--sf-radius-md);
+  padding: 8px 10px;
+  min-width: 200px;
+  max-width: 320px;
+  cursor: grab;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.sf-note:active {
+  cursor: grabbing;
+}
+.sf-note:hover {
+  border-color: rgba(245, 200, 90, 0.4);
+}
+.sf-note.selected {
+  border-color: rgba(245, 200, 90, 0.7);
+  box-shadow: 0 0 0 1px rgba(245, 200, 90, 0.18);
+}
+.note-body {
+  width: 100%;
+  background: transparent;
+  border: none;
+  resize: vertical;
+  min-height: 60px;
+  max-height: 260px;
+  color: #f5c85a;
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  padding: 0;
+  outline: none;
+  font-feature-settings: 'cv11';
+}
+.note-body::placeholder {
+  color: rgba(245, 200, 90, 0.4);
+  font-style: italic;
+}
 
 /* Hover-help tooltip floating above the node header. Teaches what a
    kind does in one sentence so users don't need to open the Inspector

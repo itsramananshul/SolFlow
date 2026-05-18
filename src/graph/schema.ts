@@ -122,7 +122,11 @@ export type NodeKind =
   | 'indexRead'
   | 'indexSet'
   | 'enumVariant'
-  | 'call';
+  | 'call'
+  // annotations — non-executable visual aids for big workflows.
+  // Notes hold free text; Frames wrap a region of nodes with a title.
+  | 'note'
+  | 'frame';
 
 /**
  * Trigger sub-kind. A trigger node is an event-driven entrypoint to a
@@ -188,7 +192,13 @@ export type NodeData =
   | { kind: 'indexRead'; elementType: SolType }
   | { kind: 'indexSet'; elementType: SolType }
   | { kind: 'enumVariant'; enumName: string; variantName: string }
-  | { kind: 'call'; functionId: string }; // refs FunctionGraph.id
+  | { kind: 'call'; functionId: string } // refs FunctionGraph.id
+  // -----------------------------------------------------------
+  // Annotations — render-only, not part of execution semantics.
+  // Skipped by interpret/emit/validate; do not declare ports.
+  // -----------------------------------------------------------
+  | { kind: 'note'; text: string }
+  | { kind: 'frame'; title: string; width: number; height: number };
 
 export interface GraphNode {
   id: string; // nanoid

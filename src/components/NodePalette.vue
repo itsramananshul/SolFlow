@@ -14,7 +14,14 @@ const grouped = computed(() => paletteByCategory());
 // Primary categories rendered top-level. Operator / Literal / Access live
 // behind the Advanced toggle because their names lean on SOL's AST and
 // they're rarely the first thing a new user needs.
-const primaryOrder: Category[] = ['trigger', 'flow', 'variable', 'call', 'io'];
+const primaryOrder: Category[] = [
+  'trigger',
+  'flow',
+  'variable',
+  'call',
+  'io',
+  'annotation',
+];
 const advancedOrder: Category[] = ['operator', 'literal', 'access'];
 
 const advancedOpen = ref(false);

@@ -79,6 +79,15 @@ export function defaultData(kind: NodeKind): NodeData {
       return { kind: 'enumVariant', enumName: '', variantName: '' };
     case 'call':
       return { kind: 'call', functionId: '' };
+    case 'note':
+      return { kind: 'note', text: 'Add a note…' };
+    case 'frame':
+      return {
+        kind: 'frame',
+        title: 'Section',
+        width: 360,
+        height: 240,
+      };
   }
 }
 
@@ -357,6 +366,10 @@ export function rebuildPorts(data: NodeData, ctx: WorkflowCtx): NodePorts {
       }
       return { in: inPorts, out: outPorts };
     }
+    case 'note':
+    case 'frame':
+      // Annotations have no ports — they're visual aids only.
+      return { in: [], out: [] };
   }
 }
 

@@ -297,6 +297,10 @@ function emitStatement(ctx: EmitCtx, node: GraphNode, indent: number): string {
       // Trigger nodes are entry markers; their annotation is emitted at the
       // function header, not as an inline statement.
       return '';
+    case 'note':
+    case 'frame':
+      // Annotations never appear in the emitted SOL source.
+      return '';
     default:
       return '';
   }

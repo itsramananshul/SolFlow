@@ -294,6 +294,9 @@ function executeStatement(
   const data = node.data;
   switch (data.kind) {
     case 'start':
+    case 'note':
+    case 'frame':
+      // Annotations are render-only; no execution semantics.
       return;
     case 'trigger': {
       // Idempotent payload prime: a trigger reached mid-graph (e.g. via a

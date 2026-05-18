@@ -70,13 +70,21 @@ const nodeTypes = Object.fromEntries(
 const flowNodes = computed<VueFlowNode[]>(() => {
   const fn = graph.activeFunction;
   if (!fn) return [];
-  return fn.nodes.map((n) => ({
-    id: n.id,
-    type: n.data.kind,
-    position: n.position,
-    data: n,
-    selected: ui.selectedNodeId === n.id,
-  }));
+  return fn.nodes.map((n) => {
+    // Frames render BENEATH normal nodes so the workflow content stays
+    // on top of the region wrapper. Notes get a slightly elevated
+    // z-index so they don't get hidden by overlapping graph elements.
+    let zIndex: number | undefined;
+    if (n.data.kind === 'frame') zIndex = -1;
+    return {
+      id: n.id,
+      type: n.data.kind,
+      position: n.position,
+      data: n,
+      selected: ui.selectedNodeId === n.id,
+      ...(zIndex !== undefined ? { zIndex } : {}),
+    };
+  });
 });
 
 const flowEdges = computed<Edge[]>(() => {
