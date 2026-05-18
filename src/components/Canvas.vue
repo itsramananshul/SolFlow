@@ -226,7 +226,7 @@ function isValidConnection(c: Connection): boolean {
   left: 50%;
   transform: translate(-50%, -50%);
   color: var(--sf-text-3);
-  font-size: 12px;
+  font-size: 0.75rem;
   pointer-events: none;
   font-family: var(--sf-font-mono);
   letter-spacing: 0.5px;

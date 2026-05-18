@@ -54,7 +54,7 @@ function updatePath(id: string, value: string) {
   flex-direction: column;
   gap: 12px;
   overflow-y: auto;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .section-header {
   display: flex;
@@ -62,14 +62,14 @@ function updatePath(id: string, value: string) {
   justify-content: space-between;
   margin-bottom: 6px;
   color: var(--sf-text-1);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 1px;
   text-transform: uppercase;
 }
 .note {
   color: var(--sf-text-3);
-  font-size: 11px;
+  font-size: 0.6875rem;
   margin: 0 0 8px 0;
   line-height: 1.4;
 }
@@ -87,12 +87,12 @@ function updatePath(id: string, value: string) {
 .path {
   flex: 1;
   font-family: var(--sf-font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .alias {
   flex: 1;
   font-family: var(--sf-font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .lbl {
   color: var(--sf-text-2);

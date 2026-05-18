@@ -58,7 +58,7 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
   border-bottom: 1px solid var(--sf-border);
 }
 .title {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -72,7 +72,7 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
   color: var(--sf-text-3);
   padding: 16px;
   text-align: center;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .row {
   display: flex;
@@ -80,7 +80,7 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
   gap: 8px;
   padding: 4px 8px;
   border-radius: var(--sf-radius-sm);
-  font-size: 11px;
+  font-size: 0.6875rem;
   cursor: pointer;
 }
 .row:hover {
@@ -93,7 +93,7 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
   border-left: 3px solid var(--sf-warning);
 }
 .badge {
-  font-size: 9px;
+  font-size: 0.5625rem;
   text-transform: uppercase;
   padding: 1px 5px;
   border-radius: 3px;
@@ -110,7 +110,7 @@ function jumpTo(d: { nodeId?: string; functionId?: string }) {
 .code {
   font-family: var(--sf-font-mono);
   color: var(--sf-text-3);
-  font-size: 10px;
+  font-size: 0.625rem;
 }
 .msg {
   color: var(--sf-text-1);

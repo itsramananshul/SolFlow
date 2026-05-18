@@ -62,7 +62,7 @@ const ui = useUIStore();
   border-radius: 0;
   padding: 9px 0;
   color: var(--sf-text-2);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   cursor: pointer;
   border-bottom: 2px solid transparent;

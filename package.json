@@ -1,9 +1,9 @@
 {
-  "name": "solflow-demo",
+  "name": "solflow",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "SolFlow Phase A — visual IDE for the SOL language (demo vertical slice)",
+  "description": "SolFlow — production visual IDE for the SOL language",
   "engines": {
     "node": ">=20.0.0"
   },

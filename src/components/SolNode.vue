@@ -201,7 +201,7 @@ function formatLiteralPreview(t: string, v: string): string {
   border-radius: var(--sf-radius-md);
   min-width: 160px;
   max-width: 280px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   position: relative;
   user-select: none;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
@@ -231,7 +231,7 @@ function formatLiteralPreview(t: string, v: string): string {
   flex: 1;
   color: var(--sf-text-0);
   font-family: var(--sf-font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -292,17 +292,17 @@ function formatLiteralPreview(t: string, v: string): string {
 }
 .port-label {
   font-family: var(--sf-font-mono);
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--sf-text-1);
 }
 .port-type {
   font-family: var(--sf-font-mono);
-  font-size: 9px;
+  font-size: 0.5625rem;
   color: var(--sf-text-3);
 }
 .inline-expr {
   font-family: var(--sf-font-mono);
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--sf-accent);
   background: var(--sf-accent-dim);
   padding: 1px 5px;
@@ -321,7 +321,7 @@ function formatLiteralPreview(t: string, v: string): string {
   position: absolute;
   bottom: -16px;
   transform: translateX(-50%);
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-family: var(--sf-font-mono);
   color: var(--sf-text-3);
   white-space: nowrap;

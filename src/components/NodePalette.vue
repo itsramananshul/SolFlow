@@ -40,10 +40,10 @@ function onDragStart(event: DragEvent, kind: NodeKind) {
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .cat-header {
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 600;
   letter-spacing: 0.8px;
   text-transform: uppercase;
@@ -78,6 +78,6 @@ function onDragStart(event: DragEvent, kind: NodeKind) {
   opacity: 0.7;
 }
 .label {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 </style>

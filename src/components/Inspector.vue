@@ -467,7 +467,7 @@ const placeholderFor = (portId: string, kind: string): string => {
   border-bottom: 1px solid var(--sf-border);
 }
 .title {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
@@ -475,7 +475,7 @@ const placeholderFor = (portId: string, kind: string): string => {
 }
 .kind-tag {
   font-family: var(--sf-font-mono);
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--sf-text-2);
   padding: 2px 6px;
   border-radius: 3px;
@@ -485,7 +485,7 @@ const placeholderFor = (portId: string, kind: string): string => {
 .empty {
   padding: 20px 16px;
   color: var(--sf-text-3);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .empty p {
   margin: 0 0 6px 0;
@@ -510,13 +510,13 @@ const placeholderFor = (portId: string, kind: string): string => {
   justify-content: space-between;
   margin-bottom: 8px;
   color: var(--sf-text-2);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 0.6px;
   text-transform: uppercase;
 }
 .section-header .hint {
-  font-size: 9px;
+  font-size: 0.5625rem;
   text-transform: none;
   letter-spacing: 0;
   color: var(--sf-text-3);
@@ -535,7 +535,7 @@ const placeholderFor = (portId: string, kind: string): string => {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--sf-text-1);
 }
 .port-name {
@@ -543,7 +543,7 @@ const placeholderFor = (portId: string, kind: string): string => {
 }
 .wire-pill,
 .inline-pill {
-  font-size: 9px;
+  font-size: 0.5625rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 1px 4px;
@@ -559,7 +559,7 @@ const placeholderFor = (portId: string, kind: string): string => {
 }
 .expr-input {
   font-family: var(--sf-font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .expr-input:disabled {
   opacity: 0.4;
@@ -576,7 +576,7 @@ const placeholderFor = (portId: string, kind: string): string => {
 }
 .muted-note {
   color: var(--sf-text-3);
-  font-size: 11px;
+  font-size: 0.6875rem;
   margin: 0;
 }
 </style>

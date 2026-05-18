@@ -201,7 +201,7 @@ function updateReturnType(fnId: string, typeStr: string) {
   border: 1px solid transparent;
   cursor: pointer;
   min-width: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
 .fn-tab:hover {
@@ -214,7 +214,7 @@ function updateReturnType(fnId: string, typeStr: string) {
 .fn-prefix {
   color: var(--sf-text-3);
   font-family: var(--sf-font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .fn-name {
   background: transparent;
@@ -222,7 +222,7 @@ function updateReturnType(fnId: string, typeStr: string) {
   padding: 0 2px;
   color: var(--sf-text-0);
   font-family: var(--sf-font-mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   width: 110px;
   min-width: 60px;
   outline: none;
@@ -234,7 +234,7 @@ function updateReturnType(fnId: string, typeStr: string) {
 }
 .fn-sig {
   font-family: var(--sf-font-mono);
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--sf-text-3);
 }
 .icon {
@@ -252,7 +252,7 @@ function updateReturnType(fnId: string, typeStr: string) {
   color: var(--sf-text-0);
 }
 .add-fn {
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 4px 10px;
   background: transparent;
   border: 1px dashed var(--sf-border-strong);
@@ -267,7 +267,7 @@ function updateReturnType(fnId: string, typeStr: string) {
   padding: 10px 14px;
   background: var(--sf-bg-1);
   border-top: 1px solid var(--sf-border);
-  font-size: 11px;
+  font-size: 0.6875rem;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -282,7 +282,7 @@ function updateReturnType(fnId: string, typeStr: string) {
   color: var(--sf-text-2);
   font-weight: 500;
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: 0.625rem;
   letter-spacing: 0.5px;
 }
 .sig-params {
@@ -302,7 +302,7 @@ function updateReturnType(fnId: string, typeStr: string) {
 .sig-param-name {
   width: 80px;
   font-family: var(--sf-font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   background: transparent;
   border: none;
   padding: 3px 4px;
@@ -310,7 +310,7 @@ function updateReturnType(fnId: string, typeStr: string) {
 .sig-param-type {
   width: 100px;
   font-family: var(--sf-font-mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   background: transparent;
   border: none;
   padding: 3px 20px 3px 4px;

@@ -181,7 +181,7 @@ function updateVariantValue(enumId: string, idx: number, value: string) {
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .section-header {
   display: flex;
@@ -189,7 +189,7 @@ function updateVariantValue(enumId: string, idx: number, value: string) {
   justify-content: space-between;
   margin-bottom: 6px;
   color: var(--sf-text-1);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -233,7 +233,7 @@ function updateVariantValue(enumId: string, idx: number, value: string) {
 .add-field {
   width: 100%;
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 0.625rem;
   padding: 3px;
   color: var(--sf-text-2);
 }

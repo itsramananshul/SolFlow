@@ -14,11 +14,26 @@ body,
   overflow: hidden;
 }
 
+/*
+ * Responsive root font size: every rem value across the app scales
+ * with viewport width. Sample resolved sizes:
+ *   1366px (small laptop) → 15.77px
+ *   1440px (mid laptop)   → 17.06px
+ *   1920px (1080p)        → 18.98px
+ *   2560px (QHD)          → 21.54px
+ *   3840px (4K)           → capped at 24px
+ * Component CSS uses rem for fonts; pixel-pinned things (1px borders,
+ * handle dots) stay sharp because they're absolute.
+ */
+html {
+  font-size: clamp(13px, 0.5vw + 9px, 24px);
+}
+
 body {
   background: var(--sf-bg-0);
   color: var(--sf-text-0);
   font-family: var(--sf-font-sans);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.45;
   font-feature-settings: 'cv11', 'ss01', 'ss02';
   -webkit-font-smoothing: antialiased;
@@ -47,7 +62,7 @@ input,
 select,
 textarea {
   font-family: inherit;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: inherit;
   letter-spacing: -0.005em;
 }

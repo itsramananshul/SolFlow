@@ -165,18 +165,18 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 .title {
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
   color: var(--sf-text-1);
 }
 .hint {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--sf-text-3);
 }
 .warnings {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--sf-warning);
   font-family: var(--sf-font-mono);
 }

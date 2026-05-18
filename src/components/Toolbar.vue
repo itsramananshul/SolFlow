@@ -4,12 +4,21 @@ import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import { SAMPLES } from '@/samples';
 import type { SolWorkflow } from '@/graph/schema';
+import RunModal from './RunModal.vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const sampleMenuOpen = ref(false);
+const runOpen = ref(false);
+
+function openRun() {
+  runOpen.value = true;
+}
+function closeRun() {
+  runOpen.value = false;
+}
 
 function newWorkflow() {
   if (
@@ -131,7 +140,13 @@ function toggleSampleMenu() {
 
       <div class="separator" />
 
-      <button class="primary" @click="downloadSol">Export .sol</button>
+      <button class="ghost" @click="downloadSol">Export .sol</button>
+      <button class="primary run-btn" @click="openRun" title="Run this workflow in the browser">
+        <svg viewBox="0 0 12 12" width="10" height="10" fill="currentColor" style="margin-right: 4px;">
+          <path d="M3 2 L10 6 L3 10 Z" />
+        </svg>
+        Run
+      </button>
     </div>
 
     <input
@@ -141,6 +156,8 @@ function toggleSampleMenu() {
       class="file-hidden"
       @change="onFileChosen"
     />
+
+    <RunModal :open="runOpen" @close="closeRun" />
   </header>
 </template>
 
@@ -166,12 +183,12 @@ function toggleSampleMenu() {
 }
 .name {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 0.8125rem;
   letter-spacing: -0.01em;
 }
 .version {
   font-family: var(--sf-font-mono);
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--sf-text-3);
   padding: 2px 6px;
   border: 1px solid var(--sf-border);
@@ -222,11 +239,11 @@ function toggleSampleMenu() {
 }
 .menu-title {
   font-weight: 500;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--sf-text-0);
 }
 .menu-desc {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--sf-text-2);
   margin-top: 2px;
   line-height: 1.4;
@@ -238,11 +255,16 @@ function toggleSampleMenu() {
   display: inline-block;
   background: var(--sf-error);
   color: white;
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 600;
   padding: 1px 5px;
   border-radius: 8px;
   margin-right: 4px;
   font-family: var(--sf-font-mono);
+}
+.run-btn {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
 }
 </style>
