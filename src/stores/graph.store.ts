@@ -185,33 +185,18 @@ export const useGraphStore = defineStore('graph', () => {
   ) {
     const fn = activeFunction.value;
     if (!fn) return;
-    maybeReplaceUnusedStart(fn, kind);
+    // Single-Start invariant: a function may have at most one Start
+    // node. If the user drags another Start onto the canvas, point them
+    // at the existing one instead of creating a duplicate. Multi-Start
+    // would silently confuse the interpreter (which picks "the first").
+    if (kind === 'start') {
+      const existing = fn.nodes.find((n) => n.data.kind === 'start');
+      if (existing) return existing;
+    }
     const node = createNode(kind, position, ctx.value, init);
     fn.nodes.push(node);
     touch();
     return node;
-  }
-
-  /**
-   * Entry-point reconciliation: when the user adds a Trigger to a
-   * function whose auto-placed Start has no outgoing edges, the Start
-   * is silently removed. The user has signalled event-driven intent;
-   * the empty placeholder Start would clutter the canvas and confuse
-   * the "where does this start?" question.
-   *
-   * If the Start IS wired to something, both stay — that's the user
-   * explicitly authoring a hybrid (e.g. for testing both paths).
-   */
-  function maybeReplaceUnusedStart(fn: FunctionGraph, addingKind: NodeKind) {
-    if (addingKind !== 'trigger') return;
-    const start = fn.nodes.find((n) => n.data.kind === 'start');
-    if (!start) return;
-    const startWired = fn.edges.some((e) => e.source.node === start.id);
-    if (startWired) return;
-    fn.nodes = fn.nodes.filter((n) => n.id !== start.id);
-    fn.edges = fn.edges.filter(
-      (e) => e.source.node !== start.id && e.target.node !== start.id,
-    );
   }
 
   function updateNodePosition(nodeId: string, position: { x: number; y: number }) {
@@ -408,7 +393,11 @@ export const useGraphStore = defineStore('graph', () => {
         }
       }
     }
-    maybeReplaceUnusedStart(fn, kind);
+    // Single-Start invariant — mirror of addNode.
+    if (kind === 'start') {
+      const existing = fn.nodes.find((n) => n.data.kind === 'start');
+      if (existing) return existing;
+    }
     const safePos = findFreePosition(preferred, fn.nodes);
     const node = createNode(kind, safePos, ctx.value, init);
     fn.nodes.push(node);

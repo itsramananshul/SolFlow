@@ -48,18 +48,21 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Show this help</span><kbd>?</kbd></div>
           </section>
           <section>
-            <div class="section-title">Triggers &amp; entry points</div>
+            <div class="section-title">Entry points</div>
             <div class="row">
-              <span>A function always has one entry: a <code>Start</code> (manual) or a <code>Trigger</code> (event-driven). Adding the first Trigger to an empty function removes the placeholder Start automatically.</span>
+              <span><strong>Start</strong> = classic function entry (manual run). <strong>Trigger</strong> = event-driven entry (webhook / timer / event / HTTP).</span>
             </div>
             <div class="row">
-              <span>Trigger kinds: Manual / Webhook / Timer / Event / HTTP. Configure them in the Inspector.</span>
+              <span>A function can have either, both, or multiple Triggers — but only one Start.</span>
+            </div>
+            <div class="row">
+              <span>Drag Start from the palette's <code>Entry</code> section to add it back after deleting. Adding it twice selects the existing one.</span>
             </div>
             <div class="row">
               <span>Edit a trigger's sample payload, then press <strong>Trigger Event ▷</strong> in the Inspector to simulate an inbound event.</span>
             </div>
             <div class="row">
-              <span>You can delete Start once a Trigger exists (or vice versa). You can't delete the last entry — that would orphan the function.</span>
+              <span>You can't delete the last entry — that would leave the function with no way to start.</span>
             </div>
           </section>
           <section>

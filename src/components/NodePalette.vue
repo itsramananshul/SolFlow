@@ -15,6 +15,7 @@ const grouped = computed(() => paletteByCategory());
 // behind the Advanced toggle because their names lean on SOL's AST and
 // they're rarely the first thing a new user needs.
 const primaryOrder: Category[] = [
+  'entry',
   'trigger',
   'flow',
   'variable',

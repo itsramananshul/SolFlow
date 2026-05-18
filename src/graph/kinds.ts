@@ -42,8 +42,18 @@ function newWebhookPath(): string {
 }
 
 export const PALETTE: PaletteEntry[] = [
-  // entry — present but not in palette
-  { kind: 'start', label: 'Start', category: 'entry', description: 'Function entry', draggable: false },
+  // entry — Start IS draggable now so a user who deleted it (after
+  // adding a Trigger) can bring it back. The store enforces the
+  // single-Start invariant: dragging a second Start onto a function
+  // that already has one is a no-op (the existing Start is selected
+  // by the caller instead of a duplicate being created).
+  {
+    kind: 'start',
+    label: 'Function Start',
+    category: 'entry',
+    description: 'Classic function entry — execution starts here on a manual run',
+    draggable: true,
+  },
 
   // triggers — first-class event-driven entrypoints
   {
@@ -194,6 +204,7 @@ export function paletteByCategory(): Record<Category, PaletteEntry[]> {
  * these labels are what humans read in the palette.
  */
 export const CATEGORY_LABELS: Record<Category, string> = {
+  entry: 'Entry',
   trigger: 'Triggers',
   flow: 'Decisions & loops',
   variable: 'Variables',
@@ -203,7 +214,6 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   call: 'Reuse a workflow',
   io: 'Output',
   annotation: 'Notes & sections',
-  entry: 'Entry',
 };
 
 /**

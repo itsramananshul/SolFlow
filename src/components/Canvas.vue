@@ -584,6 +584,9 @@ function onQuickAddSelect(
       : undefined,
     initialData,
   );
+  // For Start, addNodeAt may return the existing Start instead of a new
+  // node when one is already present. Selecting it teaches the user
+  // "there's only one Start, here it is" without an explicit warning.
   if (node) ui.selectNode(node.id);
 }
 
