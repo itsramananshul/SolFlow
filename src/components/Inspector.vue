@@ -17,7 +17,68 @@ import { bindingsInScope } from '@/graph/scope';
 import { recordTrace } from '@/runtime/simulate';
 
 const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
-const TRIGGER_KINDS: TriggerKind[] = ['manual', 'webhook', 'timer', 'event', 'http'];
+// Friendlier labels for triggers — backend kind stays the same, the UI
+// stops shouting jargon at first-time users.
+interface TriggerKindOption {
+  value: TriggerKind;
+  label: string;
+  blurb: string;
+}
+const TRIGGER_KIND_OPTIONS: TriggerKindOption[] = [
+  { value: 'manual',  label: 'Run manually',     blurb: 'Someone clicks a button to start it.' },
+  { value: 'webhook', label: 'Webhook (URL)',    blurb: 'Anyone POSTs to a URL to start it.' },
+  { value: 'timer',   label: 'On a schedule',    blurb: 'Runs every minute, hour, day…' },
+  { value: 'event',   label: 'When something happens', blurb: 'Reacts to a named event in your system.' },
+  { value: 'http',    label: 'HTTP request',     blurb: 'A REST endpoint people can call.' },
+];
+
+// Timer presets — most users want "every 5 minutes", not a cron expression.
+// "Custom" reveals the raw cron input behind the Advanced toggle.
+interface TimerPreset {
+  label: string;
+  cron: string;
+}
+const TIMER_PRESETS: TimerPreset[] = [
+  { label: 'Every minute',     cron: '* * * * *' },
+  { label: 'Every 5 minutes',  cron: '*/5 * * * *' },
+  { label: 'Every 15 minutes', cron: '*/15 * * * *' },
+  { label: 'Every hour',       cron: '0 * * * *' },
+  { label: 'Every day at 9am', cron: '0 9 * * *' },
+  { label: 'Custom schedule',  cron: '' },
+];
+function presetForCron(cron: string): string {
+  const match = TIMER_PRESETS.find((p) => p.cron && p.cron === cron);
+  return match ? match.label : 'Custom schedule';
+}
+function applyTimerPreset(label: string) {
+  const preset = TIMER_PRESETS.find((p) => p.label === label);
+  if (!preset) return;
+  if (preset.cron) update({ cronExpr: preset.cron });
+  // Custom: keep whatever the user already had, advanced field becomes editable.
+}
+
+// Per-trigger "Advanced" disclosure state. Keyed by node id so each
+// trigger remembers its own toggle.
+const advancedOpen = ref<Record<string, boolean>>({});
+function toggleAdvanced(nodeId: string) {
+  advancedOpen.value = {
+    ...advancedOpen.value,
+    [nodeId]: !advancedOpen.value[nodeId],
+  };
+}
+function isAdvancedOpen(nodeId: string): boolean {
+  return !!advancedOpen.value[nodeId];
+}
+
+// Template type narrowing doesn't follow v-if into find() callbacks, so
+// expose the current trigger blurb as a computed with explicit guarding.
+const currentTriggerBlurb = computed<string>(() => {
+  const d = selectedNode.value?.data;
+  if (!d || d.kind !== 'trigger') return '';
+  return (
+    TRIGGER_KIND_OPTIONS.find((o) => o.value === d.triggerKind)?.blurb ?? ''
+  );
+});
 
 const graph = useGraphStore();
 const ui = useUIStore();
@@ -461,24 +522,28 @@ const placeholderFor = (portId: string, kind: string): string => {
         </template>
 
         <template v-else-if="selectedNode.data.kind === 'trigger'">
+          <!-- Plain-English headline. The trigger kind drives the rest of
+               the form, so it's the first decision and reads as a question. -->
           <label class="field">
-            <span class="field-label">Trigger kind</span>
+            <span class="field-label">What starts this workflow?</span>
             <select
               :value="selectedNode.data.triggerKind"
               @change="(e) => update({ triggerKind: (e.target as HTMLSelectElement).value as TriggerKind })"
             >
-              <option v-for="k in TRIGGER_KINDS" :key="k" :value="k">{{ k }}</option>
+              <option v-for="opt in TRIGGER_KIND_OPTIONS" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
             </select>
+            <span class="help-blurb">{{ currentTriggerBlurb }}</span>
           </label>
-          <label class="field">
-            <span class="field-label">Event name</span>
-            <input
-              :value="selectedNode.data.eventName"
-              @input="(e) => update({ eventName: (e.target as HTMLInputElement).value })"
-            />
-          </label>
+
+          <!-- Per-kind primary controls. Each has a friendly first label and
+               a sub-hint; raw infra (event name, schema, cron, etc.) is
+               tucked into the Advanced disclosure below. -->
+
+          <!-- Webhook: URL is the only thing users actually need to copy. -->
           <label v-if="selectedNode.data.triggerKind === 'webhook'" class="field">
-            <span class="field-label">Webhook URL</span>
+            <span class="field-label">Your webhook URL</span>
             <div class="copy-row">
               <input
                 readonly
@@ -491,70 +556,153 @@ const placeholderFor = (portId: string, kind: string): string => {
                 @click="copyToClipboard(selectedNode.data.webhookPath ?? '')"
               >Copy</button>
             </div>
-            <span class="muted-note">
-              Phase A: simulated URL. The runtime will issue a real signed
-              endpoint in Phase B.
+            <span class="help-blurb">
+              Anyone who sends a POST request to this URL will start the workflow.
             </span>
           </label>
+
+          <!-- Timer: preset picker keeps cron behind Advanced. -->
           <label v-if="selectedNode.data.triggerKind === 'timer'" class="field">
-            <span class="field-label">Cron expression</span>
-            <input
-              :value="selectedNode.data.cronExpr"
-              placeholder="*/5 * * * *"
-              spellcheck="false"
-              @input="(e) => update({ cronExpr: (e.target as HTMLInputElement).value })"
-            />
+            <span class="field-label">Run every…</span>
+            <select
+              :value="presetForCron(selectedNode.data.cronExpr ?? '')"
+              @change="(e) => applyTimerPreset((e.target as HTMLSelectElement).value)"
+            >
+              <option v-for="p in TIMER_PRESETS" :key="p.label" :value="p.label">
+                {{ p.label }}
+              </option>
+            </select>
+            <span class="help-blurb">
+              Pick how often you want this workflow to run. Choose "Custom
+              schedule" to write a cron expression in Advanced settings.
+            </span>
           </label>
+
+          <!-- Event: one human-friendly field. -->
+          <label v-if="selectedNode.data.triggerKind === 'event'" class="field">
+            <span class="field-label">When does it run?</span>
+            <input
+              :value="selectedNode.data.eventName"
+              placeholder="e.g. invoice.created, user.signed_up"
+              spellcheck="false"
+              @input="(e) => update({ eventName: (e.target as HTMLInputElement).value })"
+            />
+            <span class="help-blurb">
+              The name of the event your system emits. Other workflows or
+              services emit this name to fire this trigger.
+            </span>
+          </label>
+
+          <!-- HTTP: method + path together. -->
           <template v-if="selectedNode.data.triggerKind === 'http'">
             <label class="field">
-              <span class="field-label">HTTP method</span>
-              <select
-                :value="selectedNode.data.httpMethod"
-                @change="(e) => update({ httpMethod: (e.target as HTMLSelectElement).value as HttpMethod })"
-              >
-                <option v-for="m in HTTP_METHODS" :key="m" :value="m">{{ m }}</option>
-              </select>
-            </label>
-            <label class="field">
-              <span class="field-label">Path</span>
-              <input
-                :value="selectedNode.data.httpPath"
-                placeholder="/api/orders"
-                spellcheck="false"
-                @input="(e) => update({ httpPath: (e.target as HTMLInputElement).value })"
-              />
+              <span class="field-label">Which HTTP request triggers it?</span>
+              <div class="http-row">
+                <select
+                  class="http-method"
+                  :value="selectedNode.data.httpMethod"
+                  @change="(e) => update({ httpMethod: (e.target as HTMLSelectElement).value as HttpMethod })"
+                >
+                  <option v-for="m in HTTP_METHODS" :key="m" :value="m">{{ m }}</option>
+                </select>
+                <input
+                  class="http-path"
+                  :value="selectedNode.data.httpPath"
+                  placeholder="/api/orders"
+                  spellcheck="false"
+                  @input="(e) => update({ httpPath: (e.target as HTMLInputElement).value })"
+                />
+              </div>
+              <span class="help-blurb">
+                The HTTP method and path that, when called, start the workflow.
+              </span>
             </label>
           </template>
+
+          <!-- Manual: nothing extra to configure; just clarify what it means. -->
+          <p v-if="selectedNode.data.triggerKind === 'manual'" class="help-blurb">
+            A manual trigger runs only when someone clicks "Trigger Event ▷"
+            below. Useful for testing or one-off workflows.
+          </p>
+
+          <!-- Sample data: kept primary because Trigger Event uses it. -->
           <label class="field">
-            <span class="field-label">Payload schema</span>
+            <span class="field-label">Sample data (used for testing)</span>
             <textarea
               class="mono-area"
-              rows="3"
-              :value="selectedNode.data.payloadSchema"
-              spellcheck="false"
-              @input="(e) => update({ payloadSchema: (e.target as HTMLTextAreaElement).value })"
-            />
-          </label>
-          <label class="field">
-            <span class="field-label">Sample payload (JSON)</span>
-            <textarea
-              class="mono-area"
-              rows="5"
+              rows="4"
               :value="selectedNode.data.samplePayload"
               spellcheck="false"
               @input="(e) => update({ samplePayload: (e.target as HTMLTextAreaElement).value })"
             />
+            <span class="help-blurb">
+              When you click "Trigger Event ▷", this JSON is bound to the
+              trigger's <code>payload</code> output so the rest of the workflow
+              can read it.
+            </span>
           </label>
+
           <div class="trigger-actions">
             <button type="button" class="trigger-btn" @click="triggerEvent">
               Trigger Event ▷
             </button>
             <span v-if="copyMsg" class="copy-msg">{{ copyMsg }}</span>
           </div>
-          <p class="muted-note">
-            Phase A: runs the workflow locally with the sample payload bound
-            to <code>payload</code>. Phase B: real event subscription.
-          </p>
+
+          <!-- Advanced disclosure: raw infra fields live here so first-time
+               users don't see four scary fields up-front. Power users get
+               everything they need by opening it. -->
+          <div class="advanced-toggle">
+            <button
+              type="button"
+              class="advanced-btn"
+              @click="toggleAdvanced(selectedNode.id)"
+            >
+              <span class="caret">{{ isAdvancedOpen(selectedNode.id) ? '▾' : '▸' }}</span>
+              Advanced settings
+            </button>
+          </div>
+          <div v-if="isAdvancedOpen(selectedNode.id)" class="advanced-body">
+            <label class="field">
+              <span class="field-label">Event name <span class="dim">(internal)</span></span>
+              <input
+                :value="selectedNode.data.eventName"
+                spellcheck="false"
+                @input="(e) => update({ eventName: (e.target as HTMLInputElement).value })"
+              />
+              <span class="help-blurb">
+                A unique identifier used by the runtime to route this event.
+              </span>
+            </label>
+            <label v-if="selectedNode.data.triggerKind === 'timer'" class="field">
+              <span class="field-label">Custom cron expression</span>
+              <input
+                :value="selectedNode.data.cronExpr"
+                placeholder="*/5 * * * *"
+                spellcheck="false"
+                class="mono-input"
+                @input="(e) => update({ cronExpr: (e.target as HTMLInputElement).value })"
+              />
+              <span class="help-blurb">
+                Standard cron format: minute, hour, day, month, weekday. e.g.
+                <code>0 9 * * 1-5</code> = 9am on weekdays.
+              </span>
+            </label>
+            <label class="field">
+              <span class="field-label">Expected payload shape</span>
+              <textarea
+                class="mono-area"
+                rows="3"
+                :value="selectedNode.data.payloadSchema"
+                spellcheck="false"
+                @input="(e) => update({ payloadSchema: (e.target as HTMLTextAreaElement).value })"
+              />
+              <span class="help-blurb">
+                Describes the structure of incoming events. Used for
+                validation and downstream type-checking.
+              </span>
+            </label>
+          </div>
         </template>
 
         <template v-else-if="selectedNode.data.kind === 'call'">
@@ -764,5 +912,70 @@ const placeholderFor = (portId: string, kind: string): string => {
   font-size: 0.625rem;
   color: var(--sf-success, #5fd97a);
   letter-spacing: 0.4px;
+}
+.help-blurb {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.625rem;
+  line-height: 1.5;
+  color: var(--sf-text-3);
+}
+.help-blurb code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-3);
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--sf-text-2);
+}
+.http-row {
+  display: flex;
+  gap: 4px;
+}
+.http-method {
+  flex: 0 0 88px;
+}
+.http-path {
+  flex: 1;
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+}
+.mono-input {
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+}
+.advanced-toggle {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--sf-border);
+}
+.advanced-btn {
+  background: transparent;
+  border: none;
+  color: var(--sf-text-2);
+  font-size: 0.6875rem;
+  padding: 4px 0;
+  cursor: pointer;
+  letter-spacing: 0.2px;
+}
+.advanced-btn:hover {
+  color: var(--sf-text-0);
+  background: transparent;
+}
+.advanced-btn .caret {
+  font-family: var(--sf-font-mono);
+  margin-right: 4px;
+}
+.advanced-body {
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: var(--sf-bg-1);
+  border-radius: var(--sf-radius-sm);
+  border: 1px solid var(--sf-border);
+}
+.dim {
+  color: var(--sf-text-3);
+  font-weight: 400;
+  font-size: 0.5625rem;
+  letter-spacing: 0.3px;
 }
 </style>
