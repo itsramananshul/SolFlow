@@ -16,6 +16,8 @@ import { MiniMap } from '@vue-flow/minimap';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import { useSimulationStore } from '@/stores/simulation.store';
+import { useBlocksStore } from '@/stores/blocks.store';
+import { buildBuiltinPattern } from '@/graph/blocks';
 import { typeCssClass } from '@/graph/schema';
 import type { GraphEdge, NodeData, NodeKind, SolType } from '@/graph/schema';
 import { PALETTE, categoryForKind } from '@/graph/kinds';
@@ -30,6 +32,7 @@ import { onMounted, onBeforeUnmount } from 'vue';
 const graph = useGraphStore();
 const ui = useUIStore();
 const sim = useSimulationStore();
+const blocks = useBlocksStore();
 const {
   fitView,
   screenToFlowCoordinate,
@@ -356,7 +359,37 @@ function onDrop(event: DragEvent) {
     }
   }
 
-  // Case 2: user dropped a palette item.
+  // CRITICAL: convert via screenToFlowCoordinate, not getBoundingClientRect.
+  // The canvas-host rect ignores Vue Flow's viewport transform (pan + zoom),
+  // so HTML-relative coords land in the wrong flow position whenever the
+  // viewport is panned or zoomed. screenToFlowCoordinate is the single
+  // boundary every creation path goes through.
+  const flowPos = screenToFlowCoordinate({
+    x: event.clientX,
+    y: event.clientY,
+  });
+
+  // Case 2: user dropped a reusable block (built-in pattern or saved).
+  const blockRaw = event.dataTransfer?.getData('application/x-solflow-block');
+  if (blockRaw) {
+    try {
+      const meta = JSON.parse(blockRaw) as { origin: 'user' | 'builtin'; id: string };
+      const snapshot =
+        meta.origin === 'builtin'
+          ? buildBuiltinPattern(meta.id)
+          : blocks.findById(meta.id) ?? null;
+      if (!snapshot) return;
+      const newIds = graph.insertBlock(snapshot, flowPos);
+      // Select the first new node so the user can immediately see they
+      // landed and the Inspector opens with a useful context.
+      if (newIds.length > 0) ui.selectNode(newIds[0]);
+    } catch {
+      /* ignore malformed block payload */
+    }
+    return;
+  }
+
+  // Case 3: user dropped a palette item.
   const kind = event.dataTransfer?.getData('application/x-solflow-kind') as
     | NodeKind
     | undefined;
@@ -370,16 +403,7 @@ function onDrop(event: DragEvent) {
       /* ignore malformed init */
     }
   }
-  // CRITICAL: convert via screenToFlowCoordinate, not getBoundingClientRect.
-  // The canvas-host rect ignores Vue Flow's viewport transform (pan + zoom),
-  // so HTML-relative coords land in the wrong flow position whenever the
-  // viewport is panned or zoomed. screenToFlowCoordinate is the single
-  // boundary every creation path goes through.
-  const pos = screenToFlowCoordinate({
-    x: event.clientX,
-    y: event.clientY,
-  });
-  graph.addNode(kind, pos, init as Partial<NodeData> | undefined);
+  graph.addNode(kind, flowPos, init as Partial<NodeData> | undefined);
 }
 
 function isValidConnection(c: Connection): boolean {
@@ -437,6 +461,19 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
     !fn.nodes.some(
       (n) => n.id !== id && (n.data.kind === 'start' || n.data.kind === 'trigger'),
     );
+
+  // "Save as reusable block" — operates on the current marquee /
+  // multi-select if it exists, otherwise just the right-clicked node.
+  // Skips Start nodes since they're per-function singletons.
+  const selectedIds = getSelectedNodes.value.map((n) => n.id);
+  const saveSet = selectedIds.length > 1 && selectedIds.includes(id)
+    ? selectedIds
+    : [id];
+  const saveableIds = saveSet.filter((nid) => {
+    const n = fn?.nodes.find((x) => x.id === nid);
+    return n && n.data.kind !== 'start';
+  });
+
   return [
     {
       label: 'Duplicate',
@@ -454,6 +491,14 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       action: () => graph.copyNodes([id]),
     },
     {
+      label:
+        saveableIds.length > 1
+          ? `Save ${saveableIds.length} nodes as reusable block…`
+          : 'Save as reusable block…',
+      disabled: saveableIds.length === 0,
+      action: () => saveAsBlock(saveableIds),
+    },
+    {
       label: 'Delete',
       shortcut: 'Del',
       danger: true,
@@ -465,6 +510,24 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
     },
   ];
 });
+
+function saveAsBlock(ids: string[]) {
+  if (ids.length === 0) return;
+  const snap = graph.snapshotSelection(ids);
+  if (!snap) return;
+  const defaultName = ids.length === 1 ? 'New block' : `Block (${ids.length} nodes)`;
+  const name = window.prompt(
+    `Save ${ids.length} node${ids.length === 1 ? '' : 's'} as a reusable block.\n\nName:`,
+    defaultName,
+  );
+  if (name === null) return;
+  const description = window.prompt(
+    'Optional description (helps when you come back to it later):',
+    '',
+  );
+  blocks.save(name, description ?? '', snap.nodes, snap.edges);
+  ui.setSidebarTab('blocks');
+}
 
 function onNodeContextMenu(event: { event: MouseEvent | TouchEvent; node: VueFlowNode }) {
   const me = event.event as MouseEvent;

@@ -244,63 +244,89 @@ export const useGraphStore = defineStore('graph', () => {
   function duplicateNodes(nodeIds: string[]): string[] {
     const fn = activeFunction.value;
     if (!fn) return [];
-    const newIds: string[] = [];
-    for (const id of nodeIds) {
-      const dup = duplicateNode(id);
-      if (dup) newIds.push(dup.id);
+    // Single-node case: keep the existing per-node path so the position
+    // offset stays predictable. Multi-node selections route through the
+    // snapshot-paste helper so internal wiring between selected nodes
+    // is preserved (the old per-node loop dropped those edges).
+    if (nodeIds.length <= 1) {
+      const newIds: string[] = [];
+      for (const id of nodeIds) {
+        const dup = duplicateNode(id);
+        if (dup) newIds.push(dup.id);
+      }
+      return newIds;
     }
-    return newIds;
+    const snap = captureSnapshot(nodeIds);
+    if (!snap) return [];
+    // Offset the new cluster down-right so it doesn't sit on top of the
+    // originals. 48px diagonal feels intentional without being huge.
+    const pos = { x: snap.centroid.x + 48, y: snap.centroid.y + 48 };
+    return insertSnapshot(snap, pos);
   }
 
   // -----------------------------------------------------------
-  // Copy / paste
+  // Copy / paste / reusable-block insertion (shared snapshot model)
   // -----------------------------------------------------------
-  // In-memory clipboard. Survives across selections + paste-many.
-  // Edges are only copied when BOTH endpoints are in the copied set
-  // (so pasting reconstructs internal wiring but not dangling refs).
-  interface ClipboardPayload {
+  //
+  // Three operations all reduce to "drop a snapshot of (nodes, edges,
+  // centroid) at a flow position":
+  //   - paste from clipboard
+  //   - duplicate a multi-node selection (preserves internal wiring)
+  //   - insert a saved block / built-in pattern
+  //
+  // captureSnapshot() builds the payload; insertSnapshot() applies it
+  // with id remapping + collision-avoidance positioning. Both used
+  // internally and exported as insertBlock() for blocks.store callers.
+  //
+  // Edges are included only when both endpoints are inside the
+  // captured set, so pasting reconstructs internal wiring without
+  // dangling refs to the original graph.
+
+  interface SnapshotPayload {
     nodes: GraphNode[];
     edges: GraphEdge[];
     centroid: { x: number; y: number };
   }
-  const clipboard = ref<ClipboardPayload | null>(null);
+  const clipboard = ref<SnapshotPayload | null>(null);
 
-  function copyNodes(nodeIds: string[]): number {
+  function captureSnapshot(nodeIds: string[]): SnapshotPayload | null {
     const fn = activeFunction.value;
-    if (!fn) return 0;
+    if (!fn) return null;
     const set = new Set(nodeIds);
     const nodes = fn.nodes.filter(
       (n) => set.has(n.id) && n.data.kind !== 'start',
     );
-    if (nodes.length === 0) return 0;
+    if (nodes.length === 0) return null;
     const edges = fn.edges.filter(
       (e) => set.has(e.source.node) && set.has(e.target.node),
     );
     const cx = nodes.reduce((s, n) => s + n.position.x, 0) / nodes.length;
     const cy = nodes.reduce((s, n) => s + n.position.y, 0) / nodes.length;
-    clipboard.value = {
-      nodes: JSON.parse(JSON.stringify(nodes)),
-      edges: JSON.parse(JSON.stringify(edges)),
+    return {
+      nodes: JSON.parse(JSON.stringify(nodes)) as GraphNode[],
+      edges: JSON.parse(JSON.stringify(edges)) as GraphEdge[],
       centroid: { x: cx, y: cy },
     };
-    return nodes.length;
   }
 
-  function hasClipboard(): boolean {
-    return clipboard.value !== null && clipboard.value.nodes.length > 0;
-  }
-
-  function pasteAt(flowPos: { x: number; y: number }): string[] {
+  function insertSnapshot(
+    snap: SnapshotPayload,
+    flowPos: { x: number; y: number },
+  ): string[] {
     const fn = activeFunction.value;
-    const c = clipboard.value;
-    if (!fn || !c) return [];
+    if (!fn) return [];
     const idMap = new Map<string, string>();
     const newIds: string[] = [];
-    for (const n of c.nodes) {
+    for (const n of snap.nodes) {
+      // Skip start nodes — a function only ever has one. If the snapshot
+      // somehow includes one (e.g. an old saved block), drop it cleanly.
+      if (n.data.kind === 'start' && fn.nodes.some((x) => x.data.kind === 'start')) {
+        continue;
+      }
       const newId = nanoid(8);
       idMap.set(n.id, newId);
-      const dx = n.position.x - c.centroid.x;
-      const dy = n.position.y - c.centroid.y;
+      const dx = n.position.x - snap.centroid.x;
+      const dy = n.position.y - snap.centroid.y;
       const pos = findFreePosition(
         { x: flowPos.x + dx, y: flowPos.y + dy },
         fn.nodes,
@@ -311,7 +337,7 @@ export const useGraphStore = defineStore('graph', () => {
       fn.nodes.push(clone);
       newIds.push(newId);
     }
-    for (const e of c.edges) {
+    for (const e of snap.edges) {
       const sn = idMap.get(e.source.node);
       const tn = idMap.get(e.target.node);
       if (!sn || !tn) continue;
@@ -323,6 +349,48 @@ export const useGraphStore = defineStore('graph', () => {
     }
     touch();
     return newIds;
+  }
+
+  function copyNodes(nodeIds: string[]): number {
+    const snap = captureSnapshot(nodeIds);
+    if (!snap) return 0;
+    clipboard.value = snap;
+    return snap.nodes.length;
+  }
+
+  function hasClipboard(): boolean {
+    return clipboard.value !== null && clipboard.value.nodes.length > 0;
+  }
+
+  function pasteAt(flowPos: { x: number; y: number }): string[] {
+    const c = clipboard.value;
+    if (!c) return [];
+    return insertSnapshot(c, flowPos);
+  }
+
+  /**
+   * Insert a saved (or built-in) block as a fresh cluster of nodes at
+   * the given flow position. Used by the BlocksPanel drag-drop and any
+   * future Quick-Add block-insertion path. Behaves exactly like
+   * pasteAt() but takes the snapshot directly instead of from the
+   * clipboard, so block insertion doesn't disturb the user's
+   * copy/paste workflow.
+   */
+  function insertBlock(
+    block: { nodes: GraphNode[]; edges: GraphEdge[]; centroid: { x: number; y: number } },
+    flowPos: { x: number; y: number },
+  ): string[] {
+    return insertSnapshot(block, flowPos);
+  }
+
+  /**
+   * Capture-only helper exposed to callers that want to save a
+   * selection without depending on the in-app clipboard (e.g. the
+   * "Save as reusable block" action). Returns null for empty
+   * selections.
+   */
+  function snapshotSelection(nodeIds: string[]): SnapshotPayload | null {
+    return captureSnapshot(nodeIds);
   }
 
   /**
@@ -859,6 +927,8 @@ export const useGraphStore = defineStore('graph', () => {
     copyNodes,
     pasteAt,
     hasClipboard,
+    insertBlock,
+    snapshotSelection,
     removeNode,
     addEdge,
     removeEdge,

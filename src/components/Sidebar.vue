@@ -4,11 +4,15 @@ import { useUIStore } from '@/stores/ui.store';
 import { useGraphStore } from '@/stores/graph.store';
 import NodePalette from './NodePalette.vue';
 import OutlinePanel from './OutlinePanel.vue';
+import BlocksPanel from './BlocksPanel.vue';
 import TypesPanel from './TypesPanel.vue';
 import ImportsPanel from './ImportsPanel.vue';
+import { useBlocksStore } from '@/stores/blocks.store';
 
 const ui = useUIStore();
 const graph = useGraphStore();
+
+const blocks = useBlocksStore();
 
 const typesCount = computed(
   () => graph.workflow.structs.length + graph.workflow.enums.length,
@@ -17,6 +21,7 @@ const importsCount = computed(() => graph.workflow.imports.length);
 // Total nodes in the active function — surfaced on the Outline tab so
 // users see "this function has 47 nodes" before clicking in.
 const outlineCount = computed(() => graph.activeFunction?.nodes.length ?? 0);
+const blocksCount = computed(() => blocks.count);
 </script>
 
 <template>
@@ -35,6 +40,13 @@ const outlineCount = computed(() => graph.activeFunction?.nodes.length ?? 0);
         @click="ui.setSidebarTab('outline')"
       >
         Outline<span v-if="outlineCount > 0" class="count">{{ outlineCount }}</span>
+      </button>
+      <button
+        class="tab"
+        :class="{ active: ui.sidebarTab === 'blocks' }"
+        @click="ui.setSidebarTab('blocks')"
+      >
+        Blocks<span v-if="blocksCount > 0" class="count">{{ blocksCount }}</span>
       </button>
       <button
         class="tab"
@@ -61,6 +73,7 @@ const outlineCount = computed(() => graph.activeFunction?.nodes.length ?? 0);
     <div class="tab-body">
       <NodePalette v-if="ui.sidebarTab === 'palette'" />
       <OutlinePanel v-else-if="ui.sidebarTab === 'outline'" />
+      <BlocksPanel v-else-if="ui.sidebarTab === 'blocks'" />
       <TypesPanel v-else-if="ui.sidebarTab === 'types'" />
       <ImportsPanel v-else-if="ui.sidebarTab === 'imports'" />
       <div v-else class="policies-placeholder">

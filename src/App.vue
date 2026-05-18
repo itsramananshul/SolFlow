@@ -14,10 +14,12 @@ import StatusBar from '@/components/StatusBar.vue';
 import HelpModal from '@/components/HelpModal.vue';
 import Splitter from '@/components/Splitter.vue';
 import { useSimulationStore } from '@/stores/simulation.store';
+import { useBlocksStore } from '@/stores/blocks.store';
 
 const graph = useGraphStore();
 const ui = useUIStore();
 const sim = useSimulationStore();
+const blocks = useBlocksStore();
 const runOpen = ref(false);
 const helpOpen = ref(false);
 
@@ -95,6 +97,7 @@ watch(inspectorRatio, (n) =>
 
 onMounted(() => {
   graph.bootstrap();
+  blocks.bootstrap();
   window.addEventListener('keydown', onKey);
   window.addEventListener('resize', onResize);
   // Initial measure after the layout has settled.
