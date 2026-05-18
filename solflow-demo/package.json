@@ -4,9 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "description": "SolFlow Phase A — visual IDE for the SOL language (demo vertical slice)",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "build:nocheck": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint . --ext .ts,.vue"
