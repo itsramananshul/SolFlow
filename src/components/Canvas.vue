@@ -232,14 +232,33 @@ function isValidConnection(c: Connection): boolean {
   return srcPort.kind === tgtPort.kind;
 }
 
-// Right-click context menu state.
-const ctxMenu = ref<{ open: boolean; x: number; y: number; nodeId?: string }>({
+// Right-click context menu state. Supports nodes OR edges (not both at once).
+const ctxMenu = ref<{
+  open: boolean;
+  x: number;
+  y: number;
+  nodeId?: string;
+  edgeId?: string;
+}>({
   open: false,
   x: 0,
   y: 0,
 });
 
 const ctxItems = computed<ContextMenuItem[]>(() => {
+  // Edge menu
+  if (ctxMenu.value.edgeId) {
+    const id = ctxMenu.value.edgeId;
+    return [
+      {
+        label: 'Delete edge',
+        shortcut: 'Del',
+        danger: true,
+        action: () => graph.removeEdge(id),
+      },
+    ];
+  }
+  // Node menu
   const id = ctxMenu.value.nodeId;
   if (!id) return [];
   const node = graph.activeFunction?.nodes.find((n) => n.id === id);
@@ -253,6 +272,12 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
         const dup = graph.duplicateNode(id);
         if (dup) ui.selectNode(dup.id);
       },
+    },
+    {
+      label: 'Copy',
+      shortcut: 'Cmd+C',
+      disabled: isStart,
+      action: () => graph.copyNodes([id]),
     },
     {
       label: 'Delete',
@@ -272,12 +297,15 @@ function onNodeContextMenu(event: { event: MouseEvent | TouchEvent; node: VueFlo
   if (typeof me.preventDefault === 'function') me.preventDefault();
   const x = 'clientX' in me ? me.clientX : 0;
   const y = 'clientY' in me ? me.clientY : 0;
-  ctxMenu.value = {
-    open: true,
-    x,
-    y,
-    nodeId: event.node.id,
-  };
+  ctxMenu.value = { open: true, x, y, nodeId: event.node.id };
+}
+
+function onEdgeContextMenu(event: { event: MouseEvent | TouchEvent; edge: Edge }) {
+  const me = event.event as MouseEvent;
+  if (typeof me.preventDefault === 'function') me.preventDefault();
+  const x = 'clientX' in me ? me.clientX : 0;
+  const y = 'clientY' in me ? me.clientY : 0;
+  ctxMenu.value = { open: true, x, y, edgeId: event.edge.id };
 }
 
 function closeCtxMenu() {
@@ -466,6 +494,7 @@ onBeforeUnmount(() => {
       @nodes-delete="onNodesDelete"
       @edges-delete="onEdgesDelete"
       @node-context-menu="onNodeContextMenu"
+      @edge-context-menu="onEdgeContextMenu"
       :connection-line-style="{
         stroke: '#3291ff',
         strokeWidth: 2,
