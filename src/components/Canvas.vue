@@ -22,13 +22,21 @@ import { PALETTE, categoryForKind } from '@/graph/kinds';
 import SolNode from './SolNode.vue';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import QuickAddPalette, { type SourceContext } from './QuickAddPalette.vue';
+import NodeSearchPalette from './NodeSearchPalette.vue';
 import { onMounted, onBeforeUnmount } from 'vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
 const sim = useSimulationStore();
-const { fitView, screenToFlowCoordinate, getSelectedNodes, onConnectStart, onConnectEnd } =
-  useVueFlow();
+const {
+  fitView,
+  screenToFlowCoordinate,
+  getSelectedNodes,
+  onConnectStart,
+  onConnectEnd,
+  setCenter,
+  getNode,
+} = useVueFlow();
 const flowContainerRef = ref<HTMLDivElement | null>(null);
 
 // Track last cursor screen position so Space hotkey can insert "where I'm looking".
@@ -434,6 +442,45 @@ function closeCtxMenu() {
 }
 
 // =============================================================
+//  Node Search Palette (⌘F)
+// =============================================================
+const searchOpen = ref(false);
+
+function openSearch() {
+  searchOpen.value = true;
+}
+function closeSearch() {
+  searchOpen.value = false;
+}
+function onSearchJump(nodeId: string) {
+  const flowNode = getNode.value(nodeId);
+  if (!flowNode) return;
+  // Pan to the node and select it. setCenter accepts flow coords and
+  // animates the viewport over the requested time.
+  setCenter(
+    flowNode.position.x + (flowNode.dimensions?.width ?? 110),
+    flowNode.position.y + (flowNode.dimensions?.height ?? 28),
+    { duration: 350, zoom: 1.1 },
+  );
+  ui.selectNode(nodeId);
+}
+
+// Fit-selection: zoom to whatever's currently selected. Falls back to
+// the standard fitView when nothing is selected.
+function fitSelection() {
+  const selected = getSelectedNodes.value;
+  if (selected.length > 0) {
+    fitView({
+      padding: 0.25,
+      duration: 300,
+      nodes: selected.map((n) => n.id),
+    });
+  } else {
+    fitView({ padding: 0.2, duration: 300 });
+  }
+}
+
+// =============================================================
 //  Quick-Add Palette
 // =============================================================
 const qaOpen = ref(false);
@@ -570,6 +617,18 @@ const needsFirstConnection = computed(() => {
 
 function onGlobalKey(e: KeyboardEvent) {
   const mod = e.metaKey || e.ctrlKey;
+  // Cmd/Ctrl+F → Workflow search (jump to node)
+  if (mod && e.key.toLowerCase() === 'f' && !isTypingInInput()) {
+    e.preventDefault();
+    openSearch();
+    return;
+  }
+  // Shift+1 (or just '1') → Fit selection (or fit view when nothing selected)
+  if (!mod && e.key === '1' && !isTypingInInput()) {
+    e.preventDefault();
+    fitSelection();
+    return;
+  }
   // Cmd/Ctrl+K → Quick-Add at cursor
   if (mod && e.key.toLowerCase() === 'k') {
     e.preventDefault();
@@ -699,6 +758,11 @@ onBeforeUnmount(() => {
       :source-context="qaSourceContext"
       @select="onQuickAddSelect"
       @close="closeQuickAdd"
+    />
+    <NodeSearchPalette
+      :open="searchOpen"
+      @jump="onSearchJump"
+      @close="closeSearch"
     />
   </div>
 </template>
