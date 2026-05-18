@@ -47,6 +47,24 @@ export interface RunHooks {
   onNodeExit?: (nodeId: string) => void;
   onEdgeTraverse?: (edgeId: string) => void;
   onError?: (nodeId: string, message: string) => void;
+  /**
+   * Reports a node's runtime side-effect once it has been applied:
+   *   let/assign        → the new variable value
+   *   branch/while/cond → the boolean result + which arm was taken
+   *   print             → what was printed
+   *   return            → what was returned
+   *   forEach (per iter)→ the current item value
+   *   trigger           → payload received
+   *
+   * `summary` is a short human-readable line for display on the node
+   * card; `takenPath` is filled for nodes that have multiple control
+   * outs so the canvas can dim the not-taken arm.
+   */
+  onValue?: (info: {
+    nodeId: string;
+    summary: string;
+    takenPath?: string;
+  }) => void;
 }
 
 const MAX_STEPS = 100_000;
@@ -249,6 +267,10 @@ function walkChain(
     if (next.data.kind === 'return') {
       const hasVal = next.data.hasValue;
       const value = hasVal ? resolveDataInput(ctx, fn, scope, next, 'value') : undefined;
+      ctx.hooks?.onValue?.({
+        nodeId: next.id,
+        summary: hasVal ? `returns ${formatValue(value)}` : 'returns (void)',
+      });
       throw new ReturnSignal(value);
     }
 
@@ -304,11 +326,19 @@ function executeStatement(
       if (!ctx.payloadByNodeId.has(node.id)) {
         ctx.payloadByNodeId.set(node.id, parseSamplePayload(data.samplePayload));
       }
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary: `payload: ${formatValue(ctx.payloadByNodeId.get(node.id))}`,
+      });
       return;
     }
     case 'let': {
       const value = resolveDataInput(ctx, fn, scope, node, 'value');
       scope[data.varName] = value;
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary: `${data.varName} = ${formatValue(value)}`,
+      });
       return;
     }
     case 'assign': {
@@ -317,19 +347,35 @@ function executeStatement(
         throw new RuntimeError(`Cannot assign to undefined variable: ${data.varName}`);
       }
       scope[data.varName] = value;
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary: `${data.varName} ← ${formatValue(value)}`,
+      });
       return;
     }
     case 'print': {
       const value = resolveDataInput(ctx, fn, scope, node, 'value');
       ctx.output.push(formatValue(value));
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary: `prints: ${formatValue(value)}`,
+      });
       return;
     }
     case 'return':
-      // Handled by walkChain via ReturnSignal.
+      // Handled by walkChain via ReturnSignal — value (if any) reported
+      // there so the hook fires once with the final return value.
       return;
     case 'branch': {
       const cond = resolveDataInput(ctx, fn, scope, node, 'cond');
-      if (toBool(cond)) {
+      const result = toBool(cond);
+      const taken = result ? 'then' : data.hasElse ? 'else' : 'after';
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary: `${formatValue(cond)} → ${result} (${taken})`,
+        takenPath: taken,
+      });
+      if (result) {
         walkChain(ctx, fn, scope, node.id, 'then');
       } else if (data.hasElse) {
         walkChain(ctx, fn, scope, node.id, 'else');
@@ -338,11 +384,19 @@ function executeStatement(
     }
     case 'while': {
       let safety = 0;
+      let iter = 0;
       while (true) {
         tick(ctx);
         const cond = resolveDataInput(ctx, fn, scope, node, 'cond');
-        if (!toBool(cond)) break;
+        const ok = toBool(cond);
+        ctx.hooks?.onValue?.({
+          nodeId: node.id,
+          summary: `iter ${iter}: ${formatValue(cond)} → ${ok}`,
+          takenPath: ok ? 'body' : 'after',
+        });
+        if (!ok) break;
         walkChain(ctx, fn, scope, node.id, 'body');
+        iter++;
         if (++safety > MAX_STEPS) {
           throw new RuntimeError('While loop safety limit hit');
         }
@@ -354,11 +408,24 @@ function executeStatement(
       if (!Array.isArray(arr)) {
         throw new RuntimeError(`for-each: not an array — got ${typeof arr}`);
       }
+      let i = 0;
       for (const item of arr) {
         tick(ctx);
         scope[data.iteratorName] = item;
+        ctx.hooks?.onValue?.({
+          nodeId: node.id,
+          summary: `${data.iteratorName} = ${formatValue(item)} (item ${i + 1}/${arr.length})`,
+          takenPath: 'body',
+        });
         walkChain(ctx, fn, scope, node.id, 'body');
+        i++;
       }
+      // Final summary so the node card doesn't get stuck on the last item.
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary: `iterated ${arr.length} item${arr.length === 1 ? '' : 's'}`,
+        takenPath: 'after',
+      });
       return;
     }
     case 'fieldSet': {
@@ -369,6 +436,10 @@ function executeStatement(
       } else {
         throw new RuntimeError(`fieldSet: target is not a struct`);
       }
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary: `.${data.fieldName} ← ${formatValue(value)}`,
+      });
       return;
     }
     case 'indexSet': {
@@ -379,6 +450,10 @@ function executeStatement(
         throw new RuntimeError(`indexSet: target is not an array`);
       }
       arr[idx] = value;
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary: `[${idx}] ← ${formatValue(value)}`,
+      });
       return;
     }
     case 'call': {
@@ -389,7 +464,14 @@ function executeStatement(
       const args = callee.params.map((p) =>
         resolveDataInput(ctx, fn, scope, node, `arg:${p.name}`),
       );
-      callFunction(ctx, callee, args);
+      const result = callFunction(ctx, callee, args);
+      ctx.hooks?.onValue?.({
+        nodeId: node.id,
+        summary:
+          callee.returnType.kind === 'void'
+            ? `called ${callee.name}()`
+            : `${callee.name}() → ${formatValue(result)}`,
+      });
       return;
     }
     default:

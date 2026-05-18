@@ -19,7 +19,14 @@ export type StepEvent =
   | { type: 'enter'; id: string }
   | { type: 'exit'; id: string }
   | { type: 'edge'; id: string }
-  | { type: 'error'; id: string; message: string };
+  | { type: 'error'; id: string; message: string }
+  /**
+   * Reports the side-effect of a node once it has executed: a new
+   * variable value, the chosen branch arm, the printed string, the
+   * returned value, etc. Powers runtime-value pills + the execution
+   * timeline UI without re-running the interpreter.
+   */
+  | { type: 'value'; id: string; summary: string; takenPath?: string };
 
 export interface Trace {
   events: StepEvent[];
@@ -36,6 +43,8 @@ export function recordTrace(workflow: SolWorkflow, opts?: RunOptions): Trace {
       onNodeExit: (id) => events.push({ type: 'exit', id }),
       onEdgeTraverse: (id) => events.push({ type: 'edge', id }),
       onError: (id, message) => events.push({ type: 'error', id, message }),
+      onValue: ({ nodeId, summary, takenPath }) =>
+        events.push({ type: 'value', id: nodeId, summary, takenPath }),
     },
     opts,
   );
