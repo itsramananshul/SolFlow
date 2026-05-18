@@ -278,8 +278,10 @@ const headline = computed(() => {
 .qa-popover {
   position: fixed;
   z-index: var(--sf-z-popover);
-  width: 320px;
-  max-height: 360px;
+  /* Fluid width so the popover stays usable on a 1366px laptop without
+     leaking past the viewport edge on tiny screens. */
+  width: clamp(260px, 28vw, 360px);
+  max-height: min(360px, 60vh);
   background: var(--sf-bg-2);
   border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-md);

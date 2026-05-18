@@ -251,10 +251,10 @@ function toggleSampleMenu() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  padding: 0 clamp(8px, 1.5vw, 16px);
   background: var(--sf-bg-0);
   border-bottom: 1px solid var(--sf-border);
-  height: 44px;
+  height: clamp(36px, 3.2vw, 44px);
   flex-shrink: 0;
 }
 .brand {
@@ -285,7 +285,7 @@ function toggleSampleMenu() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  margin: 0 24px;
+  margin: 0 clamp(8px, 2vw, 24px);
   min-width: 0;
 }
 .wf-name,
@@ -347,8 +347,11 @@ function toggleSampleMenu() {
   border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-md);
   box-shadow: var(--sf-shadow-3);
-  z-index: 20;
-  min-width: 320px;
+  z-index: var(--sf-z-popover);
+  /* Fluid width so the samples dropdown doesn't push past the toolbar
+     edge on narrow viewports. */
+  min-width: clamp(240px, 22vw, 320px);
+  max-width: min(360px, 80vw);
   overflow: hidden;
 }
 .menu-item {

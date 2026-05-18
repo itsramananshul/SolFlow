@@ -92,20 +92,22 @@ const warningCount = computed(
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
-  height: 24px;
+  padding: 0 clamp(6px, 1vw, 12px);
+  height: clamp(20px, 2vw, 24px);
   background: var(--sf-bg-0);
   border-top: 1px solid var(--sf-border);
   font-size: 0.625rem;
   font-family: var(--sf-font-mono);
   color: var(--sf-text-2);
   flex-shrink: 0;
+  overflow: hidden;
 }
 .left,
 .right {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: clamp(6px, 1vw, 14px);
+  min-width: 0;
 }
 .cell {
   display: inline-flex;
