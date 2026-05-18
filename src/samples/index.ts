@@ -3,6 +3,7 @@ import { buildHello } from './hello';
 import { buildMonitor } from './monitor';
 import { buildOrchestration } from './orchestration';
 import { buildPayments } from './payments';
+import { buildEnterprise } from './enterprise';
 
 export interface Sample {
   id: string;
@@ -35,5 +36,11 @@ export const SAMPLES: Sample[] = [
     name: 'Payment Processing',
     description: 'Payment-domain orchestration: imports, enum, struct, evaluator + dispatcher. Modelled on s2.sol.',
     build: buildPayments,
+  },
+  {
+    id: 'enterprise',
+    name: 'Order Processing (large)',
+    description: '40+ nodes across 5 framed regions, triggers, loops, branches, helper calls — readability stress test.',
+    build: buildEnterprise,
   },
 ];
