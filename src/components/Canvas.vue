@@ -94,6 +94,14 @@ const flowEdges = computed<Edge[]>(() => {
       strokeColor = cssVarForType(cls);
     }
     const active = sim.isEdgeActive(e.id);
+    const hovered = ui.hoveredNodeId;
+    const related =
+      hovered != null && (e.source.node === hovered || e.target.node === hovered);
+    const dim = hovered != null && !related;
+    const classes: string[] = [];
+    if (active) classes.push('sf-edge-active');
+    if (related) classes.push('sf-edge-related');
+    if (dim) classes.push('sf-edge-dim');
     return {
       id: e.id,
       source: e.source.node,
@@ -101,7 +109,7 @@ const flowEdges = computed<Edge[]>(() => {
       sourceHandle: e.source.port,
       targetHandle: e.target.port,
       type: 'smoothstep',
-      class: active ? 'sf-edge-active' : '',
+      class: classes.join(' '),
       style: {
         stroke: strokeColor,
         strokeWidth: isControl ? 2.4 : 1.8,

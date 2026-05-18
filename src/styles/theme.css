@@ -174,6 +174,15 @@ button.ghost:hover {
   animation: sf-edge-flow 0.5s linear infinite;
   filter: drop-shadow(0 0 6px rgba(50, 145, 255, 0.6));
 }
+/* Edges incident to the hovered node light up; unrelated edges dim back. */
+.vue-flow__edge.sf-edge-related .vue-flow__edge-path {
+  stroke-width: 2.4;
+  filter: brightness(1.4) drop-shadow(0 0 3px rgba(50, 145, 255, 0.3));
+}
+.vue-flow__edge.sf-edge-dim .vue-flow__edge-path {
+  opacity: 0.28;
+  transition: opacity 0.18s ease;
+}
 .vue-flow__node.selected {
   /* SolNode already styles its own selected state; this is just for the
      outer Vue Flow wrapper used during multi-select / marquee drag. */

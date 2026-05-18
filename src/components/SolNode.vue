@@ -161,6 +161,8 @@ function formatLiteralPreview(t: string, v: string): string {
       `cat-${category}`,
       { selected, 'is-running': simStatus === 'running', 'is-visited': simStatus === 'visited', 'is-failed': simStatus === 'failed' },
     ]"
+    @mouseenter="ui.setHovered(node.id)"
+    @mouseleave="ui.setHovered(null)"
   >
     <div class="header">
       <span class="cat-dot" :style="{ background: categoryDot }" />
