@@ -125,10 +125,18 @@ const flowEdges = computed<Edge[]>(() => {
       strokeOpacity = 0.72;
     }
     const active = sim.isEdgeActive(e.id);
+    // Focus highlighting: edges incident to either the hovered OR the
+    // selected node light up; the rest dim. Hover takes priority — when
+    // the user is actively pointing somewhere they want immediate
+    // feedback; selection is the steady-state focus when the cursor is
+    // elsewhere. Together they let a user select a node, then move the
+    // cursor freely without losing the "this is what I'm working on"
+    // visual context.
     const hovered = ui.hoveredNodeId;
+    const focusId = hovered ?? ui.selectedNodeId;
     const related =
-      hovered != null && (e.source.node === hovered || e.target.node === hovered);
-    const dim = hovered != null && !related;
+      focusId != null && (e.source.node === focusId || e.target.node === focusId);
+    const dim = focusId != null && !related;
     const classes: string[] = [isControl ? 'sf-edge-control' : 'sf-edge-data'];
     if (active) classes.push('sf-edge-active');
     if (related) classes.push('sf-edge-related');

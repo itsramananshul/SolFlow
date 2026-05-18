@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useUIStore } from '@/stores/ui.store';
 import { useGraphStore } from '@/stores/graph.store';
 import NodePalette from './NodePalette.vue';
+import OutlinePanel from './OutlinePanel.vue';
 import TypesPanel from './TypesPanel.vue';
 import ImportsPanel from './ImportsPanel.vue';
 
@@ -13,6 +14,9 @@ const typesCount = computed(
   () => graph.workflow.structs.length + graph.workflow.enums.length,
 );
 const importsCount = computed(() => graph.workflow.imports.length);
+// Total nodes in the active function — surfaced on the Outline tab so
+// users see "this function has 47 nodes" before clicking in.
+const outlineCount = computed(() => graph.activeFunction?.nodes.length ?? 0);
 </script>
 
 <template>
@@ -24,6 +28,13 @@ const importsCount = computed(() => graph.workflow.imports.length);
         @click="ui.setSidebarTab('palette')"
       >
         Nodes
+      </button>
+      <button
+        class="tab"
+        :class="{ active: ui.sidebarTab === 'outline' }"
+        @click="ui.setSidebarTab('outline')"
+      >
+        Outline<span v-if="outlineCount > 0" class="count">{{ outlineCount }}</span>
       </button>
       <button
         class="tab"
@@ -49,6 +60,7 @@ const importsCount = computed(() => graph.workflow.imports.length);
     </nav>
     <div class="tab-body">
       <NodePalette v-if="ui.sidebarTab === 'palette'" />
+      <OutlinePanel v-else-if="ui.sidebarTab === 'outline'" />
       <TypesPanel v-else-if="ui.sidebarTab === 'types'" />
       <ImportsPanel v-else-if="ui.sidebarTab === 'imports'" />
       <div v-else class="policies-placeholder">
