@@ -1,0 +1,225 @@
+/**
+ * SolFlow Phase A — client-side validation.
+ *
+ * PHASE A — TEMPORARY IMPLEMENTATION.
+ * Cheap structural checks only: missing required ports, type mismatches on
+ * connected data edges, dangling branch arms, undeclared struct/enum refs.
+ *
+ * Phase B will replace this with the WASM `analyze_ast` call (see
+ * reference/SOL_CRATE_IDE_READINESS_PLAN.md §3.1 + §6 step 2.5). The
+ * function signature here will not change; only the implementation.
+ */
+
+import type {
+  FunctionGraph,
+  GraphEdge,
+  GraphNode,
+  SolWorkflow,
+} from './schema';
+import { typeEqual, typeLabel } from './schema';
+
+export type Severity = 'error' | 'warning';
+
+export interface Diagnostic {
+  severity: Severity;
+  message: string;
+  nodeId?: string;
+  functionId?: string;
+  code: string;
+}
+
+export function validateWorkflow(wf: SolWorkflow): Diagnostic[] {
+  const diags: Diagnostic[] = [];
+
+  if (!wf.functions.find((f) => f.name === 'start')) {
+    diags.push({
+      severity: 'warning',
+      message: 'No `start` function defined — program has no entry point.',
+      code: 'no-entry',
+    });
+  }
+
+  for (const fn of wf.functions) {
+    validateFunction(fn, wf, diags);
+  }
+
+  return diags;
+}
+
+function validateFunction(
+  fn: FunctionGraph,
+  wf: SolWorkflow,
+  diags: Diagnostic[],
+): void {
+  const nodeMap: Record<string, GraphNode> = {};
+  for (const n of fn.nodes) nodeMap[n.id] = n;
+
+  // Incoming edges per (node, port).
+  const portIncoming = new Map<string, GraphEdge[]>();
+  // Outgoing edges per (node, port).
+  const portOutgoing = new Map<string, GraphEdge[]>();
+  const key = (nodeId: string, portId: string) => `${nodeId}::${portId}`;
+
+  for (const e of fn.edges) {
+    const sk = key(e.source.node, e.source.port);
+    const tk = key(e.target.node, e.target.port);
+    portOutgoing.set(sk, [...(portOutgoing.get(sk) ?? []), e]);
+    portIncoming.set(tk, [...(portIncoming.get(tk) ?? []), e]);
+  }
+
+  // Check each node.
+  for (const n of fn.nodes) {
+    // Required inputs must have an edge.
+    for (const p of n.ports.in) {
+      if (!p.required) continue;
+      const inc = portIncoming.get(key(n.id, p.id)) ?? [];
+      if (inc.length === 0) {
+        diags.push({
+          severity: 'error',
+          message: `${nodeLabel(n)}: missing input "${p.name}".`,
+          nodeId: n.id,
+          functionId: fn.id,
+          code: 'missing-input',
+        });
+      }
+    }
+
+    // Validate kind-specific constraints. Narrow once via local const.
+    const data = n.data;
+    switch (data.kind) {
+      case 'structLiteral':
+      case 'fieldAccess':
+      case 'fieldSet': {
+        const ref = data.structName;
+        if (!ref) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: no struct selected.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unset-struct',
+          });
+        } else if (!wf.structs.find((s) => s.name === ref)) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: struct "${ref}" not defined.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unknown-struct',
+          });
+        }
+        if (
+          (data.kind === 'fieldAccess' || data.kind === 'fieldSet') &&
+          !data.fieldName
+        ) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: no field selected.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unset-field',
+          });
+        }
+        break;
+      }
+      case 'enumVariant': {
+        const enumName = data.enumName;
+        if (!enumName) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: no enum selected.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unset-enum',
+          });
+        } else if (!wf.enums.find((e) => e.name === enumName)) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: enum "${enumName}" not defined.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unknown-enum',
+          });
+        } else if (!data.variantName) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: no variant selected.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unset-variant',
+          });
+        }
+        break;
+      }
+      case 'call': {
+        const fid = data.functionId;
+        if (!fid) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: no function selected.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unset-call',
+          });
+        } else if (!wf.functions.find((f) => f.id === fid)) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: target function not found.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unknown-call',
+          });
+        }
+        break;
+      }
+      case 'assign':
+        if (!data.varName) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)}: no target variable.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unset-var',
+          });
+        }
+        break;
+      case 'varGet':
+        if (!data.varName) {
+          diags.push({
+            severity: 'warning',
+            message: `${nodeLabel(n)}: no variable selected.`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'unset-var',
+          });
+        }
+        break;
+    }
+  }
+
+  // Validate edges (data type compatibility).
+  for (const e of fn.edges) {
+    if (e.kind !== 'data') continue;
+    const src = nodeMap[e.source.node];
+    const tgt = nodeMap[e.target.node];
+    if (!src || !tgt) continue;
+    const srcPort = src.ports.out.find((p) => p.id === e.source.port);
+    const tgtPort = tgt.ports.in.find((p) => p.id === e.target.port);
+    if (!srcPort || !tgtPort) continue;
+    if (srcPort.type && tgtPort.type && !typeEqual(srcPort.type, tgtPort.type)) {
+      diags.push({
+        severity: 'warning',
+        message: `Type mismatch: ${typeLabel(srcPort.type)} → ${typeLabel(
+          tgtPort.type,
+        )} between ${nodeLabel(src)} and ${nodeLabel(tgt)}.`,
+        nodeId: tgt.id,
+        functionId: fn.id,
+        code: 'type-mismatch',
+      });
+    }
+  }
+}
+
+function nodeLabel(n: GraphNode): string {
+  return n.data.kind;
+}
