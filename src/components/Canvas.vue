@@ -512,8 +512,9 @@ onBeforeUnmount(() => {
         strokeWidth: 2,
         strokeDasharray: '6 4',
       }"
-      :selection-mode-key-code="'Shift'"
-      :pan-on-drag="[1, 2]"
+      :selection-key-code="'Shift'"
+      :multi-selection-key-code="'Shift'"
+      :pan-on-drag="true"
       :zoom-on-double-click="false"
       :delete-key-code="['Backspace', 'Delete']"
     >

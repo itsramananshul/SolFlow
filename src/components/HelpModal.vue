@@ -59,7 +59,7 @@ function onBackdrop(e: MouseEvent) {
             <div class="row"><span>Drag node from palette</span><kbd>Click + Drag</kbd></div>
             <div class="row"><span>Multi-select</span><kbd>⇧</kbd><kbd>Click</kbd></div>
             <div class="row"><span>Marquee select</span><kbd>⇧</kbd><kbd>Drag</kbd></div>
-            <div class="row"><span>Pan canvas</span><kbd>Middle/Right-Drag</kbd></div>
+            <div class="row"><span>Pan canvas</span><kbd>Drag empty canvas</kbd></div>
             <div class="row"><span>Delete selection</span><kbd>Del</kbd></div>
             <div class="row"><span>Right-click for actions</span><kbd>R-Click</kbd></div>
             <div class="row"><span>Drop workflow JSON</span><kbd>Drag from desktop</kbd></div>
