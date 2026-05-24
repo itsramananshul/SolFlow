@@ -291,23 +291,29 @@ const OPENROUTER_EXTRA_HEADERS = {
 
 // Curated list of strong free models on OpenRouter. When the user
 // picks any :free model and it's rate-limited / overloaded, we walk
-// this list and try each one until something answers. Ordered by
-// generation quality, not by free-tier availability — the loop
-// handles unavailability.
+// this list and try each one until something answers. The loop is
+// resilient to stale entries — 404 ("No endpoints found") is treated
+// as transient so a removed model just gets skipped.
 const OPENROUTER_FREE_FALLBACKS: string[] = [
   'meta-llama/llama-3.3-70b-instruct:free',
-  'google/gemini-2.0-flash-exp:free',
-  'deepseek/deepseek-chat-v3:free',
+  'deepseek/deepseek-chat-v3.1:free',
+  'deepseek/deepseek-r1:free',
+  'qwen/qwen3-235b-a22b:free',
   'qwen/qwen-2.5-72b-instruct:free',
+  'mistralai/mistral-small-3.2-24b-instruct:free',
+  'google/gemma-3-27b-it:free',
   'nvidia/nemotron-nano-9b-v2:free',
-  'meta-llama/llama-3.1-8b-instruct:free',
+  'meta-llama/llama-3.2-3b-instruct:free',
 ];
 
 // Transient upstream errors that mean "this model isn't available
-// right now — try a different one." Auth/bad-request errors are NOT
-// transient and bail the whole call.
+// right now — try a different one." Auth/bad-request errors (401/
+// 403/400) are NOT transient and bail the whole call. 404 IS
+// transient here because on OpenRouter it means "this model id
+// has no endpoints right now" (renamed/removed/no providers
+// online), which is exactly when we want to skip to the next one.
 function isTransientOpenRouterError(msg: string): boolean {
-  return /OpenRouter (408|425|429|500|502|503|504):/i.test(msg);
+  return /OpenRouter (404|408|425|429|500|502|503|504):/i.test(msg);
 }
 
 const openrouter: ProviderConfig = {
