@@ -37,9 +37,12 @@ import type {
   GenerateRequestBody,
   GenerateResponseBody,
 } from '../../src/sol-man/types';
-import { SYSTEM_PROMPT } from './_prompt';
-import { SpecValidationError, validateSpec } from './_validate';
-import { providerSummaries, resolveProvider } from './_providers';
+// .js extensions required: package.json has "type": "module" so Vercel
+// ships these as ESM, and Node's ESM resolver rejects extensionless
+// relative imports at runtime (ERR_MODULE_NOT_FOUND).
+import { SYSTEM_PROMPT } from './_prompt.js';
+import { SpecValidationError, validateSpec } from './_validate.js';
+import { providerSummaries, resolveProvider } from './_providers.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
