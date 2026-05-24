@@ -27,6 +27,11 @@ interface ProviderCallOptions {
 interface ProviderCallResult {
   text: string;
   usage?: { inputTokens: number; outputTokens: number };
+  /** Set when the provider used a different model than requested
+   *  (e.g. OpenRouter's free-model fallback chain kicked in). The
+   *  handler surfaces this in the response so the UI shows what
+   *  actually answered. */
+  actualModel?: string;
 }
 
 export interface ProviderConfig {
@@ -275,6 +280,36 @@ const grok: ProviderConfig = {
 //  first-class provider so users get free models out of the box.
 // =============================================================
 
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const OPENROUTER_EXTRA_HEADERS = {
+  // OpenRouter encourages an HTTP-Referer + X-Title for rate-limit
+  // attribution and dashboard analytics. These don't expose user data
+  // — they identify the calling app.
+  'HTTP-Referer': 'https://solflow.app',
+  'X-Title': 'SolFlow',
+};
+
+// Curated list of strong free models on OpenRouter. When the user
+// picks any :free model and it's rate-limited / overloaded, we walk
+// this list and try each one until something answers. Ordered by
+// generation quality, not by free-tier availability — the loop
+// handles unavailability.
+const OPENROUTER_FREE_FALLBACKS: string[] = [
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'google/gemini-2.0-flash-exp:free',
+  'deepseek/deepseek-chat-v3:free',
+  'qwen/qwen-2.5-72b-instruct:free',
+  'nvidia/nemotron-nano-9b-v2:free',
+  'meta-llama/llama-3.1-8b-instruct:free',
+];
+
+// Transient upstream errors that mean "this model isn't available
+// right now — try a different one." Auth/bad-request errors are NOT
+// transient and bail the whole call.
+function isTransientOpenRouterError(msg: string): boolean {
+  return /OpenRouter (408|425|429|500|502|503|504):/i.test(msg);
+}
+
 const openrouter: ProviderConfig = {
   id: 'openrouter',
   name: 'OpenRouter',
@@ -284,22 +319,74 @@ const openrouter: ProviderConfig = {
   // routes the request through OpenRouter's free quota for that
   // model. Override via SOL_MAN_MODEL or the modal's Model field.
   defaultModel: 'meta-llama/llama-3.3-70b-instruct:free',
-  call(opts) {
-    return callOpenAICompatible({
-      baseUrl: 'https://openrouter.ai/api/v1',
-      apiKey: opts.apiKey,
-      model: opts.model,
-      systemPrompt: opts.systemPrompt,
-      userPrompt: opts.userPrompt,
-      providerName: 'OpenRouter',
-      // OpenRouter encourages an HTTP-Referer + X-Title for rate-limit
-      // attribution and dashboard analytics. These don't expose user
-      // data — they identify the calling app.
-      extraHeaders: {
-        'HTTP-Referer': 'https://solflow.app',
-        'X-Title': 'SolFlow',
-      },
-    });
+  async call(opts) {
+    const requestedFree = opts.model.endsWith(':free');
+
+    // Paid model selected → respect the user's choice exactly. We
+    // don't sneak in a different model (or charge unexpected models)
+    // when they explicitly picked a paid one.
+    if (!requestedFree) {
+      return callOpenAICompatible({
+        baseUrl: OPENROUTER_BASE_URL,
+        apiKey: opts.apiKey,
+        model: opts.model,
+        systemPrompt: opts.systemPrompt,
+        userPrompt: opts.userPrompt,
+        providerName: 'OpenRouter',
+        extraHeaders: OPENROUTER_EXTRA_HEADERS,
+      });
+    }
+
+    // Free model selected → try the user's pick first, then walk the
+    // fallback list on transient failures (rate-limited upstream,
+    // model unavailable, etc.). Deduped so we don't retry the same
+    // model twice.
+    const tried = new Set<string>();
+    const candidates: string[] = [];
+    for (const m of [opts.model, ...OPENROUTER_FREE_FALLBACKS]) {
+      if (!tried.has(m)) {
+        candidates.push(m);
+        tried.add(m);
+      }
+    }
+
+    const failures: string[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const model = candidates[i];
+      try {
+        const result = await callOpenAICompatible({
+          baseUrl: OPENROUTER_BASE_URL,
+          apiKey: opts.apiKey,
+          model,
+          systemPrompt: opts.systemPrompt,
+          userPrompt: opts.userPrompt,
+          providerName: 'OpenRouter',
+          extraHeaders: OPENROUTER_EXTRA_HEADERS,
+        });
+        if (!result.text || result.text.length === 0) {
+          // Some free models occasionally return an empty completion
+          // even on 200; treat that as transient and try the next one.
+          failures.push(`${model}: empty response`);
+          continue;
+        }
+        // Only annotate actualModel when we actually fell back, so the
+        // UI shows the user-picked model when their choice worked.
+        return model === opts.model ? result : { ...result, actualModel: model };
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (!isTransientOpenRouterError(msg)) {
+          // Auth, bad request, model-not-found, etc — surface
+          // immediately. Cycling won't help.
+          throw e;
+        }
+        failures.push(`${model}: ${msg.replace(/^OpenRouter \d+: /, '')}`);
+      }
+    }
+    throw new Error(
+      `All ${candidates.length} free OpenRouter models were rate-limited or unavailable. ` +
+        `Tried in order: ${candidates.join(', ')}. ` +
+        `Wait a minute and retry, or add credits to your OpenRouter account for per-user limits.`,
+    );
   },
 };
 

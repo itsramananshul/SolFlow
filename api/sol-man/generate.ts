@@ -146,7 +146,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   return send(res, 200, {
     ok: true,
     spec,
-    model: resolved.model,
+    // Prefer the model that actually answered — the OpenRouter free
+    // fallback chain swaps to a different model on upstream rate
+    // limits, and the user should see what really ran.
+    model: llmResult.actualModel ?? resolved.model,
     provider: { id: resolved.provider.id, name: resolved.provider.name },
     usage: llmResult.usage,
   });
