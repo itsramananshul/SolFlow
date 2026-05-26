@@ -23,6 +23,7 @@ import {
 import type { GeneratedGraphSpec, ProviderSummary } from '@/sol-man/types';
 import { useGraphStore } from '@/stores/graph.store';
 import { useSolManConfigStore } from '@/stores/sol-man-config.store';
+import { useToastStore } from '@/stores/toast.store';
 import { validateWorkflow, type Diagnostic } from '@/graph/validate';
 
 export type SolManStatus = 'idle' | 'generating' | 'preview' | 'error';
@@ -190,6 +191,17 @@ export const useSolManStore = defineStore('solMan', () => {
     const { workflow, warnings } = specToWorkflow(spec.value);
     graph.loadWorkflow(workflow);
     translationWarnings.value = warnings;
+    // Surface the repair-pass warnings via a toast after the modal
+    // closes — without this they vanish along with the modal preview.
+    // Users who don't read the preview carefully would otherwise miss
+    // important details about what Sol Man had to substitute.
+    if (warnings.length > 0) {
+      useToastStore().add('warning', `Sol Man made ${warnings.length} ${warnings.length === 1 ? 'adjustment' : 'adjustments'}`, {
+        body: warnings[0] + (warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ''),
+      });
+    } else {
+      useToastStore().success('Workflow applied');
+    }
     reset();
     return { ok: true, warnings };
   }
@@ -233,6 +245,13 @@ export const useSolManStore = defineStore('solMan', () => {
     const { snapshot, warnings } = specToInsertSnapshot(spec.value, ctx, flowPos);
     const newIds = graph.insertBlock(snapshot, flowPos);
     translationWarnings.value = warnings;
+    if (warnings.length > 0) {
+      useToastStore().add('warning', `Sol Man made ${warnings.length} ${warnings.length === 1 ? 'adjustment' : 'adjustments'}`, {
+        body: warnings[0] + (warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ''),
+      });
+    } else {
+      useToastStore().success('Inserted into workflow');
+    }
     reset();
     return { ok: true, warnings, newIds };
   }

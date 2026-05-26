@@ -29,6 +29,7 @@ import { createNode, rebuildPorts, type WorkflowCtx } from '@/graph/factory';
 import { bindingsInScope, type ScopeBinding } from '@/graph/scope';
 import { emit } from '@/emit/emit';
 import { validateWorkflow, type Diagnostic } from '@/graph/validate';
+import { useToastStore } from '@/stores/toast.store';
 
 const STORAGE_KEY = 'solflow.draft.v1';
 
@@ -834,8 +835,22 @@ export const useGraphStore = defineStore('graph', () => {
   function loadWorkflow(wf: SolWorkflow) {
     workflow.value = wf;
     activeFunctionId.value = wf.functions[0]?.id ?? '';
-    rebuildAllPorts();
+    const dropped = rebuildAllPorts();
     touch();
+    // Surface dropped edges via a non-blocking toast. Without this the
+    // user would see wires silently disappear (the T9033 hazard) — usually
+    // because the loaded workflow references struct fields or function
+    // parameters that have since been renamed or removed.
+    if (dropped > 0) {
+      try {
+        useToastStore().warning(
+          `Removed ${dropped} broken ${dropped === 1 ? 'edge' : 'edges'}`,
+          `Loaded workflow had ${dropped === 1 ? 'an edge' : 'edges'} pointing at ports that no longer exist (renamed struct field, removed parameter, etc.).`,
+        );
+      } catch {
+        /* if Pinia isn't ready yet, just skip the toast */
+      }
+    }
   }
 
   function newWorkflow() {
@@ -848,12 +863,19 @@ export const useGraphStore = defineStore('graph', () => {
   // Internals
   // -----------------------------------------------------------
 
-  function rebuildAllPorts() {
+  /**
+   * Rebuild every node's port array from its current data, and drop
+   * any edge whose source or target port no longer exists. Returns
+   * the number of edges removed so callers can decide whether to
+   * surface a toast — silent edge removal is the T9033 hazard.
+   */
+  function rebuildAllPorts(): number {
+    let droppedEdges = 0;
     for (const fn of workflow.value.functions) {
       for (const node of fn.nodes) {
         node.ports = rebuildPorts(node.data, ctx.value);
       }
-      // Drop dangling edges referencing ports that no longer exist.
+      const before = fn.edges.length;
       fn.edges = fn.edges.filter((e) => {
         const src = fn.nodes.find((n) => n.id === e.source.node);
         const tgt = fn.nodes.find((n) => n.id === e.target.node);
@@ -863,7 +885,9 @@ export const useGraphStore = defineStore('graph', () => {
           tgt.ports.in.some((p) => p.id === e.target.port)
         );
       });
+      droppedEdges += before - fn.edges.length;
     }
+    return droppedEdges;
   }
 
   /**

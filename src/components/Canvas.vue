@@ -17,6 +17,7 @@ import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useBlocksStore } from '@/stores/blocks.store';
+import { useToastStore } from '@/stores/toast.store';
 import { buildBuiltinPattern } from '@/graph/blocks';
 import { typeCssClass } from '@/graph/schema';
 import type { GraphEdge, NodeData, NodeKind, SolType } from '@/graph/schema';
@@ -33,6 +34,7 @@ const graph = useGraphStore();
 const ui = useUIStore();
 const sim = useSimulationStore();
 const blocks = useBlocksStore();
+const toasts = useToastStore();
 const {
   fitView,
   screenToFlowCoordinate,
@@ -355,8 +357,9 @@ function onDrop(event: DragEvent) {
             throw new Error('Not a SolFlow workflow file');
           }
           graph.loadWorkflow(parsed);
+          toasts.success('Workflow loaded', `Dropped "${parsed.meta?.name || file.name}" onto the canvas.`);
         })
-        .catch((e) => alert(`Could not load workflow: ${(e as Error).message}`));
+        .catch((e) => toasts.error('Could not load workflow', (e as Error).message));
       return;
     }
   }

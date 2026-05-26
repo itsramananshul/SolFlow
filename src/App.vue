@@ -15,6 +15,7 @@ import HelpModal from '@/components/HelpModal.vue';
 import Splitter from '@/components/Splitter.vue';
 import SolManModal from '@/components/SolManModal.vue';
 import WelcomeScreen from '@/components/WelcomeScreen.vue';
+import Toast from '@/components/Toast.vue';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useBlocksStore } from '@/stores/blocks.store';
 import { useSolManConfigStore } from '@/stores/sol-man-config.store';
@@ -398,6 +399,7 @@ function downloadSol() {
       @open-sol-man="solManOpen = true"
       @open-file="welcomeOpen = false"
     />
+    <Toast />
   </div>
 </template>
 

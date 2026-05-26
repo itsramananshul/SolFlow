@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
+import { useToastStore } from '@/stores/toast.store';
 import { SAMPLES } from '@/samples';
 import type { SolWorkflow } from '@/graph/schema';
 
@@ -16,6 +17,7 @@ const emit = defineEmits<{
 
 const graph = useGraphStore();
 const ui = useUIStore();
+const toasts = useToastStore();
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const sampleMenuOpen = ref(false);
@@ -54,13 +56,19 @@ function togglePresentation() {
 }
 
 function newWorkflow() {
-  if (
-    !confirm(
-      'Start a new workflow? Your current draft will be cleared. (Tip: download it first if you want to keep it.)',
-    )
-  )
-    return;
+  // Linear-style destructive action: do the thing immediately, but
+  // offer a non-blocking "Restore previous" action in a toast. The
+  // current workflow is snapshotted before reset so the action can
+  // round-trip it back.
+  const snapshot: SolWorkflow = JSON.parse(JSON.stringify(graph.workflow));
   graph.newWorkflow();
+  toasts.add('success', 'New workflow started', {
+    body: 'Your previous draft was replaced. Tip: download workflows you want to keep.',
+    action: {
+      label: 'Restore previous',
+      onClick: () => graph.loadWorkflow(snapshot),
+    },
+  });
 }
 
 function downloadGraph() {
@@ -101,8 +109,9 @@ async function onFileChosen(event: Event) {
       throw new Error('Not a valid SolFlow workflow file.');
     }
     graph.loadWorkflow(parsed);
+    toasts.success('Workflow loaded', `Loaded "${parsed.meta?.name || file.name}".`);
   } catch (e) {
-    alert(`Could not load workflow: ${(e as Error).message}`);
+    toasts.error('Could not load workflow', (e as Error).message);
   } finally {
     input.value = '';
   }
