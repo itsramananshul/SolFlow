@@ -90,6 +90,51 @@ function reuseHistory(text: string) {
   promptRef.value?.focus();
 }
 
+// Staged loading copy. The actual HTTP call is opaque from the
+// client (no progress events), so this is a purely visual reassurance
+// while the user waits 10-25s. The labels rotate every 4s and stop
+// when the request completes.
+const LOADING_STAGES = [
+  'Composing nodes…',
+  'Wiring up the flow…',
+  'Reviewing assumptions…',
+];
+const loadingStageIndex = ref(0);
+let loadingStageTimer: number | undefined;
+function startLoadingStageRotation() {
+  loadingStageIndex.value = 0;
+  if (loadingStageTimer !== undefined) window.clearInterval(loadingStageTimer);
+  loadingStageTimer = window.setInterval(() => {
+    // Walk forward but stop at the last stage rather than wrapping
+    // — looping back to "Composing…" would lie to the user about
+    // restarting.
+    if (loadingStageIndex.value < LOADING_STAGES.length - 1) {
+      loadingStageIndex.value++;
+    }
+  }, 4500);
+}
+function stopLoadingStageRotation() {
+  if (loadingStageTimer !== undefined) {
+    window.clearInterval(loadingStageTimer);
+    loadingStageTimer = undefined;
+  }
+}
+
+watch(
+  () => sm.isGenerating,
+  (gen) => {
+    if (gen) {
+      startLoadingStageRotation();
+    } else {
+      stopLoadingStageRotation();
+    }
+  },
+);
+
+onBeforeUnmount(() => {
+  stopLoadingStageRotation();
+});
+
 async function onGenerate() {
   await sm.generate();
 }
@@ -519,7 +564,16 @@ function onBackdrop(e: MouseEvent) {
             <div class="loading-dots" aria-hidden="true">
               <span /><span /><span />
             </div>
-            <div class="loading-title">Sol Man is composing your workflow…</div>
+            <div class="loading-title">
+              Sol Man is working on it
+              <span class="loading-ellipsis" aria-hidden="true">…</span>
+            </div>
+            <div class="loading-stage" aria-live="polite">
+              {{ LOADING_STAGES[loadingStageIndex] }}
+            </div>
+            <div class="loading-progress" role="progressbar" aria-label="Generation in progress">
+              <div class="loading-progress-bar" />
+            </div>
             <div class="loading-sub">This usually takes 10–25 seconds.</div>
           </div>
         </div>
@@ -544,9 +598,16 @@ function onBackdrop(e: MouseEvent) {
 
           <div v-if="assumptions.length > 0" class="section">
             <div class="section-head amber">Assumptions Sol Man made</div>
-            <ul class="assumption-list">
-              <li v-for="(a, i) in assumptions" :key="i">{{ a }}</li>
-            </ul>
+            <div class="assumption-cards">
+              <div
+                v-for="(a, i) in assumptions"
+                :key="i"
+                class="assumption-card"
+              >
+                <div class="assumption-rail" aria-hidden="true" />
+                <div class="assumption-body">{{ a }}</div>
+              </div>
+            </div>
           </div>
 
           <!-- Diagnostics gate. We translated the generated spec into a
@@ -1017,6 +1078,52 @@ function onBackdrop(e: MouseEvent) {
 .loading-title {
   font-size: 0.875rem;
   color: var(--sf-text-0);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+}
+.loading-ellipsis {
+  display: inline-block;
+  animation: sm-ellipsis 1.4s steps(4, end) infinite;
+  width: 0.9em;
+  text-align: left;
+  overflow: hidden;
+  color: var(--sf-text-3);
+}
+@keyframes sm-ellipsis {
+  0%   { clip-path: inset(0 100% 0 0); }
+  100% { clip-path: inset(0 0 0 0); }
+}
+.loading-stage {
+  font-size: 0.75rem;
+  color: var(--sf-accent);
+  font-family: var(--sf-font-mono);
+  letter-spacing: 0.2px;
+  text-align: center;
+  min-height: 1.1em;
+  transition: color 0.18s ease;
+}
+.loading-progress {
+  width: 220px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--sf-bg-3);
+  overflow: hidden;
+}
+.loading-progress-bar {
+  height: 100%;
+  width: 30%;
+  background: linear-gradient(
+    90deg,
+    var(--sf-accent),
+    color-mix(in srgb, var(--sf-accent) 60%, transparent)
+  );
+  border-radius: 999px;
+  animation: sm-progress-sweep 1.8s ease-in-out infinite;
+}
+@keyframes sm-progress-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(330%); }
 }
 .loading-sub {
   font-size: 0.6875rem;
@@ -1068,6 +1175,31 @@ function onBackdrop(e: MouseEvent) {
 }
 .assumption-list li {
   list-style: disc;
+}
+.assumption-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.assumption-card {
+  display: flex;
+  background: rgba(255, 184, 0, 0.05);
+  border: 1px solid rgba(255, 184, 0, 0.20);
+  border-radius: var(--sf-radius-sm);
+  overflow: hidden;
+}
+.assumption-rail {
+  width: 3px;
+  background: var(--sf-cat-trigger);
+  flex-shrink: 0;
+}
+.assumption-body {
+  padding: 7px 10px;
+  font-size: 0.75rem;
+  color: var(--sf-text-1);
+  line-height: 1.55;
+  flex: 1;
+  word-wrap: break-word;
 }
 .apply-row {
   display: flex;
