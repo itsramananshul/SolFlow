@@ -73,7 +73,8 @@ auto-repair pass in Sol Man's apply pipeline.
 
 - `trigger` annotations (emitted as `// @trigger …` comments).
 - Notes / frames (visual aids only).
-- The "any" type used for unresolved data edges in the editor graph.
+- The "any" type used for unresolved data edges in the editor graph
+  — SOL itself has no `any` type (chapter 04 §4.1).
 
 These are *editor* concepts; a SOL file written by hand will not
 have them, and that is fine. They are documented here only so a
@@ -85,8 +86,9 @@ A running list, populated as discovered. Examples that may appear:
 
 - The emitter inserts `// @trigger` comments; the parser tolerates
   them as comments — confirmed.
-- The emitter may produce a function header with `-> void` while the
-  parser admits only omitted return; verified or refuted in the
+- The emitter may produce a function header with `-> void` while
+  the parser admits only omitted return (`Void` has no source
+  spelling — chapter 04 §4.2.6); verified or refuted in the
   substantive pass.
 
 Every mismatch carries: where it lives in the emitter, what canonical

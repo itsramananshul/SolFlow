@@ -144,16 +144,20 @@ These items are flagged here so they don't get lost. They need
 either a source reading pass or a fixture before they can move from
 *uncertain* to *confirmed*.
 
-| # | Question | What would resolve it |
-|---|---|---|
-| 1 | Are `break` / `continue` accepted by the parser? | Grep `parser.rs` for the tokens; check for a fixture that uses them |
-| 2 | Does the language admit a nullable / optional type? | Inspect `Type` enum variants in `parser.rs` and `analyzer.rs` |
-| 3 | What is the exact set of bitwise operators? | The Pratt table in `parser.rs:540–558` enumerates them — to be transcribed verbatim into `GRAMMAR.md` |
-| 4 | What does `print` accept — single value, varargs, a single string? | Read the analyzer's handling of the `print` identifier and confirm against `s1.sol`, `s2.sol`, `retest.sol` |
-| 5 | Does `for` admit C-style three-clause form, or only `for-in`? | Inspect the parser's `for`-handling block; cross-check with `test_control.sol` and `test_array.sol` |
-| 6 | Are integer overflows defined, wrapping, or trapping? | Read the VM's arithmetic instruction handlers; check `test_edge.sol` which uses large integers |
-| 7 | Does the runtime guarantee left-to-right evaluation of function arguments? | Read the bytecode emission for `Call` |
-| 8 | What is the precise lifetime of a struct value — value-semantics or reference-semantics? | Read the `Inst` ops that load/store struct fields, plus VM handling |
+| # | Question | What would resolve it | Status |
+|---|---|---|---|
+| 1 | Are `break` / `continue` accepted by the parser? | Grep `parser.rs` for the tokens; check for a fixture that uses them | **Resolved (commit 2).** Neither keyword exists in `lexer.rs:341–356`. The analyzer carries a `can_break` flag but no AST node ever sets it. Documented in chapter 03 §3.6 and chapter 07. |
+| 2 | Does the language admit a nullable / optional type? | Inspect `Type` enum variants in `parser.rs` and `analyzer.rs` | **Resolved (commit 2).** The `Type` enum (`parser.rs:5–24`) has no `Option` / `Nullable` variant. Documented in chapter 04 §4.1. |
+| 3 | What is the exact set of bitwise operators? | The Pratt table in `parser.rs:540–558` enumerates them — to be transcribed verbatim into `GRAMMAR.md` | **Resolved (commit 2).** Set: `& \| ^ << >> ~`. Documented in `GRAMMAR.md` §1 and chapter 04. The full precedence table moves to `GRAMMAR.md` §4 in commit 3. |
+| 4 | What does `print` accept — single value, varargs, a single string? | Read the analyzer's handling of the `print` identifier and confirm against `s1.sol`, `s2.sol`, `retest.sol` | **Partially resolved (commit 2).** `analyzer.rs:340–345` accepts any number of args of any types and returns `Void`. The VM has separate `PrintInt` / `PrintFloat` / `PrintChar` / `PrintString` ops; the dispatch from `print` to the right op happens at bytecode emission time (`bytecode.rs`, to be read in commit 4). Full treatment in chapter 13. |
+| 5 | Does `for` admit C-style three-clause form, or only `for-in`? | Inspect the parser's `for`-handling block; cross-check with `test_control.sol` and `test_array.sol` | **Resolved (commit 2).** Only the `for IDENT in expr block` form exists (`parser.rs:383–404`). Documented in chapter 03 §3.6 and chapter 07. |
+| 6 | Are integer overflows defined, wrapping, or trapping? | Read the VM's arithmetic instruction handlers; check `test_edge.sol` which uses large integers | **Partially resolved (commit 2).** Runtime arithmetic uses native Rust `i64` ops (`vm.rs:143–146`), which wrap in release builds and panic in debug builds. Literal parsing is `i128` (`lexer.rs:383`); literals above `i64::MAX` are truncated at runtime. Full treatment in chapter 14. |
+| 7 | Does the runtime guarantee left-to-right evaluation of function arguments? | Read the bytecode emission for `Call` | Pending — to be answered in commit 4 from `bytecode.rs`. |
+| 8 | What is the precise lifetime of a struct value — value-semantics or reference-semantics? | Read the `Inst` ops that load/store struct fields, plus VM handling | **Partially resolved (commit 2).** `vm.rs:7–11, 189–196` shows structs live on the heap as `HeapObject::Struct(Vec<u64>)`, addressed by a heap-index reference. Stack values for struct-typed variables therefore carry heap indices, not field contents. Full treatment in chapter 09 + chapter 14. |
+| 9 | Does the analyzer ever check `let` initializer types against the declared type? | Read `analyzer.rs` `DeclVar` branch | **Resolved (commit 2).** No — the analyzer ignores the initializer expression (`analyzer.rs:138–141`). Documented as a known hole in chapter 06 §6.1 and queued in the upstream audit (`SOL_CRATE_IDE_READINESS_PLAN.md` §1, blocker #18). |
+| 10 | Are `&&` and `||` short-circuiting? | Read the VM's `LogAnd` / `LogOr` handlers | **Resolved (commit 2).** No — both operands are evaluated before the op runs (`vm.rs:177–178`). Documented in chapter 04 §4.2.3. |
+| 11 | Does `export` exist as a keyword? | Grep `lexer.rs` for `export` | **Resolved (commit 2).** No. The keyword set is fifteen entries (`lexer.rs:341–356`); `export` is not among them. Sources observed using `export function` are broken; documented in chapter 03 §3.6 and chapter 05 §5.1. |
+| 12 | Does string equality (`str == str`) actually work? | Read the bytecode emission for `==` on strings | Pending — analyzer accepts it but the VM defines only `IntEq` / `FloatEq` / `CharEq`. To be answered in commit 4. |
 
 Each of these is queued for resolution in the chapters where the
 behavior matters (types / control flow / runtime semantics). Items

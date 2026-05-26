@@ -22,11 +22,15 @@
    runtime will supply a function with this signature. No body;
    terminated with `;`. Calls to it look exactly like calls to any
    other function.
-2. **`export function name(params) -> T { … }`** — declares a
-   function that the host runtime may invoke from outside the
-   program. Carries a body.
-3. **Name resolution.** Whether `ext` names share the same namespace
-   as plain `function` names; collision behavior.
+2. **Outbound entry points.** SOL itself has **no `export`
+   keyword.** A program advertises functions to the host via the
+   set of regular `function` declarations the host already knows
+   how to call — the conventional entry being `start`. The
+   convention is observed by every positive fixture and confirmed
+   against `lexer.rs:341–356` and `parser.rs:177–194`.
+3. **Name resolution.** `ext` names share the same global namespace
+   as plain `function` names. Collisions trip
+   `error: redefinition of <name>` from the analyzer.
 4. **Type contract.** Argument types and return type must match
    what the host actually supplies; mismatch behavior is described
    here and in chapter 15.
@@ -50,7 +54,7 @@
 
 ### Cross-references
 
-- Syntax of `ext` / `export` is also covered in chapter 03 and
+- Syntax of `ext function` is also covered in chapter 03 and
   enumerated in [`GRAMMAR.md`](./GRAMMAR.md).
 - Type rules for the parameters and return values come from chapter
   04.
@@ -71,5 +75,5 @@
 - `init.rs`, `cli.rs` for the snapshot of one host's load flow
 - An example host configuration file (TOML layout above) — surfaced
   with field names but no host-specific branding
-- Fixtures: `syntax_test.sol` (canonical `ext` + `export` example),
-  `gemini_long.sol` (longer practical use), `s1.sol`, `s2.sol`
+- Fixtures: `gemini_long.sol` (practical `ext function` use),
+  `s1.sol`, `s2.sol`

@@ -56,7 +56,11 @@ is self-contained.
 - `error_semantic3.sol`
 - `error_runtime.sol`
 
-### Editor-side reference
+### Compiler-side smoke test (with caveat)
 
-- `syntax_test.sol` (compiler crate) — canonical `ext` + `export`
-  example.
+- `syntax_test.sol` (compiler crate) — mixed-syntax driver kept
+  beside the compiler. **Note:** at the time of writing this file
+  uses an `export function` declaration which the parser does not
+  accept (no `export` keyword exists; see chapter 03 §3.6). Treat
+  the file as illustrative of *intent*, not as a positive
+  conformance fixture.
