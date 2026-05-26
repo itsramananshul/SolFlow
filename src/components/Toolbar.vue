@@ -28,15 +28,63 @@ onMounted(() => {
     modKey.value = '⌘';
   }
   document.addEventListener('click', closeSampleMenuOnOutsideClick);
+  document.addEventListener('keydown', closeSampleMenuOnEsc);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('click', closeSampleMenuOnOutsideClick);
+  document.removeEventListener('keydown', closeSampleMenuOnEsc);
 });
 
 function closeSampleMenuOnOutsideClick(e: MouseEvent) {
   if (!sampleMenuOpen.value) return;
   const t = e.target as HTMLElement;
   if (!t.closest('.sample-dropdown')) sampleMenuOpen.value = false;
+}
+
+// Esc dismissal — matches the existing Esc-cascade in App.vue.
+// Listed before App's global handler so this fires first when the
+// menu is open; App's cascade picks up other Esc cases.
+function closeSampleMenuOnEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape' && sampleMenuOpen.value) {
+    sampleMenuOpen.value = false;
+    // Stop the Esc from also clearing the selection in App's handler.
+    e.stopPropagation();
+  }
+}
+
+// Node-count metadata, computed lazily the first time the user opens
+// the sample menu. SAMPLES builds are fast (each is a synchronous
+// JS object construction) but we still avoid running them at module
+// init so the editor's cold start stays snappy. Result is cached so
+// subsequent opens don't rebuild.
+interface SampleMeta {
+  nodeCount: number;
+  fnCount: number;
+}
+const sampleMetaCache = ref<Map<string, SampleMeta>>(new Map());
+function ensureSampleMeta() {
+  if (sampleMetaCache.value.size === SAMPLES.length) return;
+  const next = new Map<string, SampleMeta>();
+  for (const s of SAMPLES) {
+    try {
+      const wf = s.build();
+      let nodes = 0;
+      for (const fn of wf.functions) nodes += fn.nodes.length;
+      next.set(s.id, { nodeCount: nodes, fnCount: wf.functions.length });
+    } catch {
+      next.set(s.id, { nodeCount: 0, fnCount: 0 });
+    }
+  }
+  sampleMetaCache.value = next;
+}
+function metaFor(id: string): SampleMeta {
+  return sampleMetaCache.value.get(id) ?? { nodeCount: 0, fnCount: 0 };
+}
+function sizeLabel(nodes: number): string {
+  if (nodes <= 6) return 'tiny';
+  if (nodes <= 18) return 'small';
+  if (nodes <= 40) return 'medium';
+  return 'large';
 }
 
 function openRun() {
@@ -126,6 +174,7 @@ function loadSample(id: string) {
 
 function toggleSampleMenu() {
   sampleMenuOpen.value = !sampleMenuOpen.value;
+  if (sampleMenuOpen.value) ensureSampleMeta();
 }
 </script>
 
@@ -218,13 +267,25 @@ function toggleSampleMenu() {
           </svg>
         </button>
         <div v-if="sampleMenuOpen" class="dropdown-menu" @click.stop>
+          <div class="dropdown-header">
+            <span>Sample workflows</span>
+            <span class="dropdown-hint">Click to load — replaces current draft</span>
+          </div>
           <button
             v-for="s in SAMPLES"
             :key="s.id"
             class="menu-item"
             @click="loadSample(s.id)"
           >
-            <div class="menu-title">{{ s.name }}</div>
+            <div class="menu-row">
+              <span class="menu-title">{{ s.name }}</span>
+              <span
+                v-if="metaFor(s.id).nodeCount > 0"
+                class="menu-size"
+                :class="'size-' + sizeLabel(metaFor(s.id).nodeCount)"
+                :title="`${metaFor(s.id).nodeCount} nodes across ${metaFor(s.id).fnCount} ${metaFor(s.id).fnCount === 1 ? 'function' : 'functions'}`"
+              >{{ metaFor(s.id).nodeCount }} nodes</span>
+            </div>
             <div class="menu-desc">{{ s.description }}</div>
           </button>
         </div>
@@ -428,6 +489,7 @@ function toggleSampleMenu() {
   border-radius: 0;
   border-bottom: 1px solid var(--sf-border);
   cursor: pointer;
+  transition: background 0.12s ease;
 }
 .menu-item:last-child {
   border-bottom: none;
@@ -435,6 +497,52 @@ function toggleSampleMenu() {
 .menu-item:hover {
   background: var(--sf-bg-3);
 }
+.menu-item:focus-visible {
+  outline: 2px solid var(--sf-accent);
+  outline-offset: -2px;
+}
+
+.dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--sf-bg-1);
+  border-bottom: 1px solid var(--sf-border);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--sf-text-1);
+  letter-spacing: 0.2px;
+}
+.dropdown-hint {
+  font-weight: 400;
+  font-size: 0.5625rem;
+  color: var(--sf-text-3);
+  letter-spacing: 0;
+}
+
+.menu-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.menu-size {
+  font-family: var(--sf-font-mono);
+  font-size: 0.5625rem;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--sf-bg-3);
+  color: var(--sf-text-2);
+  white-space: nowrap;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+.menu-size.size-tiny    { color: var(--sf-success); background: rgba(0, 204, 136, 0.10); }
+.menu-size.size-small   { color: var(--sf-text-1);  background: var(--sf-bg-3); }
+.menu-size.size-medium  { color: var(--sf-accent);  background: rgba(50, 145, 255, 0.12); }
+.menu-size.size-large   { color: var(--sf-warning); background: rgba(255, 184, 0, 0.10); }
 .menu-title {
   font-weight: 500;
   font-size: 0.75rem;
