@@ -161,46 +161,73 @@ forgot a variant.
 
 ---
 
-## 10.5 Fixture inconsistency to be aware of
+## 10.5 The runtime value: parser iota vs. bytecode hash
 
-`test_edge.sol` declares:
+**Resolved (commit 4).** The runtime value of an enum variant is
+*not* the iota number recorded by the parser. It is a hash of the
+variant's first character.
 
-```sol
-enum MyEnum {
-    Inactive,
-    Active,
-    Busy,
-}
+The bytecode emitter handles every `ExprEnumVar { var, … }` node
+with a single line (`bytecode.rs:538–541`):
+
+```rust
+let variant_hash = var.chars().next().unwrap_or('A') as i128 % 10;
+insts.push(Inst::PushConst(Ast::ExprInteger(variant_hash)));
 ```
 
-By the iota rule documented above, these resolve to:
+So at runtime:
 
-| Variant | Iota value |
-|---|---|
-| `Inactive` | 0 |
-| `Active` | 1 |
-| `Busy` | 2 |
+| Source | First char | ASCII | `% 10` |
+|---|---|---|---|
+| `MyEnum::Inactive` | `I` | 73 | **3** |
+| `MyEnum::Active`   | `A` | 65 | **5** |
+| `MyEnum::Busy`     | `B` | 66 | **6** |
 
-The `start` function in the same fixture asserts:
+That is exactly what `test_edge.sol::start` asserts. The fixture's
+expectations are *correct* for the bytecode-level behavior; the
+parser's iota algorithm is essentially dead — its computed values
+sit in the AST but are never emitted.
 
-```sol
-if (test_enum_var() != 5) { return 9; }       // expects Active == 5
-if (test_enum_inactive() != 3) { return 10; }  // expects Inactive == 3
-if (test_enum_busy() != 6) { return 11; }      // expects Busy == 6
-```
+### Consequences
 
-These expectations contradict the parser's iota rule and the
-behavior of `analyzer.rs` / `bytecode.rs` as read in commit 2 –
-3. Either the fixture's expected values are stale (likely — left
-over from an older iota convention) or there is a different
-numbering source the docs have not yet found.
+1. **Two variants with the same first character collide at
+   runtime.**
+   ```sol
+   enum Status { Active, Aborted }
+   // Status::Active == Status::Aborted  →  true at runtime ('A' % 10 == 'A' % 10)
+   ```
+   This is a hard implementation bug, not a language feature. Until
+   the bytecode is fixed, **make every variant in an enum start
+   with a distinct first character**. With at most 10 single-byte
+   first characters mapping to the same residue, the collision
+   window is tighter than it looks — `A` and `K` collide (75 % 10
+   = 5), `B` and `L` collide (76 % 10 = 6), etc.
+2. **Explicit `= N` assignments are silently ignored.** A variant
+   written `Foo = 100` will still emit `'F' % 10 = 0` at the
+   bytecode level. The audit notes this in
+   [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md) as a known runtime
+   mismatch (`T9002`).
+3. **A SOL program that depends on enum values being *small,
+   non-overlapping, source-ordered integers* will not behave the
+   way it reads.** Use enums for tagged comparison only
+   (`status == Status::Active`), not for arithmetic encoding.
 
-**Treat the iota rule above as authoritative** — it is what the
-parser source code does. Until the contradiction is resolved by
-inspecting `bytecode.rs` for an alternative enum-numbering pass,
-the discrepancy is logged as a known inconsistency in
-[`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md). Re-resolve in
-commit 4 once the bytecode is fully read.
+### What the parser's iota *is* good for
+
+The parser's iota is still useful for **diagnostic naming** —
+`<NAME> has no variant <VAR>` checks against the parser-stored
+variant set, and the iota number appears in some debug-print
+paths. It just doesn't show up at runtime.
+
+### Treat the variant-value behavior as a known bug
+
+This documentation does not endorse the hash. It records what the
+compiler does today so consumers don't trip over it. The behavior
+is queued as a real bug in
+[`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md) (`T9002 — Enum
+variant values are a character hash, not the iota`), and is
+expected to change to the iota-from-parser model in a future
+compiler revision.
 
 ---
 
@@ -224,10 +251,11 @@ Full entries in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
 
 - `parser.rs:52` — variant storage (`HashMap`)
 - `parser.rs:518–558` — enum declaration parser
-- `parser.rs:530–550` — iota algorithm
+- `parser.rs:530–550` — iota algorithm (parser-level only)
 - `parser.rs:699–706` — variant reference parser
 - `analyzer.rs:146–149` — enum symbol registration
 - `analyzer.rs:263–271` — comparison-op type rule
 - `analyzer.rs:437–454` — variant lookup
-- Fixtures: `test_edge.sol` (with the inconsistency noted above),
-  `gemini_long.sol`
+- `bytecode.rs:538–541` — variant value at runtime (first-char hash)
+- Fixtures: `test_edge.sol` (whose expected values match the
+  bytecode hash above), `gemini_long.sol`
