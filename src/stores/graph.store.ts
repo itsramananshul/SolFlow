@@ -143,6 +143,75 @@ export const useGraphStore = defineStore('graph', () => {
     touch();
   }
 
+  /**
+   * Duplicate a function. Clones the function's signature, every node,
+   * every edge, and every per-node inline-expression map. New IDs are
+   * generated for the function itself and for every node and edge, so
+   * the duplicate is fully independent from the original — editing one
+   * doesn't affect the other.
+   *
+   * The new function's name picks the first available `<orig> copy`,
+   * `<orig> copy 2`, `<orig> copy 3`, … so duplicates of duplicates
+   * stay disambiguated.
+   *
+   * Activates the new function so the user sees the result; returns
+   * the new id for callers that want to follow up (e.g. select-and-
+   * rename pattern).
+   */
+  function duplicateFunction(id: string): string | undefined {
+    const orig = workflow.value.functions.find((f) => f.id === id);
+    if (!orig) return undefined;
+
+    // Choose a fresh name. `<orig> copy`, then `<orig> copy 2`, etc.
+    const base = `${orig.name} copy`;
+    let name = base;
+    let i = 2;
+    while (workflow.value.functions.find((f) => f.name === name)) {
+      name = `${base} ${i++}`;
+    }
+
+    // Remap every node id. The id-map lets us rewrite edges without
+    // walking by index — works regardless of order.
+    const idMap = new Map<string, string>();
+    const nodes: GraphNode[] = orig.nodes.map((n) => {
+      const newId = nanoid(8);
+      idMap.set(n.id, newId);
+      return {
+        id: newId,
+        data: JSON.parse(JSON.stringify(n.data)) as NodeData,
+        position: { x: n.position.x, y: n.position.y },
+        ports: JSON.parse(JSON.stringify(n.ports)),
+        expressions: n.expressions ? { ...n.expressions } : undefined,
+      };
+    });
+    const edges: GraphEdge[] = orig.edges
+      .map((e) => {
+        const src = idMap.get(e.source.node);
+        const tgt = idMap.get(e.target.node);
+        if (!src || !tgt) return null;
+        return {
+          id: nanoid(8),
+          source: { node: src, port: e.source.port },
+          target: { node: tgt, port: e.target.port },
+          kind: e.kind,
+        };
+      })
+      .filter((e): e is GraphEdge => e !== null);
+
+    const newFn: FunctionGraph = {
+      id: nanoid(8),
+      name,
+      params: orig.params.map((p) => ({ ...p, type: JSON.parse(JSON.stringify(p.type)) })),
+      returnType: JSON.parse(JSON.stringify(orig.returnType)),
+      nodes,
+      edges,
+    };
+    workflow.value.functions.push(newFn);
+    activeFunctionId.value = newFn.id;
+    touch();
+    return newFn.id;
+  }
+
   function updateWorkflowMeta(patch: { name?: string; description?: string }) {
     if (patch.name !== undefined) workflow.value.meta.name = patch.name;
     if (patch.description !== undefined)
@@ -1076,6 +1145,7 @@ export const useGraphStore = defineStore('graph', () => {
     bootstrap,
     addFunction,
     deleteFunction,
+    duplicateFunction,
     renameFunction,
     updateFunctionSignature,
     setActiveFunction,

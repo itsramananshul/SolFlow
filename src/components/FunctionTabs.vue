@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
+import { useToastStore } from '@/stores/toast.store';
 import { typeLabel } from '@/graph/schema';
 import type { Param, SolType, SolPrimitive } from '@/graph/schema';
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 
 const graph = useGraphStore();
 const ui = useUIStore();
+const toasts = useToastStore();
 
 const signatureOpenFor = ref<string | null>(null);
 
@@ -22,9 +25,85 @@ function rename(id: string, e: Event) {
 
 function deleteFn(id: string) {
   if (graph.workflow.functions.length <= 1) return;
-  if (!confirm('Delete this function and all its nodes?')) return;
+  // Linear-style destructive action: snapshot, delete, offer Undo
+  // toast. The undo restores the whole workflow rather than the
+  // single function so any cross-function call ids stay consistent.
+  const snapshot = JSON.parse(JSON.stringify(graph.workflow));
+  const fnName = graph.workflow.functions.find((f) => f.id === id)?.name ?? 'function';
   graph.deleteFunction(id);
+  toasts.add('warning', `Deleted "${fnName}"`, {
+    body: 'The function and its nodes are gone.',
+    action: {
+      label: 'Undo',
+      onClick: () => graph.loadWorkflow(snapshot),
+    },
+  });
 }
+
+function duplicateFn(id: string) {
+  const newId = graph.duplicateFunction(id);
+  const fn = newId ? graph.workflow.functions.find((f) => f.id === newId) : null;
+  toasts.success(fn ? `Duplicated to "${fn.name}"` : 'Duplicated function');
+}
+
+// =============================================================
+//  Per-tab context menu (right-click on a tab)
+// =============================================================
+//
+// Reuses the canvas ContextMenu component. Rename triggers the inline
+// input's focus + select — the input is already there, we just shift
+// focus to it. Duplicate and Delete are direct actions.
+
+const ctxMenu = ref<{ open: boolean; x: number; y: number; fnId: string | null }>({
+  open: false,
+  x: 0,
+  y: 0,
+  fnId: null,
+});
+
+function openTabContextMenu(e: MouseEvent, fnId: string) {
+  e.preventDefault();
+  e.stopPropagation();
+  ctxMenu.value = { open: true, x: e.clientX, y: e.clientY, fnId };
+}
+function closeTabContextMenu() {
+  ctxMenu.value = { open: false, x: 0, y: 0, fnId: null };
+}
+
+function focusRename(fnId: string) {
+  // The function-tab name input has a stable id-driven selector via
+  // its place in the v-for; the easiest cross-browser path is to find
+  // it by data-fn-id attribute. nextTick not needed because the input
+  // is already mounted.
+  const el = document.querySelector(`.fn-tab[data-fn-id="${fnId}"] .fn-name`) as HTMLInputElement | null;
+  if (el) {
+    el.focus();
+    el.select();
+  }
+}
+
+const ctxItems = computed<ContextMenuItem[]>(() => {
+  const id = ctxMenu.value.fnId;
+  if (!id) return [];
+  const onlyOne = graph.workflow.functions.length <= 1;
+  return [
+    {
+      label: 'Rename',
+      shortcut: 'F2',
+      action: () => focusRename(id),
+    },
+    {
+      label: 'Duplicate',
+      action: () => duplicateFn(id),
+    },
+    {
+      label: 'Delete',
+      danger: true,
+      disabled: onlyOne,
+      action: () => deleteFn(id),
+    },
+  ];
+});
 
 function newFn() {
   graph.addFunction('fn');
@@ -106,7 +185,9 @@ function signatureTooltip(fn: { name: string; params: Param[]; returnType: SolTy
         :key="fn.id"
         class="fn-tab"
         :class="{ active: fn.id === graph.activeFunctionId }"
+        :data-fn-id="fn.id"
         @click="setActive(fn.id)"
+        @contextmenu="(e) => openTabContextMenu(e, fn.id)"
       >
         <span class="fn-prefix">fn</span>
         <input
@@ -181,6 +262,13 @@ function signatureTooltip(fn: { name: string; params: Param[]; returnType: SolTy
         </div>
       </template>
     </div>
+    <ContextMenu
+      :open="ctxMenu.open"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :items="ctxItems"
+      @close="closeTabContextMenu"
+    />
   </div>
 </template>
 
