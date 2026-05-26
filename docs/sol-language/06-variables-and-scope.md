@@ -190,11 +190,19 @@ the block (`Ast::Block`), which the analyzer creates a new
 |---|---|
 | Function body | Yes (the function's outer scope; parameters are added here before the body is walked) |
 | Top-level program | One global scope holds every top-level decl |
-| `{ … }` block | Yes — each braced block creates a fresh `TypeTable` |
+| `{ … }` block | Yes — each braced block creates a fresh `TypeTable` **unless the block is empty** (the analyzer's `Ast::Block` handler short-circuits for `stmts.len() == 0` and returns `Type::Void` without opening a scope) |
 | `if` body, `else` body | Yes — each is a block |
 | `while` body | Yes |
 | `for-in` body | Yes for the body; **the iteration variable is *not* in the body's scope** — see §6.5 |
+| `import` statement (top-level or inside function) | No new scope, but **the alias is added to the current scope as a `Void`-typed local** — see chapter 12 §12.3 |
 | Inline expression | No |
+
+A consequence of the empty-block case: `function noop() {}` and
+`{ { { { } } } }` cost nothing at the analyzer level — no scope
+is opened, no `TypeTable` is allocated. The bytecode emitter
+still emits an `Inst::Ret` (for the empty function body) or
+nothing (for the empty `{}` blocks), and runtime behavior is
+identical to a no-op.
 
 ### What is visible
 

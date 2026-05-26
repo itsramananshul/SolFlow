@@ -202,6 +202,13 @@ sit in the AST but are never emitted.
    first characters mapping to the same residue, the collision
    window is tighter than it looks — `A` and `K` collide (75 % 10
    = 5), `B` and `L` collide (76 % 10 = 6), etc.
+
+   **Real-world case study.** `gemini_long.sol`'s `AppHealth`
+   enum (`Offline, Initializing, Stable = 200, Overloaded = 503`)
+   collides on two pairs at runtime — `Offline`/`Overloaded` both
+   map to `9`, and `Stable`/`Initializing` both map to `3`. The
+   program's entire enum dispatch is therefore wrong at runtime.
+   See chapter 16 §16.3 for the full collision table.
 2. **Explicit `= N` assignments are silently ignored.** A variant
    written `Foo = 100` will still emit `'F' % 10 = 0` at the
    bytecode level. The audit notes this in

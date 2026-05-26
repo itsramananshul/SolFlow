@@ -162,7 +162,7 @@ dot-separated identifiers; the `as alias` clause is optional.
 ### Current semantics — mostly inert
 
 At the analyzer level (`analyzer.rs:166–171`) the import only adds
-the alias as a `Void`-typed variable in the global scope:
+the alias as a `Void`-typed variable in the **current scope**:
 
 ```rust
 if let Some(a) = alias {
@@ -175,6 +175,25 @@ by the analyzer or the bytecode emitter. There is **no module
 resolution**, no namespace, no symbol re-export. The import
 statement exists as a grammar slot for future development; treat
 it as inert in the current language.
+
+### Statement-position `import` adds a *local* alias
+
+The parser's statement dispatcher (`parser.rs:365`) also accepts
+`Token::Import`, so an `import x.y as alias;` form is valid
+**inside** a function body. The alias is then added to the
+function's local scope, not the global scope. Two consequences
+specific to that case:
+
+- The alias goes out of scope at the end of the enclosing block,
+  same as any other local.
+- The alias's slot is **never initialized at runtime** — the
+  analyzer registers it but the bytecode emitter does not emit a
+  `StoreLocal` for an import. Reading the alias produces
+  whatever happens to be in that stack slot, which is undefined.
+
+Don't use `import` in function bodies. The form is parser-
+accepted for symmetry with the top-level dispatcher but has no
+useful runtime behavior.
 
 ### Recommendation
 

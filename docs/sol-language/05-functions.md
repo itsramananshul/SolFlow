@@ -76,11 +76,45 @@ body block.
   body returns a value of type `R`.** The relevant check is
   commented out at `analyzer.rs:120–132`. A function declared
   `-> int` whose body never returns, or returns a `str`, will
-  compile and run; reading off the top of the stack at the end can
-  produce arbitrary values.
+  compile and run.
+- **The runtime always pushes *something* for the caller, even
+  for a "missing" return.** The emitter appends `Inst::Ret` at
+  the end of every function body (`bytecode.rs:414`), and `Ret`
+  unconditionally pushes `0` onto the caller's stack
+  (`vm.rs:283–293` — see also T9011). So a function declared
+  `-> int` whose body has no `return` returns `0` to the caller,
+  not a runtime panic and not a type error.
+- This is *deceptively reassuring*. The program "works"; the
+  declared return type is irrelevant; the caller sees `0`. If the
+  declared type were `str` instead of `int`, the caller would
+  still see `0` — but interpret the `0` as a heap index into an
+  invalid heap slot. The accidental safety of the int case does
+  not extend to other types.
 - Plan accordingly: treat return-type validation as the author's
   responsibility today. The audit doc records this as a high-impact
   IDE-UX gap (`SOL_CRATE_IDE_READINESS_PLAN.md` §1, blocker #18).
+
+### Empty function body
+
+```sol
+function noop() {}
+function placeholder_a(name: str) {}     // gemini_long.sol pattern
+function placeholder_b(name: str) -> int { }
+```
+
+All three forms are parser-accepted. The first two are `Void`-
+returning by omission of `-> T`. The third declares `-> int` but
+returns `0` to the caller (see "Return-type rules" above — `Ret`
+push-`0` makes this look like the program "returns 0").
+
+The analyzer's `Ast::Block` handler short-circuits on an empty
+body (`analyzer.rs:150–151`): it returns `Type::Void` without
+opening a new scope. The bytecode emitter walks zero statements
+and appends the standard `Inst::Ret`. Calling the function pushes
+the frame, immediately pops it, and pushes `0`.
+
+Useful as a stub. Don't rely on the declared return type if the
+body doesn't actually return.
 
 ### What you cannot put in a function declaration
 

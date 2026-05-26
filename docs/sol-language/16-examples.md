@@ -184,12 +184,27 @@ function start() {
   Stable → 200, Overloaded → 503`. **At runtime, the bytecode
   uses `first_char % 10` instead** (chapter 10 §10.5) — so
   `Offline → 79 % 10 = 9`, `Initializing → 73 % 10 = 3`,
-  `Stable → 83 % 10 = 3`, `Overloaded → 79 % 10 = 9`. Multiple
-  pairs of variants collide at runtime; the `if status ==
-  AppHealth::Stable` and `if status == AppHealth::Overloaded`
-  checks therefore don't behave as the source reads. **This is a
-  good illustration of why T9002 is a real-world bug, not a
-  theoretical one.**
+  `Stable → 83 % 10 = 3`, `Overloaded → 79 % 10 = 9`. The
+  collision table for this exact enum:
+
+  | Variant | First char | Runtime value |
+  |---|---|---|
+  | `Offline` | `'O'` | **9** |
+  | `Initializing` | `'I'` | **3** |
+  | `Stable` (= 200 in source) | `'S'` | **3** ← collides with Initializing |
+  | `Overloaded` (= 503 in source) | `'O'` | **9** ← collides with Offline |
+
+  Every comparison in `verify_capacity` is therefore broken at
+  runtime: `if status == AppHealth::Stable` matches both
+  `Stable` *and* `Initializing`; `if status == AppHealth::Overloaded`
+  matches both `Overloaded` *and* `Offline`. The dispatch is
+  semantically meaningless — the program "works" only because
+  the host inspects the final return value, not the side
+  effects. **This is a good illustration of why T9002 is a
+  real-world bug, not a theoretical one** — and a concrete
+  example of why chapter 17 §17.1's recommendation ("no two
+  variants in an enum share a first character") is a hard
+  requirement, not a style preference.
 - **Lines 11–18.** Struct with a fixed-size `[4]int` field. Note
   the bytecode treats `[4]int` and `[]int` interchangeably for
   type-equality purposes (chapter 04 §4.6).
