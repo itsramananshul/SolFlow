@@ -30,9 +30,13 @@ export function buildPayments() {
   addImport(b, ['CoreNetwork', 'FinanceGateway', 'Auth', 'ValidateSession', 'Timeout'], 'SessionTimeout');
   addImport(b, ['RegionalNetwork', 'PaymentHub', 'TransactionMonitor', 'CheckFraud', 'Score'], 'FraudScore');
 
+  // T9002 — variant first characters must be distinct under (mod 10):
+  // 'P'%10=0, 'R'%10=2, 'A'%10=5, 'D'%10=8. "Processing" was renamed to
+  // "Running" to avoid the 'P' collision with "Pending". See chapter
+  // 17 §17.1 of the SOL docs.
   addEnum(b, 'PaymentStatus', [
     { name: 'Pending', value: null },
-    { name: 'Processing', value: null },
+    { name: 'Running', value: null },
     { name: 'Approved', value: 201 },
     { name: 'Declined', value: 403 },
   ]);

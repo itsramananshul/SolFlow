@@ -148,8 +148,13 @@ export function buildEnterprise(): SolWorkflow {
     iteratorType: { kind: 'int' },
   });
   loop.expressions = { array: '[1, 2, 3, 4, 5]' };
+  // T9023/T9005 — `str + str` is not valid SOL. The simulator accepts
+  // it (JS-style concatenation) but the canonical analyzer rejects it
+  // with E1006. Print the variable directly; the execution timeline
+  // shows the context. To compose strings, declare an `ext function`
+  // that the host implements.
   const enrichPrint = node(b, 'print', { x: 460, y: 420 });
-  enrichPrint.expressions = { value: '"enriching item: " + item' };
+  enrichPrint.expressions = { value: 'item' };
   const letEnriched = node(b, 'let', { x: 200, y: 540 }, {
     kind: 'let',
     varName: 'enriched',
@@ -173,10 +178,13 @@ export function buildEnterprise(): SolWorkflow {
     hasElse: true,
   });
   branchRisk.expressions = { cond: 'riskScore > 70' };
+  // T9023/T9005 — see comment above; print constant strings instead of
+  // concatenating. Pair each with a separate varGet → print if the
+  // user wants the orderId visible.
   const printHighRisk = node(b, 'print', { x: 700, y: 700 });
-  printHighRisk.expressions = { value: '"HIGH RISK: review " + orderId' };
+  printHighRisk.expressions = { value: '"HIGH RISK"' };
   const printLowRisk = node(b, 'print', { x: 700, y: 800 });
-  printLowRisk.expressions = { value: '"order " + orderId + " cleared"' };
+  printLowRisk.expressions = { value: '"order cleared"' };
 
   // ===== DISPATCH region =====
   const callDispatch = node(b, 'call', { x: 200, y: 1000 }, {
@@ -184,7 +192,8 @@ export function buildEnterprise(): SolWorkflow {
     functionId: dispatchId,
   });
   const printDispatched = node(b, 'print', { x: 460, y: 1000 });
-  printDispatched.expressions = { value: '"order " + orderId + " dispatched"' };
+  // T9023/T9005 — see enrichPrint comment.
+  printDispatched.expressions = { value: '"order dispatched"' };
 
   // ===== WRAP-UP region =====
   const callNotify = node(b, 'call', { x: 200, y: 1280 }, {
@@ -192,7 +201,8 @@ export function buildEnterprise(): SolWorkflow {
     functionId: notifyId,
   });
   const finalPrint = node(b, 'print', { x: 460, y: 1280 });
-  finalPrint.expressions = { value: '"workflow complete for " + orderId' };
+  // T9023/T9005 — see enrichPrint comment.
+  finalPrint.expressions = { value: '"workflow complete"' };
   const ret = node(b, 'return', { x: 700, y: 1280 }, {
     kind: 'return',
     hasValue: false,

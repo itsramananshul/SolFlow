@@ -27,12 +27,21 @@ export function buildOrchestration() {
   addImport(b, ['EdgeRouter', 'SecurityControl', 'AuthApp', 'ValidateToken', 'Expiration'], 'TokenTimeout');
   addImport(b, ['GlobalRouter', 'InventoryControl', 'WarehouseApp', 'GetStock', 'Level'], 'StockLevel');
 
-  // enum AppHealth { Offline, Initializing, Stable = 200, Overloaded = 503 }
+  // enum AppHealth { Offline, Warming, Stable = 200, Degraded = 503 }
+  //
+  // First-character set chosen to avoid T9002 collisions: the canonical
+  // SOL bytecode dispatches enum variants by (first_char % 10), and the
+  // simulator runs them by name — so a same-first-char workflow looks
+  // correct in the editor but silently misdispatches in production.
+  // Source-style names like "Initializing" and "Overloaded" collide
+  // with "Stable" and "Offline" respectively; the names below are
+  // semantically equivalent and all start with distinct characters
+  // (O=9, W=7, S=3, D=8). See chapter 17 §17.1 of the SOL docs.
   addEnum(b, 'AppHealth', [
     { name: 'Offline', value: null },
-    { name: 'Initializing', value: null },
+    { name: 'Warming', value: null },
     { name: 'Stable', value: 200 },
-    { name: 'Overloaded', value: 503 },
+    { name: 'Degraded', value: 503 },
   ]);
 
   // struct ProcessNode { id, threshold, service_name, is_active }
@@ -89,8 +98,8 @@ export function buildOrchestration() {
 
   // -----------------------------------------------------------
   // function verify_capacity(node: ProcessNode, current: float) -> AppHealth
-  //   if (current > node.threshold) return Overloaded;
-  //   else if (node.is_active) return Stable; else return Initializing;
+  //   if (current > node.threshold) return Degraded;
+  //   else if (node.is_active) return Stable; else return Warming;
   // -----------------------------------------------------------
   const verifyFn = addFunction(
     b,
@@ -117,7 +126,7 @@ export function buildOrchestration() {
     });
     const branch1 = node(b, 'branch', { x: 700, y: 60 }, { kind: 'branch', hasElse: true });
     const over = node(b, 'enumVariant', { x: 900, y: 180 }, {
-      kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Overloaded',
+      kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Degraded',
     });
     const ret1 = node(b, 'return', { x: 900, y: 60 }, { kind: 'return', hasValue: true });
     const isAct = node(b, 'fieldAccess', { x: 900, y: 320 }, {
@@ -131,7 +140,7 @@ export function buildOrchestration() {
       kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Stable',
     });
     const initz = node(b, 'enumVariant', { x: 1320, y: 480 }, {
-      kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Initializing',
+      kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Warming',
     });
     const ret2 = node(b, 'return', { x: 1320, y: 260 }, { kind: 'return', hasValue: true });
     const ret3 = node(b, 'return', { x: 1320, y: 420 }, { kind: 'return', hasValue: true });
@@ -158,7 +167,7 @@ export function buildOrchestration() {
   //   let node: ProcessNode = ProcessNode { ... };
   //   let status: AppHealth = verify_capacity(node, 85.2);
   //   if (status == Stable) { start_service(node.service_name); }
-  //   else if (status == Overloaded) { stop_service(node.service_name); }
+  //   else if (status == Degraded) { stop_service(node.service_name); }
   // }
   // -----------------------------------------------------------
   const startFn = addFunction(b, 'start', [], { kind: 'void' });
@@ -218,9 +227,9 @@ export function buildOrchestration() {
     kind: 'call', functionId: startServiceFn.id,
   });
 
-  // else branch — check Overloaded and call stop_service
+  // else branch — check Degraded and call stop_service
   const overVar = node(b, 'enumVariant', { x: 1380, y: 420 }, {
-    kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Overloaded',
+    kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Degraded',
   });
   const statusGet2 = node(b, 'varGet', { x: 1380, y: 350 }, {
     kind: 'varGet', varName: 'status', resolvedType: { kind: 'named', name: 'AppHealth' },
