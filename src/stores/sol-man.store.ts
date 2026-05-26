@@ -23,6 +23,7 @@ import {
 import type { GeneratedGraphSpec, ProviderSummary } from '@/sol-man/types';
 import { useGraphStore } from '@/stores/graph.store';
 import { useSolManConfigStore } from '@/stores/sol-man-config.store';
+import { validateWorkflow, type Diagnostic } from '@/graph/validate';
 
 export type SolManStatus = 'idle' | 'generating' | 'preview' | 'error';
 
@@ -36,6 +37,14 @@ export const useSolManStore = defineStore('solMan', () => {
   const lastModel = ref<string | null>(null);
   const lastProvider = ref<{ id: string; name: string } | null>(null);
   const translationWarnings = ref<string[]>([]);
+
+  // Preview-time validation. We translate the generated spec into a
+  // prospective workflow as soon as the LLM responds, run the same
+  // diagnostics the live canvas runs, and gate the Apply buttons. This
+  // is the guard against silently dropping broken workflows onto the
+  // user's canvas.
+  const previewDiagnostics = ref<Diagnostic[]>([]);
+  const previewWarnings = ref<string[]>([]);
 
   // Recent prompts for quick re-use. Held in memory only — localStorage
   // could come later. Most-recent first; capped at 8.
@@ -53,6 +62,8 @@ export const useSolManStore = defineStore('solMan', () => {
     availableProviders.value = [];
     spec.value = null;
     translationWarnings.value = [];
+    previewDiagnostics.value = [];
+    previewWarnings.value = [];
     lastModel.value = null;
     lastProvider.value = null;
   }
@@ -79,6 +90,8 @@ export const useSolManStore = defineStore('solMan', () => {
     availableProviders.value = [];
     spec.value = null;
     translationWarnings.value = [];
+    previewDiagnostics.value = [];
+    previewWarnings.value = [];
 
     // BYO-key: forward the user's locally-stored provider config so
     // the server uses it instead of any deployer env vars. When the
@@ -97,17 +110,48 @@ export const useSolManStore = defineStore('solMan', () => {
     spec.value = resp.spec;
     lastModel.value = resp.model;
     lastProvider.value = resp.provider ?? null;
+
+    // Run the SAME validation pipeline the live canvas runs against
+    // the prospective workflow. If anything's off, we surface it in
+    // the preview and gate the Apply buttons. This is the line that
+    // keeps a broken graph off the user's canvas.
+    runPreviewValidation();
+
     status.value = 'preview';
     return status.value;
+  }
+
+  /**
+   * Build the prospective workflow from the current spec and run
+   * graph validation against it. Stores diagnostics + repair warnings
+   * for the modal to render. Idempotent and cheap — re-runs whenever
+   * we want to refresh preview state.
+   */
+  function runPreviewValidation() {
+    previewDiagnostics.value = [];
+    previewWarnings.value = [];
+    if (!spec.value) return;
+    const { workflow, warnings } = specToWorkflow(spec.value);
+    previewWarnings.value = warnings;
+    previewDiagnostics.value = validateWorkflow(workflow);
   }
 
   /**
    * Replace the user's workflow with the generated spec. Goes through
    * graph.loadWorkflow so undo/redo / autosave / port-rebuild all
    * fire normally.
+   *
+   * Pass `{ force: true }` to apply even when preview validation found
+   * errors — wired to the "Apply draft with errors" override button.
+   * Default behavior refuses to apply broken graphs.
    */
-  function applyAsNewWorkflow(): { ok: boolean; warnings: string[] } {
+  function applyAsNewWorkflow(
+    opts: { force?: boolean } = {},
+  ): { ok: boolean; warnings: string[]; blocked?: boolean } {
     if (!spec.value) return { ok: false, warnings: [] };
+    if (hasErrors.value && !opts.force) {
+      return { ok: false, warnings: previewWarnings.value, blocked: true };
+    }
     const graph = useGraphStore();
     const { workflow, warnings } = specToWorkflow(spec.value);
     graph.loadWorkflow(workflow);
@@ -120,13 +164,27 @@ export const useSolManStore = defineStore('solMan', () => {
    * Insert the generated spec into the active function as a cluster
    * of nodes (auto-wrapped in a frame when multi-node, like any other
    * block insertion).
+   *
+   * Same `force` semantics as applyAsNewWorkflow.
    */
-  function insertIntoCurrent(flowPos: { x: number; y: number }): {
+  function insertIntoCurrent(
+    flowPos: { x: number; y: number },
+    opts: { force?: boolean } = {},
+  ): {
     ok: boolean;
     warnings: string[];
     newIds: string[];
+    blocked?: boolean;
   } {
     if (!spec.value) return { ok: false, warnings: [], newIds: [] };
+    if (hasErrors.value && !opts.force) {
+      return {
+        ok: false,
+        warnings: previewWarnings.value,
+        newIds: [],
+        blocked: true,
+      };
+    }
     const graph = useGraphStore();
     const ctx = graph.ctx;
     const { snapshot, warnings } = specToInsertSnapshot(spec.value, ctx, flowPos);
@@ -143,6 +201,18 @@ export const useSolManStore = defineStore('solMan', () => {
   const isPreviewing = computed(() => status.value === 'preview' && !!spec.value);
   const isGenerating = computed(() => status.value === 'generating');
   const isError = computed(() => status.value === 'error');
+  const previewErrors = computed(() =>
+    previewDiagnostics.value.filter((d) => d.severity === 'error'),
+  );
+  const previewWarningsDiagnostics = computed(() =>
+    previewDiagnostics.value.filter((d) => d.severity === 'warning'),
+  );
+  const hasErrors = computed(() => previewErrors.value.length > 0);
+  const hasWarnings = computed(
+    () =>
+      previewWarningsDiagnostics.value.length > 0 ||
+      previewWarnings.value.length > 0,
+  );
 
   return {
     // state
@@ -155,13 +225,20 @@ export const useSolManStore = defineStore('solMan', () => {
     lastModel,
     lastProvider,
     translationWarnings,
+    previewDiagnostics,
+    previewWarnings,
     history,
     // derived
     isPreviewing,
     isGenerating,
     isError,
+    previewErrors,
+    previewWarningsDiagnostics,
+    hasErrors,
+    hasWarnings,
     // ops
     generate,
+    runPreviewValidation,
     applyAsNewWorkflow,
     insertIntoCurrent,
     cancel,

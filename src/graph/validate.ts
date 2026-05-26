@@ -74,11 +74,17 @@ function validateFunction(
 
   // Check each node.
   for (const n of fn.nodes) {
-    // Required inputs must have an edge.
+    // Required inputs must be satisfied — either via a wired edge OR a
+    // non-empty inline expression on the same port. The emitter treats
+    // expressions as taking precedence over edges; the validator must
+    // mirror that or it will scream "missing input" at every
+    // Sol-Man-generated `let amount = payload.amount` node.
     for (const p of n.ports.in) {
       if (!p.required) continue;
       const inc = portIncoming.get(key(n.id, p.id)) ?? [];
-      if (inc.length === 0) {
+      const inlineExpr = n.expressions?.[p.id];
+      const hasInline = typeof inlineExpr === 'string' && inlineExpr.trim() !== '';
+      if (inc.length === 0 && !hasInline) {
         diags.push({
           severity: 'error',
           message: `${nodeLabel(n)}: missing input "${p.name}".`,

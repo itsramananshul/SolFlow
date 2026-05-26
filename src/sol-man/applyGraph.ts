@@ -44,6 +44,76 @@ const FRAME_PAD = 32;
 
 const EMPTY_CTX: WorkflowCtx = { structs: [], enums: [], functions: [] };
 
+/**
+ * Pre-translation repair pass.
+ *
+ * Sol Man's LLM output is good but not perfect. The biggest two failure
+ * modes we keep hitting:
+ *
+ *   1. `call` nodes whose `callTarget` doesn't resolve to a real
+ *      function. With nothing to call they end up as empty `call()`
+ *      placeholders that fail validation. Phase A solution: convert
+ *      these into `print` nodes whose value is a string literal
+ *      describing the action — runnable, valid, obviously a stub the
+ *      user can swap for a real call later.
+ *
+ *   2. Loop / branch / let nodes whose visible inline expression is
+ *      either malformed or missing. We only flag here; the validator
+ *      surfaces the actual error so the user sees it in context.
+ *
+ * Returns a shallow-copied spec (nodes array replaced) so callers can
+ * keep the original around for "show what the LLM actually said."
+ */
+function repairSpec(
+  spec: GeneratedGraphSpec,
+  ctx: WorkflowCtx,
+): { spec: GeneratedGraphSpec; warnings: string[] } {
+  const warnings: string[] = [];
+  const knownFunctions = new Set(ctx.functions.map((f) => f.name));
+
+  const nodes = spec.nodes.map((n) => {
+    if (n.kind !== 'call') return n;
+    const target = (n.callTarget ?? '').trim();
+    if (target && knownFunctions.has(target)) return n;
+    // No real function to call → rewrite as a print stub. Keep the
+    // original id so edges still resolve.
+    const label = humanizeActionLabel(n.label ?? target ?? 'action');
+    warnings.push(
+      `Action "${target || '(unset)'}" had no matching function and was inserted as a print() placeholder. Replace it with a real call when you wire up that function.`,
+    );
+    const replaced: GeneratedNode = {
+      id: n.id,
+      kind: 'print',
+      label: n.label,
+      value: stringLiteral(label),
+    };
+    return replaced;
+  });
+
+  return {
+    spec: { ...spec, nodes },
+    warnings,
+  };
+}
+
+/** Convert "send_for_approval" / "sendForApproval" → "Send for approval". */
+function humanizeActionLabel(raw: string): string {
+  const cleaned = raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (!cleaned) return 'Action';
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+/** Quote a label so the emit pipeline treats it as a SOL string literal. */
+function stringLiteral(s: string): string {
+  const escaped = s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
 /** Compute the GraphNode `data` payload for an LLM node + collect any
  *  inline expressions that should land in node.expressions. */
 function dataFor(
@@ -260,7 +330,9 @@ export function specToWorkflow(spec: GeneratedGraphSpec): {
   workflow: SolWorkflow;
   warnings: string[];
 } {
-  const { nodes, edges, warnings } = translateSpec(spec, EMPTY_CTX);
+  const repaired = repairSpec(spec, EMPTY_CTX);
+  const { nodes, edges, warnings } = translateSpec(repaired.spec, EMPTY_CTX);
+  warnings.unshift(...repaired.warnings);
   // Shift everything so the entry sits at (200, 100) instead of the
   // origin — gives the new workflow some breathing room from the
   // canvas top-left.
@@ -324,7 +396,9 @@ export function specToInsertSnapshot(
   };
   warnings: string[];
 } {
-  const { nodes, edges, warnings } = translateSpec(spec, ctx);
+  const repaired = repairSpec(spec, ctx);
+  const { nodes, edges, warnings } = translateSpec(repaired.spec, ctx);
+  warnings.unshift(...repaired.warnings);
   // Centroid in layout space → caller picks where it goes via flowPos
   // through insertBlock; we keep layout-relative positions.
   const cx = nodes.length > 0
