@@ -107,10 +107,149 @@ Use \`frames\` to visually group nodes into named regions (e.g. "Validation", "N
 - ALWAYS include at least one \`assumption\` line in the assumptions array describing the most important decision you made (the threshold value, the dispatch path, the implicit error handling).
 - Aim for 5–25 nodes. If the user's intent is genuinely tiny, less is fine.
 
+# Hard rules — safety constraints the validator enforces
+
+These rules are non-negotiable. Workflows that violate them are
+rejected at apply time and cannot be force-applied; the user is
+sent back to the prompt. Honor them in every generation.
+
+## Inline expressions
+
+The \`value\` and \`cond\` fields are SOL expressions, NOT
+JavaScript and NOT free text. The Phase A expression grammar
+admits ONLY:
+
+- literals — integers (\`0\`, \`42\`, \`100\`), floats (\`1.5\`, \`3.14\`),
+  strings (\`"hello"\`), chars (\`'a'\`), booleans (\`true\`, \`false\`)
+- variable references — bare names (\`amount\`), dotted field access
+  (\`payload.id\`, \`p.x\`), indexed access (\`arr[i]\`)
+- function calls — \`name(arg, ...)\` (only existing functions)
+- struct literals — \`StructName { field: value, ... }\`
+- enum variants — \`EnumName::VariantName\`
+- arithmetic — \`+\`, \`-\`, \`*\`, \`/\` (no \`%\`, no \`**\`)
+- comparison — \`==\`, \`!=\`, \`<\`, \`<=\`, \`>\`, \`>=\`
+- logical — \`&&\`, \`||\`, \`!\`
+- bitwise — \`&\`, \`|\`, \`^\`, \`<<\`, \`>>\`, \`~\`
+- parens — \`(expr)\`
+
+The following will be REJECTED by the validator's expression
+linter and the workflow will not apply:
+
+- JavaScript keywords: \`typeof\`, \`instanceof\`, \`new\`, \`delete\`,
+  \`void\`
+- JavaScript globals: \`Math\`, \`Date\`, \`JSON\`, \`console\`,
+  \`fetch\`, \`document\`, \`window\`, \`localStorage\`, \`eval\`,
+  \`Function\`, \`Promise\`, \`Object\`, \`Array\`, \`String\`,
+  \`Number\`, etc.
+- Method calls: \`x.method()\` — SOL's \`.\` is field access only;
+  methods do not exist
+- Arrow functions (\`=>\`), nullish coalescing (\`??\`), optional
+  chaining (\`?.\`), spread (\`...\`), template literals (backticks)
+- SOL statement keywords inside expressions: \`if\`, \`else\`,
+  \`while\`, \`for\`, \`let\`, \`return\`, \`function\`, \`ext\`, \`as\`,
+  \`import\`, \`struct\`, \`enum\`
+
+Examples — these are CORRECT:
+
+- \`payload.amount\`
+- \`amount > 1000\`
+- \`is_active && tier == "premium"\`
+- \`Status::Active\`
+- \`(price * quantity) - discount\`
+
+Examples — these will be REJECTED:
+
+- \`payload.amount.toFixed(2)\`            (method call)
+- \`Math.floor(price)\`                    (JS global)
+- \`"order: " + order_id\`                 (str + str — analyzer rejects)
+- \`if amount > 100 then 1 else 0\`        (if-as-expression)
+- \`document.cookie\`                      (JS global; also a security flag)
+
+## Enum variant names — every variant in an enum MUST start with a different first character
+
+SOL's bytecode currently dispatches enum variants by
+\`(first_char % 10)\`. Two variants whose first characters share a
+mod-10 residue compare EQUAL at runtime even though they are
+semantically distinct. The editor's simulator does NOT show this
+bug — it runs the dispatch correctly by name — so a workflow
+that "works" in simulation will silently misdispatch in
+production.
+
+Within any one enum, every variant must start with a DIFFERENT
+first character. The validator emits a warning when this is
+violated.
+
+CORRECT:
+
+\`\`\`
+enum Status { Active, Inactive, Pending }
+\`\`\`
+
+WRONG (Active and Aborted both start with 'A'):
+
+\`\`\`
+enum Status { Active, Aborted, Pending }
+\`\`\`
+
+Pick prefixes / synonyms so first characters are distinct:
+\`Active\` / \`Disabled\` instead of \`Active\` / \`Aborted\`.
+
+## One argument per print
+
+The canonical SOL bytecode emits only the FIRST argument of
+\`print\`; subsequent arguments are silently dropped. To print
+multiple values, emit multiple \`print\` nodes back-to-back:
+
+CORRECT (two separate print nodes):
+
+\`\`\`
+print("amount:")
+print(amount)
+\`\`\`
+
+WRONG (loses all but the first):
+
+\`\`\`
+print("amount:", amount)
+\`\`\`
+
+Note: the editor's \`print\` node only has one \`value\` port, so
+this constraint is enforced structurally. Don't try to pack
+multiple values into the single \`value\` string either — SOL has
+no string concatenation.
+
+## Type names — use ONLY the five SOL primitives
+
+For \`varType\` and \`iteratorType\`, use ONLY: \`int\`, \`float\`,
+\`bool\`, \`str\`, \`char\`. The following will compile but silently
+fail at runtime because the analyzer treats unknown identifiers
+in type position as nominal struct references to non-existent
+structs:
+
+- \`string\`      (use \`str\`)
+- \`int32\` / \`int64\` / \`number\`     (use \`int\`)
+- \`float32\` / \`float64\` / \`double\` (use \`float\`)
+- \`boolean\`     (use \`bool\`)
+- \`character\`   (use \`char\`)
+- \`any\`         (no SOL equivalent; pick the actual type)
+
+## Reserved built-in names — never use as ext function names
+
+Never declare an \`ext function\` with one of these names; the
+bytecode emitter dispatches them as built-ins BEFORE checking
+\`ext\`, so a user-declared ext function with these names is
+silently shadowed and never reaches the host endpoint:
+
+\`print\`, \`rpc_request\`, \`rpc_response\`, \`rpc_name\`, \`rpc_args\`,
+\`rpc_data\`
+
+Pick domain-specific names: \`call_warehouse_api\`, \`emit_audit\`,
+\`fetch_user_record\`, etc.
+
 # Validation contract — the graph must pass these checks
 
-Your output is fed through a validator that gates whether it gets
-applied. To pass:
+Your output is fed through a validator that gates whether it
+gets applied. To pass:
 
 - Every \`let\` has a non-empty \`value\` (its initializer).
 - Every \`assign\` has a non-empty \`value\` AND \`varName\`.
@@ -123,9 +262,16 @@ applied. To pass:
   \`call\`.
 - Branch arms wire \`fromPort: "then"\` / \`"else"\`; loop bodies wire
   \`fromPort: "body"\`; downstream-after-branch wires from \`"after"\`.
+- Every inline \`value\` / \`cond\` string passes the expression
+  linter (no JS globals, no method calls, no JS-only syntax).
+- No two variants within any single enum share a first
+  character.
 
-Failing these doesn't just produce a worse graph — it produces an
-unrunnable one. Treat them as hard constraints, not preferences.
+Failing these doesn't just produce a worse graph — it produces
+an unrunnable one. The first two categories
+(missing-required-input, bad-inline-expression) are
+non-bypassable: the user cannot force-apply past them. Treat
+all of them as hard constraints, not preferences.
 
 # JSON schema (TypeScript notation)
 
