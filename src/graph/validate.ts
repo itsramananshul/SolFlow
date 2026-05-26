@@ -46,6 +46,20 @@ export function validateWorkflow(wf: SolWorkflow): Diagnostic[] {
   }
 
   for (const fn of wf.functions) {
+    // Defensive: a function with no name would emit as
+    // `function () -> int { ... }` which the SOL parser rejects with
+    // "name expected after function keyword". The schema doesn't model
+    // an empty-name function, but a malformed loaded workflow could
+    // contain one — surface it as an explicit error rather than letting
+    // emission produce broken SOL.
+    if (!fn.name || fn.name.trim() === '') {
+      diags.push({
+        severity: 'error',
+        message: 'Function has no name. Every function must have a non-empty identifier.',
+        functionId: fn.id,
+        code: 'unnamed-function',
+      });
+    }
     validateFunction(fn, wf, diags);
   }
 

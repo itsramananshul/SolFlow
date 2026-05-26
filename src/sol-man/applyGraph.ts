@@ -344,6 +344,14 @@ export function specToWorkflow(spec: GeneratedGraphSpec): {
       n.position = { x: n.position.x + dx, y: n.position.y + dy };
     }
   }
+  // T9014 guard: every generated node — including any `let` — lives
+  // inside this `start` function. The SolFlow workflow schema does not
+  // model "top-level let" at all, so this wrapping is the architectural
+  // guarantee that LLM-generated bindings never reach the canonical SOL
+  // compiler as top-level lets (which would panic at runtime per the
+  // bug documented as T9014). If the workflow schema ever grows
+  // top-level statements, this guard must move to wherever they're
+  // emitted.
   const fn: FunctionGraph = {
     id: nanoid(8),
     name: 'start',
