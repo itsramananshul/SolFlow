@@ -55,6 +55,7 @@ behavior is flagged as a tool-side mismatch.
 | 19 | [`19-solman-generation-guide.md`](./19-solman-generation-guide.md) | Generation rules for LLM-based SOL/graph synthesis |
 | 20 | [`20-implementation-notes.md`](./20-implementation-notes.md) | Deep implementation details — codegen pipeline, slot mechanics, struct/array runtime layout, RPC wire shapes, `ExtCall` transport, the implementation's current gaps |
 | 21 | [`21-behavior-classification.md`](./21-behavior-classification.md) | Behavior stability badges — Specified / Current-impl / Accidental / Emergent / Undefined / Unstable. The single place to look when asking "can I rely on this?" |
+| 22 | [`22-cross-layer-assumptions.md`](./22-cross-layer-assumptions.md) | What each layer (lexer, parser, analyzer, emitter, VM, editor validator, editor emitter, Sol Man store) guarantees and what each consumer assumes. Bypass paths. Future-verifier guidance |
 
 ### Normative references
 
@@ -115,6 +116,7 @@ behavior is flagged as a tool-side mismatch.
 | `19 – 19-solman-generation-guide.md` | Substantive |
 | `20 – 20-implementation-notes.md` | Substantive |
 | `21 – 21-behavior-classification.md` | Substantive |
+| `22 – 22-cross-layer-assumptions.md` | Substantive |
 | `SPEC.md` | Substantive |
 | `GRAMMAR.md` | Substantive |
 | `ERROR_REFERENCE.md` | Substantive |

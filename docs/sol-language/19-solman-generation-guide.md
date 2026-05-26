@@ -235,7 +235,269 @@ it, and the user will hit the failure without context.
 
 ---
 
-## 19.8 Sources cited in this chapter
+## 19.8 Dangerous-but-validating LLM outputs
+
+The validator gates broken graphs from silently reaching the
+canvas (§19.1), but it operates on **structure** rather than
+**content** (chapter 18 §18.7). A spec that passes
+`validateWorkflow` can still produce SOL whose runtime behavior
+is unstable, undefined, or dangerous. This section catalogues
+generation patterns the LLM should avoid even when each one
+passes the validator.
+
+### 19.8.1 Top-level `let` is a runtime panic (T9014)
+
+The simplest dangerous shape:
+
+```text
+[var: g: int = 42]                       ← top-level let
+[function start]
+  [return varGet(g)]
+```
+
+This passes the validator (the `let` has its initializer, the
+`varGet` resolves by name in `variableResolves`'s heuristic).
+The emitted SOL is:
+
+```sol
+let g: int = 42;
+function start() -> int {
+    return g;
+}
+```
+
+At runtime, the program **panics** with `index out of bounds` on
+the first `LoadLocal(0)` inside `start`'s body. See chapter 06
+§6.1 and T9014.
+
+**Hard rule for LLM generation:** Never emit a top-level
+`let`. Every variable declaration must live inside a function
+body. If the user prompt asks for "a constant", produce it as a
+function-local `let` in `start` or in each consumer.
+
+### 19.8.2 Enum variants with colliding first characters (T9002)
+
+```sol
+enum Status { Active, Aborted, Acknowledged }
+```
+
+All three variants hash to `5` at runtime (`'A' % 10`).
+`if status == Status::Active` matches all three. The validator
+passes; the runtime silently dispatches wrong.
+
+**Hard rule:** Within any one enum, every variant must start
+with a distinct first character. If the prompt's natural names
+collide, prefix one of them: `Active` / `Disabled` instead of
+`Active` / `Aborted`.
+
+### 19.8.3 Multi-arg `print` produces silent data loss (T9003)
+
+```sol
+print("order:", order_id, "amount:", amount);
+```
+
+Only the first argument (`"order:"`) is emitted at the bytecode
+level. The `order_id` and `amount` values are evaluated as
+discarded expressions (the surrounding statement has the
+implicit `Pop`), so any side effects in them happen, but the
+visible output omits them.
+
+**Hard rule:** One value per `print` call. To print multiple
+values, emit multiple `print` statements:
+
+```sol
+print("order:");
+print(order_id);
+print("amount:");
+print(amount);
+```
+
+The SolFlow `print` node only has one `value` port, so the
+editor-generated graph naturally enforces this. The Sol Man
+prompt should produce one `print` node per value.
+
+### 19.8.4 String concatenation is unreachable from source (T9005)
+
+```sol
+let label: str = "order: " + order_id_str;
+```
+
+The analyzer rejects this with `arithmetic operation Plus not
+supported for type String`. The bytecode has a `ConcatStr` op
+but no syntax reaches it.
+
+**Hard rule:** Don't emit string concatenation. To build a
+composite string, declare an `ext function` that the host can
+implement:
+
+```sol
+ext function format_order(prefix: str, id: int) -> str;
+```
+
+Or — if all you want is print-time interleaving — use multiple
+`print` statements per §19.8.3.
+
+### 19.8.5 Forward calls returning non-int print as numbers (T9015)
+
+```sol
+function start() -> int {
+    print(get_label());   // forward call
+    return 0;
+}
+
+function get_label() -> str { return "hello"; }
+```
+
+`print(get_label())` dispatches via `Inst::PrintInt` because
+`fn_returns` doesn't have `get_label` registered yet at the
+point `start`'s body is emitted. The heap index of the string
+prints as a decimal number.
+
+**Hard rule:** Order functions such that every callee appears
+*before* its first call site in the emitted SOL. The editor's
+graph ordering doesn't directly control this; the emitter walks
+functions in workflow.functions array order. The generator
+should sort the functions array so that leaf helpers come first
+and `start` comes last.
+
+### 19.8.6 Inline expressions with non-SOL syntax (T9018)
+
+```text
+[let amount: float = "payload.amount.toFixed(2)"]
+```
+
+The validator passes (the let has a non-empty `value` string).
+The emitter inserts it verbatim:
+
+```sol
+let amount: float = payload.amount.toFixed(2);
+```
+
+The parser then fails because the lexer produces a method-call-
+looking sequence that the parser's postfix chain can't resolve
+(no method syntax exists; `.toFixed` is a member access
+returning a value that isn't callable).
+
+**Hard rule:** Every inline expression must be parseable as a
+SOL expression. The Phase A grammar admits: literals, bare
+variable references, dotted field access (`payload.foo.bar`),
+indexed access (`arr[i]`), function calls (`f(a)`), comparison /
+arithmetic / logic / bitwise operators, and parenthesized
+expressions. **No method calls. No string concatenation. No
+ternary. No closures. No string interpolation.**
+
+### 19.8.7 Misspelled type names (T9009)
+
+```sol
+let name: string = "evan";          // BAD — `string` is treated as nominal struct ref
+let amount: float64 = 0.0;           // BAD — `float64` is treated as nominal struct ref
+let payload: any = lookup();         // BAD — `any` is treated as nominal struct ref
+```
+
+The parser silently accepts any unknown identifier in type
+position as `Type::Ident(name)`. The analyzer doesn't validate
+that the named type exists at the decl site. The program runs
+through the bytecode emitter (which doesn't type-check struct
+field values either), and field access later fails with
+`could not find struct <name> in scope`.
+
+**Hard rule:** Use only the five primitive type spellings:
+`int`, `float`, `str`, `char`, `bool`. Never `string`, `int32`,
+`float64`, `boolean`, `number`, `text`, or `any` — they all
+silently degrade to nominal type references.
+
+### 19.8.8 Empty struct literals leak unset fields (chapter 09 §9.2)
+
+```sol
+struct Point { x: int, y: int }
+let p: Point = Point {};            // both x and y default to 0 at runtime
+```
+
+The validator does not warn about missing fields. The bytecode
+emitter walks the (sorted) struct layout and emits
+`Inst::PushConst(ExprUndefined)` for each field not supplied by
+the literal. `ExprUndefined` materializes as `0`. The program
+runs; `p.x` and `p.y` are both 0; no diagnostic anywhere.
+
+**Hard rule:** Every struct literal must supply every declared
+field. The Sol Man generator should look up the struct's field
+list from `workflow.structs` and emit a value for each one,
+even if the value is a literal default.
+
+### 19.8.9 Comparing across enum types passes the validator but fails at compile
+
+```sol
+enum A { X, Y }
+enum B { X, Y }
+let a: A = A::X;
+let b: B = B::X;
+if a == b { ... }    // analyzer: cannot compare mismatched types
+```
+
+The graph passes structural validation because both operands
+exist. The analyzer rejects at compile time with E1008.
+
+**Hard rule:** When generating a comparison, both sides must
+resolve to the same type. The generator should track each
+variable's declared type and refuse to compare across enums.
+
+### 19.8.10 Reserved names for `ext function` (T9016)
+
+```sol
+ext function print(msg: str);
+ext function rpc_request(payload: str) -> str;
+```
+
+Both pass validation and parse cleanly. But the bytecode emitter
+dispatches `print` and `rpc_request` to the built-in handlers
+*before* checking `ext_functions`. The user's host-bound
+endpoints are silently shadowed; calls to these names go to the
+built-in implementations and never reach the network.
+
+**Hard rule:** Never name an `ext function` any of: `print`,
+`rpc_request`, `rpc_response`, `rpc_name`, `rpc_args`,
+`rpc_data`. Use a domain-specific name (`emit_log`,
+`call_warehouse_api`, etc.).
+
+### 19.8.11 Apply-anyway should still verify the SOL parses
+
+When the user clicks "Apply draft with errors", the editor
+applies the broken graph to the canvas. The emitter then runs
+and produces SOL containing `/* missing */` placeholders
+(chapter 18 §18.7 — T9020). These placeholders behave as
+comments at parse time, reducing the surrounding code to a parse
+error or silent no-op depending on context.
+
+**Hard rule for generation:** If the LLM detects it cannot
+honestly satisfy a required port, prefer to emit the auto-repair
+fallback (a `print` placeholder with a string-literal label —
+chapter 19 §19.3) rather than leave the port empty. Empty ports
+are validator errors; the apply-anyway path produces dangerous
+SOL.
+
+### 19.8.12 Summary classification
+
+By chapter-21 badge:
+
+| Generation pattern | Resulting behavior badge |
+|---|---|
+| Top-level `let` (§19.8.1) | **Undefined** — panic or garbage read |
+| Colliding enum first chars (§19.8.2) | **Accidental** — dispatch silently wrong |
+| Multi-arg `print` (§19.8.3) | **Current-impl bug** — silent data loss |
+| `str + str` (§19.8.4) | **Current-impl** — compile error |
+| Forward calls in `print` (§19.8.5) | **Emergent** — silent wrong output |
+| Non-SOL inline expressions (§19.8.6) | **Current-impl** — parse error |
+| Misspelled types (§19.8.7) | **Accidental** — runs but field access fails later |
+| Missing struct fields (§19.8.8) | **Current-impl** — silent zero-fill |
+| Cross-enum comparison (§19.8.9) | **Specified** — compile error |
+| Built-in name shadowing (§19.8.10) | **Current-impl** — silent dispatch to wrong handler |
+| Apply-anyway with empty ports (§19.8.11) | **Emergent** — parse error or silent no-op |
+
+The validator catches none of these. The generator must.
+
+---
+
+## 19.9 Sources cited in this chapter
 
 - `api/sol-man/_prompt.ts` — current LLM contract
 - `src/sol-man/applyGraph.ts` — repair pass (`repairSpec` + the

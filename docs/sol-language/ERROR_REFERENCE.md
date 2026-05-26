@@ -1308,6 +1308,136 @@ checked second).
 
 ---
 
+### T9018 — Validator does not lint inline expression syntax
+
+**Category:** tool — editor/SOL semantic gap
+
+**Description:** The editor's validator
+(`src/graph/validate.ts:82–96`) treats a non-empty
+`node.expressions[portId]` string as satisfying a required input
+port. It does **not** parse, type-check, or otherwise validate
+the string's content. The emitter inserts the string verbatim
+into the generated SOL.
+
+A `let` node with `expressions['value'] = "if true { 1 } else { 2 }"`
+passes validation. The emitter produces:
+
+```sol
+let x: int = if true { 1 } else { 2 };
+```
+
+SOL has no `if`-expression form; the parser fails at
+`primary()` with `not an expressionable token: If` →
+`could not parse expression!`.
+
+**Where it lives:** `src/graph/validate.ts:82–96`,
+`src/emit/emit.ts:emitDataInput`.
+
+**Recommendation:** At minimum, reject inline expressions
+containing the keywords `if`, `else`, `while`, `for`, `let`,
+`return`, `struct`, `enum`, `import`, `function`, `ext`, `as`,
+`true`, `false` (where the last two are only valid as literal
+expressions, not embedded in arbitrary text). A stronger fix
+would route inline expressions through a real SOL expression
+parser before emitting.
+
+**Related chapter:** [18 §18.7](./18-solflow-mapping.md), [19 §19.8.6](./19-solman-generation-guide.md)
+
+---
+
+### T9019 — Editor's `any` type leaks into SOL as nominal struct ref
+
+**Category:** tool — editor/SOL type gap
+
+**Description:** The editor uses `{ kind: 'any' }` as a SolType
+for unresolved data ports. `typeLabel` emits this as the literal
+`"any"`. When emitted in a type position (e.g. `let x: any =
+…;`), the canonical parser treats `any` as
+`Type::Ident("any")` — a nominal struct reference. The
+analyzer doesn't check struct existence at the decl site (T9009),
+so the program compiles, but any field access on `x` later fails
+with `could not find struct \`any\` in scope`.
+
+**Where it lives:** `src/graph/schema.ts:typeLabel`,
+`src/emit/emit.ts:emitStatement` (`let` case).
+
+**Recommendation:** When emitting a type that contains `kind:
+'any'`, the emitter should produce a comment + a TODO marker
+rather than the literal `any`, or — better — refuse to emit and
+treat as a validation error.
+
+**Related chapter:** [18 §18.7](./18-solflow-mapping.md)
+
+---
+
+### T9020 — Apply-anyway produces `/* missing */` placeholders that parse-fail or silent-no-op
+
+**Category:** tool — editor/SOL emission gap
+
+**Description:** When the user clicks "Apply draft with errors"
+in the Sol Man modal (chapter 19), the validator's errors are
+bypassed but the emitter still runs. For each missing required
+input, the emitter inserts the literal string `/* missing */`
+(`src/emit/emit.ts:324`).
+
+`/* missing */` is a SOL block comment that the lexer consumes as
+trivia. Three failure modes result:
+
+1. `let x: int = /* missing */;` → `let x: int = ;` → parse
+   error E0001.
+2. `if /* missing */ { … }` → `if { … }` → parse error
+   (`expression()` sees `{`).
+3. `print(/* missing */);` → `print();` → the bytecode emitter's
+   `&& !args.is_empty()` guard at `bytecode.rs:424` skips the
+   Print op entirely. The call has no observable effect — the
+   worst kind of silent no-op.
+
+**Where it lives:** `src/emit/emit.ts:324` (`/* missing */`
+fallback); `bytecode.rs:424` (the empty-args guard).
+
+**Recommendation:** The emitter should either refuse to emit
+when a required port is unsatisfied (preserving the validation
+error) or insert a more obviously-invalid placeholder like
+`__UNRESOLVED_INPUT__` that the parser will reject in any
+context.
+
+**Related chapter:** [18 §18.7](./18-solflow-mapping.md), [19 §19.8.11](./19-solman-generation-guide.md)
+
+---
+
+### T9021 — Literal node value text is unchecked against `litType`
+
+**Category:** tool — editor/SOL emission gap
+
+**Description:** The editor's `literal` node stores a free-form
+`value: string` and a `litType: SolPrimitive`. The formatter
+(`src/emit/emit.ts:formatLiteral`) does light type-aware
+formatting (`0` for empty int, `0.0` for empty float, string
+escape) but never validates the value text against the type.
+
+Examples that emit parser-invalid or behavior-bug SOL:
+
+| `litType` | User typed | Emitted | Compiler verdict |
+|---|---|---|---|
+| `int` | `0xFF` | `0xFF` | Lexer tokenizes `0` then `xFF` separately; parse error in expression context |
+| `int` | `hello` | `hello` | Becomes an identifier reference; analyzer rejects with E1001 |
+| `int` | `3.14` | `3.14` | Lexer produces a float; expression context decides |
+| `bool` | `yes` | `false` | Silently coerced — formatter returns `"false"` for anything ≠ `"true"` |
+| `char` | `` (empty) | `' '` | Becomes a single-space char; unintended but compiles |
+| `float` | `1` | `1.0` | Auto-formatter adds `.0` (intentional convenience) |
+
+**Where it lives:** `src/emit/emit.ts:formatLiteral`.
+
+**Recommendation:** Validate the value text against the type at
+edit time. For `int`, accept only `-?[0-9]+`. For `float`,
+accept only the SOL float regex (digits-dot-digits). For
+`bool`, restrict to exactly `true` or `false`. For `char`,
+require exactly one character.
+
+**Related chapter:** [18 §18.7](./18-solflow-mapping.md)
+
+---
+
 ### T9017 — `CliParser` panics on empty or single-character arguments
 
 **Category:** tool — CLI minor

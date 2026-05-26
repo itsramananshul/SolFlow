@@ -788,3 +788,369 @@ mostly defensive. Both lists are queued for refactor in
 - `parser.rs:198–209` — primitive type recognition (T9009)
 - Fixtures: `largemini.sol` (uses `string` as a type name —
   §20.5; asserts content-equality of strings via `eqString`)
+
+---
+
+## 20.21 Lifecycle trace — `start → ext_call → return`
+
+A worked end-to-end trace of a typical workflow through every
+layer. The program:
+
+```sol
+ext function lookup_user(id: int) -> str;
+
+function start() -> int {
+    let name: str = lookup_user(42);
+    print(name);
+    return 0;
+}
+```
+
+Assume the host's flattened ext-endpoint map at codegen time
+contains `{"lookup_user" → "http://192.168.1.5:8080/api"}`.
+
+### Stage 1 — Lexer (`lexer.rs`)
+
+Token stream (whitespace and trivia dropped):
+
+```
+Ext  Func  Ident("lookup_user")  LParen  Ident("id")  Colon  Ident("int")
+  RParen  Arrow  Ident("str")  Semi
+
+Func  Ident("start")  LParen  RParen  Arrow  Ident("int")  LCurly
+  Let  Ident("name")  Colon  Ident("str")  Eq  Ident("lookup_user")
+    LParen  Integer(42)  RParen  Semi
+  Ident("print")  LParen  Ident("name")  RParen  Semi
+  Return  Integer(0)  Semi
+RCurly
+```
+
+Note that `int`, `str` come out as `Ident` tokens; the parser
+re-interprets them as primitive types in type position
+(`parser.rs:198–209`). `lookup_user` and `print` come out as
+`Ident` tokens too; the analyzer and the bytecode emitter
+distinguish them later by name.
+
+### Stage 2 — Parser (`parser.rs`)
+
+```text
+Ast::DeclExtFunc {
+    name: "lookup_user",
+    params: vec![("id", Type::Integer)],
+    ret: Type::String,
+}
+
+Ast::DeclFunc {
+    name: "start",
+    params: vec![],
+    ret: Type::Integer,
+    body: Box::new(Ast::Block {
+        block: vec![
+            Ast::DeclVar {
+                name: "name",
+                kind: Type::String,
+                value: Some(Box::new(Ast::ExprFuncCall {
+                    name: "lookup_user",
+                    args: vec![Ast::ExprInteger(42)],
+                })),
+            },
+            Ast::ExprFuncCall {
+                name: "print",
+                args: vec![Ast::ExprVar("name")],
+            },
+            Ast::ExprReturn {
+                val: Some(Box::new(Ast::ExprInteger(0))),
+            },
+        ],
+        scope: usize::MAX,   // placeholder; analyzer fills this in
+    }),
+    scope: usize::MAX,       // placeholder
+}
+```
+
+### Stage 3 — Analyzer (`analyzer.rs`)
+
+**Pass 1** registers every `DeclFunc` and `DeclExtFunc` in the
+global type table:
+
+```text
+tt_arena[0] = {
+    "rpc_name":     Variable{Function{[String], String}}
+    "rpc_args":     Variable{Function{[String], String}}
+    "rpc_data":     Variable{Function{[String], String}}
+    "lookup_user":  Variable{Function{[Integer], String}}
+    "start":        Variable{Function{[], Integer}}
+}
+```
+
+**Pass 2** walks each top-level decl's body. For `start`:
+
+- `DeclFunc { scope, … }` → `*scope = self.new_table()` allocates
+  `tt_arena[1]`. `tts = [0, 1]`. `can_return = true`.
+- Walk body `Ast::Block`:
+  - `*scope = self.new_table()` → `tt_arena[2]`. `tts = [0, 1, 2]`.
+  - Stmt 1: `DeclVar { name: "name", kind: Type::String, .. }` —
+    `add_entry("name", Variable{String})`. **Initializer ignored.**
+  - Stmt 2: `ExprFuncCall { name: "print", args: [ExprVar("name")] }`
+    — `print` special case walks each arg via `check`, returns
+    `Type::Void`.
+  - Stmt 3: `ExprReturn { val: Some(ExprInteger(0)) }` —
+    `can_return = true`. Walks value: `ExprInteger(0)` returns
+    `Type::Integer`.
+  - Block returns the last statement's type — `Some(Type::Integer)`.
+- `pop_table()` for the block; `pop_table()` for the function.
+
+### Stage 4 — Bytecode emitter (`bytecode.rs`)
+
+**Pre-pass** (`bytecode.rs:117–139`):
+
+- Built-in returns: `fn_returns["rpc_request"] = String`, …
+- `DeclExtFunc` for `lookup_user`:
+  `ext_functions.insert("lookup_user")`;
+  `fn_returns["lookup_user"] = String`.
+
+**Main pass** walks `program` in source order:
+
+- `DeclExtFunc` falls through `_ => {}` at `bytecode.rs:544` —
+  **nothing emitted into the instruction stream.** The
+  declaration's effect was recorded in the pre-pass only.
+- `DeclFunc` for `start`:
+  - Emit `Inst::Jump(0)` placeholder at index 0.
+  - `func_entry = 1`. Record `functions["start"] = 1`.
+  - Reset `locals.clear()`, `next_slot = 0`.
+  - Compile body block. Each statement emits in order.
+  - After the body, emit the implicit `Inst::Ret`.
+  - Patch the Jump placeholder.
+- After the main loop: append `Inst::Call(1, 0)` for `start`.
+
+Final instruction stream:
+
+```
+0:  Jump(12)                                    ;; skip past start body
+1:  PushConst(Integer(42))                      ;; lookup_user(42) — push arg
+2:  PushConst(String("lookup_user"))            ;; push function name
+3:  PushConst(String("http://192.168.1.5:8080/api"))  ;; push endpoint URL
+4:  ExtCall([Integer], String)                  ;; dispatch
+5:  StoreLocal(0)                               ;; let name = …
+6:  LoadLocal(0)                                ;; print(name) — load
+7:  PrintString                                 ;; print
+8:  Pop                                         ;; implicit (print is expr-node)
+9:  PushConst(Integer(0))                       ;; return 0 — push value
+10: RetVal                                       ;; return
+11: Ret                                          ;; implicit emitter epilogue (unreachable in normal flow)
+12: Call(1, 0)                                   ;; appended; entry call
+```
+
+### Stage 5 — VM execution (`vm.rs`)
+
+Initial: `stack = []`, `fp = 0`, `inst_ptr = 0`, heap = `[]`.
+
+| Step | Inst | Stack before | Effect | Stack after | Heap |
+|---|---|---|---|---|---|
+| 1 | `Jump(12)` | `[]` | `inst_ptr = 12` | `[]` | `[]` |
+| 2 | `Call(1, 0)` | `[]` | push call frame `{return_ptr=13, old_fp=0}`. `fp = stack.len() - 0 = 0`. `inst_ptr = 1` | `[]` | `[]` |
+| 3 | `PushConst(Integer(42))` | `[]` | push 42 | `[42]` | `[]` |
+| 4 | `PushConst(String("lookup_user"))` | `[42]` | heap.push String. push heap idx 0 | `[42, 0]` | `[String("lookup_user")]` |
+| 5 | `PushConst(String("http://…"))` | `[42, 0]` | heap.push, push heap idx 1 | `[42, 0, 1]` | `[…, String("http://…")]` |
+| 6 | `ExtCall([Integer], String)` | `[42, 0, 1]` | pop url_idx=1, pop name_idx=0, pop one arg → raw_args=[42], reverse. encode arg as JSON Number. POST `{"type":"request","name":"lookup_user","args":[42]}`. read response `{"type":"response","data":"Alice"}`. ret type is String → take `data` as string. heap.push String("Alice"). push heap idx 2 | `[2]` | `[…, String("Alice")]` |
+| 7 | `StoreLocal(0)` | `[2]` | pop val=2. idx = fp+0 = 0. stack.len() == 0; while-loop pushes one `0` → stack=[0]. write stack[0] = 2 | `[2]` | — |
+| 8 | `LoadLocal(0)` | `[2]` | idx = fp+0 = 0. push stack[0] = 2 | `[2, 2]` | — |
+| 9 | `PrintString` | `[2, 2]` | pop heap idx 2 → heap[2] = String("Alice"). println!("Alice"). push 0 | `[2, 0]` | — |
+| 10 | `Pop` | `[2, 0]` | pop 0 | `[2]` | — |
+| 11 | `PushConst(Integer(0))` | `[2]` | push 0 | `[2, 0]` | — |
+| 12 | `RetVal` | `[2, 0]` | pop return_value = 0. pop frame → restore `fp = 0`, `inst_ptr = 13`. truncate stack to fp → stack = []. push return_value → stack = [0] | `[0]` | — |
+| 13 | inst_ptr = 13 ≥ program.len() = 13 | `[0]` | `done = true`. return `pop().unwrap_or(0)` = `0` | n/a | — |
+
+**Final host result:** `0`. **Side effect:** "Alice" printed.
+
+### Implementation observations from the trace
+
+1. **`DeclExtFunc` emits no instructions.** Its only effect is
+   to populate `Codegen.ext_functions` and `Codegen.fn_returns`
+   during the pre-pass. Call sites then dispatch via `ExtCall`.
+2. **The post-function `Inst::Ret` (instruction 11) is
+   unreachable in normal flow.** The function's `RetVal`
+   (instruction 10) hands control back to the caller via the
+   return frame; instruction 11 would only execute if a path
+   through the body fell off the end without `Ret`/`RetVal` —
+   which is what the implicit epilogue guards against. For
+   functions that DO fall through, the epilogue is reached,
+   pushes `0`, and returns to the caller (the T9011 "void
+   function returns 0" mechanism).
+3. **The implicit `Pop` after `PrintString` (instruction 8)** is
+   the per-statement `is_expression_node` cleanup that discards
+   the `0` PrintString pushed. Without the Pop, the stack would
+   grow by 1 per `print` statement.
+4. **Two heap entries leak per `ExtCall`** — the function name
+   and the URL. Both are pushed as fresh heap-string entries
+   every time the instruction runs. A program that calls
+   `lookup_user` in a loop accumulates `2 × iteration_count`
+   heap entries.
+5. **The arg-then-name-then-url stack discipline** is what makes
+   `ExtCall` work when the VM pops in reverse: URL first, name
+   second, then args. Any tool emitting bytecode directly must
+   honor this exact order.
+6. **`StoreLocal` writes via `0`-fill expansion** — if `stack.len()`
+   is less than the target index, the VM pushes `0` values until
+   the index is reachable. Slot 0 in step 7 gets the value 2
+   even though the stack was empty after the pop.
+7. **The whole exchange completes in 13 VM steps** for a single
+   ext call. The HTTP round-trip in step 6 dominates wall-clock
+   time by orders of magnitude.
+
+---
+
+## 20.22 Negative-fixture trace — confirmed end-to-end
+
+Every negative fixture in `reference/sol files/` was traced
+through the matching pipeline stage. The diagnostics documented
+in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md) are accurate.
+
+### `error_parse1.sol` — empty initializer
+
+```sol
+function start() -> int {
+    let x: int = ;
+    return 0;
+}
+```
+
+Trace stops at the parser. After eating `=`, `expression()` →
+`assignment()` → … → `primary()`. Current token is `Semi`, which
+hits `primary()`'s catch-all (`parser.rs:740–744`). Prints
+`not an expressionable token: Semi`, returns `None`. The
+post-match `if res.is_none()` check (`parser.rs:746–749`) prints
+`could not parse expression!` and exits.
+
+**Confirmed.** Diagnostic chain matches **E0001**.
+
+### `error_parse2.sol` — missing semicolon
+
+```sol
+function start() -> int {
+    let x: int = 5
+    return x;
+}
+```
+
+`let_stmt()` (`parser.rs:326–345`) eats `let`, name, colon,
+type, sees `=`, calls `expression()` which returns `ExprInteger(5)`.
+Then `self.eat(TokenKind::Semi, "…")` (`parser.rs:342`). Current
+token is `Return`. `eat` checks `tkcurr != tk` (Return ≠ Semi),
+prints `expected semicolon at the end of a variable declaration`,
+calls `debtok(4)` (which dumps four tokens before and after the
+current one to stderr with `>` marking the current one), and
+exits.
+
+**Confirmed.** Diagnostic chain matches **E0002**.
+
+### `error_runtime.sol` — division by zero
+
+```sol
+function start() -> int {
+    return 1 / 0;
+}
+```
+
+Parse succeeds. Analyzer accepts: `Type::Integer / Type::Integer`
+satisfies the arithmetic type rule (`analyzer.rs:247–259`),
+returning `Type::Integer`. Codegen emits `PushConst(1);
+PushConst(0); IntDiv; RetVal`. At runtime:
+
+| Step | Inst | Stack before | Effect |
+|---|---|---|---|
+| 1 | Call(start_entry, 0) | `[]` | push frame, fp=0 |
+| 2 | PushConst(1) | `[]` | push 1 |
+| 3 | PushConst(0) | `[1]` | push 0 |
+| 4 | IntDiv | `[1, 0]` | `let b = 0 as i64; let a = 1 as i64; (a / b) as u64`. Rust `i64 / 0` → **`panicked at 'attempt to divide by zero'`** at `vm.rs:146`. |
+
+The host sees an uncaught Rust panic; the session terminates.
+
+**Confirmed.** Diagnostic chain matches **E2001**.
+
+### `error_semantic1.sol` — undefined variable
+
+```sol
+function start() -> int {
+    let x: int = 5;
+    return undefined_var;
+}
+```
+
+Parser produces a valid AST. Analyzer pass 1 registers `start`.
+Pass 2 walks `start`'s body block:
+
+- `DeclVar { name: "x", … }` → `add_entry("x", Variable{Integer})`.
+  The initializer expression is skipped (`analyzer.rs:138–141` —
+  the `..` pattern). **`undefined_var` would still resolve cleanly
+  here even if it had been in the initializer, because the
+  analyzer never walks it.**
+- `ExprReturn { val: Some(v) }` → checks `can_return = true`,
+  walks `v` = `ExprVar("undefined_var")`. The `ExprVar` branch
+  (`analyzer.rs:483–498`) calls `self.get_entry(&name)`. The
+  scope stack walk doesn't find `undefined_var`. The
+  `unwrap_or_else` prints `variable `undefined_var` could not be
+  found in the current scope` and exits.
+
+**Confirmed.** Diagnostic chain matches **E1001**.
+
+### `error_semantic2.sol` — duplicate `let`
+
+```sol
+function start() -> int {
+    let x: int = 5;
+    let x: int = 10;
+    return x;
+}
+```
+
+Analyzer pass 2 walks the body:
+
+- Stmt 1: `DeclVar("x")` → `add_entry("x", …)`. `HashMap.insert`
+  returns `None` (new key); add_entry returns OK.
+- Stmt 2: `DeclVar("x")` → `add_entry("x", …)`. `HashMap.insert`
+  returns `Some(prev_symbol)`. The `is_some()` check fires.
+  `eprintln!("\x1b[0;31merror\x1b[0;0m: redefinition of `x`")` then
+  exits.
+
+The rendered diagnostic includes ANSI red color codes around
+"error" (not always visible if stderr isn't a terminal).
+
+**Confirmed.** Diagnostic chain matches **E1002**.
+
+### `error_semantic3.sol` — duplicate function
+
+```sol
+function foo() -> int { return 5; }
+function foo() -> int { return 10; }
+function start() -> int { return foo(); }
+```
+
+Analyzer pass 1 (`analyzer.rs:80–98`) iterates *all* top-level
+decls and registers each function signature. For the second
+`foo`, `add_entry` returns `is_some() == true` → prints
+`error: redefinition of foo` and exits **before pass 2 begins**.
+
+**Consequence:** the third function (`start`) is never type-
+checked. Any errors in `start`'s body would be silently ignored
+because the analyzer never gets there. This is the
+"exits-on-first-error" behavior in chapter 15 §15.1 — programs
+with multiple errors only ever see the first one until the
+audit's blocker #2 (errors-as-values) lands.
+
+**Confirmed.** Diagnostic chain matches **E1002** (same code as
+duplicate `let`; the underlying mechanism is identical).
+
+### Summary
+
+| Fixture | Stage where it stops | Diagnostic code | Confirmed |
+|---|---|---|---|
+| `error_parse1.sol` | Parser (primary) | E0001 | ✓ |
+| `error_parse2.sol` | Parser (let_stmt) | E0002 | ✓ |
+| `error_semantic1.sol` | Analyzer (ExprVar) | E1001 | ✓ |
+| `error_semantic2.sol` | Analyzer (add_entry, pass 2) | E1002 | ✓ |
+| `error_semantic3.sol` | Analyzer (add_entry, **pass 1**) | E1002 | ✓ — pass 1 means `start`'s body is never checked |
+| `error_runtime.sol` | VM (`IntDiv` → Rust panic) | E2001 | ✓ |
+
+All six negative fixtures produce exactly the documented
+diagnostic.

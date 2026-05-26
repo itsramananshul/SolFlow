@@ -376,7 +376,136 @@ target port types disagree (`typeEqual` check).
 
 ---
 
-## 18.7 Sources cited in this chapter
+## 18.7 Where the editor can emit invalid SOL
+
+The editor's validator is structural — it checks port shapes,
+symbol references, and basic type compatibility on wired data
+edges. It does **not** validate the *content* of inline
+expression strings or check that the program's emitted SOL
+actually parses. Several paths exist where a graph that passes
+SolFlow validation produces SOL that the canonical compiler
+rejects.
+
+### Inline expression strings are passed through verbatim
+
+The validator (`src/graph/validate.ts:82–96`) checks only that a
+required port has *either* a wired edge *or* a non-empty
+`node.expressions[portId]` string. It never lints the string's
+syntax, type, or content. The emitter
+(`src/emit/emit.ts:emitDataInput`) inserts the string as-is into
+the output SOL.
+
+A node with `expressions['value'] = "if true { 1 } else { 2 }"`
+passes validation and emits:
+
+```sol
+let x: int = if true { 1 } else { 2 };
+```
+
+SOL has no `if`-expression form (chapter 07 §7.1 — `if` is a
+statement). The compiler parses this as `let x: int = if …` and
+calls `expression()`, which calls `primary()`, which doesn't
+recognize the `if` keyword as a primary form → parser exit with
+`not an expressionable token: If`.
+
+**Recommendation:** The validator should at minimum reject inline
+expressions containing SOL keywords that aren't valid in
+expression position (`if`, `else`, `while`, `for`, `let`,
+`return`, `struct`, `enum`, `import`, `function`, `ext`, `as`).
+A stronger fix would route inline expressions through a real SOL
+expression parser. Logged as **T9018**.
+
+### Literal node value text is unchecked
+
+`literal` nodes carry a free-form `value: string` plus a
+`litType: SolPrimitive`. The formatter
+(`src/emit/emit.ts:formatLiteral`) does light type-aware
+formatting (`0` for empty int, `0.0` for empty float, escape
+double-quotes for strings) but never validates the value text
+against the type:
+
+| `litType` | User typed | Emitted SOL | Compiler verdict |
+|---|---|---|---|
+| `int` | `"42"` | `42` | OK |
+| `int` | `"0xFF"` | `0xFF` | Parse error: lexer accepts `0`, then sees `x` as identifier start — produces `0` and `xFF` as separate tokens |
+| `int` | `"hello"` | `hello` | Parse error or semantic error depending on context |
+| `int` | `"3.14"` | `3.14` | Parses as a float literal; subsequent expression context determines whether it compiles |
+| `str` | `"foo"` | `"foo"` | OK |
+| `bool` | `"yes"` | `false` | Silently coerced to `false` (any value ≠ `"true"` → `false`) |
+| `char` | `""` | `' '` | Single space char — unintended but compiles |
+
+Each of these is a path where the editor emits parser-valid or
+parser-invalid SOL with no warning. Logged as **T9021**.
+
+### Apply-anyway produces `/* missing */` placeholders
+
+When the user clicks "Apply draft with errors" in the Sol Man
+modal (chapter 19), the validator's errors are bypassed but the
+emitter still runs. For each missing required input, the emitter
+inserts the literal string `/* missing */` (`src/emit/emit.ts:324`)
+and pushes a warning.
+
+`/* missing */` is a SOL block comment that the lexer consumes as
+trivia (`lexer.rs:319–328`). The parser then sees the surrounding
+text as if the missing port had no content — e.g.:
+
+- `let x: int = /* missing */;` reduces to `let x: int = ;`,
+  which is parse error E0001.
+- `if /* missing */ { … }` reduces to `if { … }`, which is also
+  a parse error (the parser tries to call `expression()` and
+  sees `{`).
+- `print(/* missing */);` reduces to `print();`, which the
+  parser accepts (empty arg list), but then bytecode emission
+  reaches `print` with `args.is_empty()` → no Print op is
+  emitted at all (the `&& !args.is_empty()` guard at
+  `bytecode.rs:424`). The call has no observable effect.
+
+The first two cases fail loudly at compile time — acceptable.
+The third case silently no-ops, which is a worse outcome than
+either passing or failing. Logged as **T9020**.
+
+### The editor's `any` type leaks into SOL
+
+The editor uses `{ kind: 'any' }` as a SolType for unresolved
+data ports. `typeLabel` emits this as the literal string `any`
+(`src/graph/schema.ts:typeLabel`). When used as a type in a
+`let` annotation (`let x: any = …;`), the canonical parser
+treats `any` as `Type::Ident("any")` — a nominal struct
+reference. The analyzer doesn't check struct existence at the
+decl site (T9009), so the program compiles. Any later field
+access on `x` would fail with "could not find struct `any` in
+scope".
+
+In practice this only fires when a node's data type genuinely
+cannot be resolved by the editor — typically inside a
+work-in-progress workflow. Logged as **T9019**.
+
+### Cross-layer audit table
+
+| What the editor's validator checks | What canonical SOL requires (analyzer) | Mismatch |
+|---|---|---|
+| Required input has edge OR non-empty inline expression | Required argument is well-typed and resolves | Validator passes nodes whose inline expression is gibberish |
+| Struct exists | Same; plus literal supplies every field (analyzer's `todo!` — chapter 09 §9.2) | Both validator and analyzer omit field-coverage check |
+| Enum exists; variant name is set | Same | OK |
+| Call's functionId resolves | Call's name is in scope as a `function`/`ext function` | OK; validator and analyzer agree |
+| `assign` has varName | Same | OK |
+| `varGet` resolves in function-local scope (heuristic) | Same plus scope-aware analyzer walk | Validator's heuristic doesn't honor control-flow reachability |
+| Data-edge type compatibility | Per-operator type rules (chapter 08) | Validator only checks edge endpoints; misses inline-expression type mismatches |
+| (none) | `if`/`while` condition must be `bool` | Validator does not type-check conditions |
+| (none) | Arithmetic operand types must match and be numeric | Validator does not type-check inline arithmetic |
+| (none) | Function call argument count matches signature | Validator's port system creates exact ports, so a structural mismatch surfaces as missing-input; but doesn't validate that the call's `functionId` selects a function with the right param shape after the user changed param names |
+| `varGet` resolves (warning) | Same | OK |
+| "No `start` function or trigger node" (warning) | None — SOL has no formal entry rule | Warning is editor-only |
+
+The general pattern: the editor validates **structure** (graph
+shape), canonical SOL validates **content** (types, names,
+syntactic well-formedness of expressions). Any path that bridges
+the two — most prominently the inline expression mechanism — is
+where invalid SOL can be emitted from a "valid" graph.
+
+---
+
+## 18.8 Sources cited in this chapter
 
 - `src/graph/schema.ts` — `NodeKind`, `NodeData`, `Port`,
   `GraphNode`, `GraphEdge`
