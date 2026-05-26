@@ -321,10 +321,10 @@ function emitDataInput(ctx: EmitCtx, nodeId: string, portId: string): string {
   const edge = ctx.incoming.get(key(nodeId, portId));
   if (!edge) {
     ctx.warnings.push(`${nodeId}::${portId}: missing input`);
-    return '/* missing */';
+    return '__UNRESOLVED_INPUT__';
   }
   const src = ctx.nodeMap.get(edge.source.node);
-  if (!src) return '/* missing */';
+  if (!src) return '__UNRESOLVED_INPUT__';
   return emitExpression(ctx, src, edge.source.port);
 }
 
@@ -402,7 +402,7 @@ function emitExpression(ctx: EmitCtx, node: GraphNode, outPort: string): string 
       return '/* invalid */';
     }
     default:
-      return '/* missing */';
+      return '__UNRESOLVED_INPUT__';
   }
 }
 

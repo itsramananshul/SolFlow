@@ -593,7 +593,14 @@ function onBackdrop(e: MouseEvent) {
                 <span class="diag-msg">{{ w }}</span>
               </li>
             </ul>
-            <div v-if="sm.hasErrors" class="diag-explainer">
+            <div v-if="sm.hasBlockingErrors" class="diag-explainer">
+              <strong>This draft cannot be applied.</strong> The errors
+              flagged above (missing required inputs or unsafe inline
+              expressions) would silently produce broken or dangerous
+              SOL. Go back to the prompt with more detail about the
+              missing pieces.
+            </div>
+            <div v-else-if="sm.hasErrors" class="diag-explainer">
               The generated graph won't run as-is. Sol Man recommends
               going back to the prompt and rewording — adding more
               detail about the actions usually fixes this — or applying
@@ -602,7 +609,10 @@ function onBackdrop(e: MouseEvent) {
           </div>
 
           <div class="apply-row">
-            <template v-if="sm.hasErrors">
+            <template v-if="sm.hasBlockingErrors">
+              <button class="ghost" @click="onCancelPreview">Back to prompt</button>
+            </template>
+            <template v-else-if="sm.hasErrors">
               <button class="ghost" @click="onCancelPreview">Back to prompt</button>
               <button class="primary danger" @click="onApplyAsNew(true)">
                 Apply draft with errors

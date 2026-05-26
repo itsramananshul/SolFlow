@@ -137,18 +137,52 @@ export const useSolManStore = defineStore('solMan', () => {
   }
 
   /**
+   * Diagnostic codes that NEVER get bypassed via `force: true`. These
+   * are categories where letting the workflow through produces SOL
+   * that is silently dangerous rather than loudly wrong:
+   *
+   *   - `missing-input`        — required port has no edge and no
+   *                              inline expression. Emitter would insert
+   *                              `__UNRESOLVED_INPUT__`; that fails at
+   *                              SOL parse, but for `print()` the
+   *                              bytecode silently no-ops (T9020).
+   *   - `bad-inline-expression`— inline expression failed lint. Either
+   *                              the SOL parser rejects it or — worse —
+   *                              it's JavaScript that the simulator
+   *                              would execute (T9029).
+   *
+   * Apply-anyway is still allowed for softer errors (e.g.
+   * type-mismatch warnings).
+   */
+  const NON_BYPASSABLE_CODES = new Set([
+    'missing-input',
+    'bad-inline-expression',
+  ]);
+
+  const previewBlockingErrors = computed(() =>
+    previewErrors.value.filter((d) => NON_BYPASSABLE_CODES.has(d.code)),
+  );
+  const hasBlockingErrors = computed(
+    () => previewBlockingErrors.value.length > 0,
+  );
+
+  /**
    * Replace the user's workflow with the generated spec. Goes through
    * graph.loadWorkflow so undo/redo / autosave / port-rebuild all
    * fire normally.
    *
    * Pass `{ force: true }` to apply even when preview validation found
    * errors — wired to the "Apply draft with errors" override button.
-   * Default behavior refuses to apply broken graphs.
+   * `force` does NOT bypass codes in NON_BYPASSABLE_CODES; those are
+   * always refused.
    */
   function applyAsNewWorkflow(
     opts: { force?: boolean } = {},
   ): { ok: boolean; warnings: string[]; blocked?: boolean } {
     if (!spec.value) return { ok: false, warnings: [] };
+    if (hasBlockingErrors.value) {
+      return { ok: false, warnings: previewWarnings.value, blocked: true };
+    }
     if (hasErrors.value && !opts.force) {
       return { ok: false, warnings: previewWarnings.value, blocked: true };
     }
@@ -165,7 +199,8 @@ export const useSolManStore = defineStore('solMan', () => {
    * of nodes (auto-wrapped in a frame when multi-node, like any other
    * block insertion).
    *
-   * Same `force` semantics as applyAsNewWorkflow.
+   * Same `force` semantics as applyAsNewWorkflow — non-bypassable
+   * codes are always refused.
    */
   function insertIntoCurrent(
     flowPos: { x: number; y: number },
@@ -177,6 +212,14 @@ export const useSolManStore = defineStore('solMan', () => {
     blocked?: boolean;
   } {
     if (!spec.value) return { ok: false, warnings: [], newIds: [] };
+    if (hasBlockingErrors.value) {
+      return {
+        ok: false,
+        warnings: previewWarnings.value,
+        newIds: [],
+        blocked: true,
+      };
+    }
     if (hasErrors.value && !opts.force) {
       return {
         ok: false,
@@ -234,7 +277,9 @@ export const useSolManStore = defineStore('solMan', () => {
     isError,
     previewErrors,
     previewWarningsDiagnostics,
+    previewBlockingErrors,
     hasErrors,
+    hasBlockingErrors,
     hasWarnings,
     // ops
     generate,
