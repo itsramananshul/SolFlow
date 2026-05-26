@@ -63,6 +63,44 @@ export function validateWorkflow(wf: SolWorkflow): Diagnostic[] {
     validateFunction(fn, wf, diags);
   }
 
+  // T9002 — enum variant first-character collision check.
+  //
+  // The canonical SOL bytecode emits each enum variant's runtime value
+  // as `(first_char as i128) % 10`, NOT the parser's iota. Two variants
+  // whose first characters fall into the same mod-10 residue class
+  // compare equal at runtime — `Status::Active` and `Status::Aborted`
+  // both hash to 5 ('A' % 10).
+  //
+  // The simulator implements the *intended* by-name semantics, so this
+  // bug is invisible during in-browser testing. Surfacing a warning at
+  // the editor level is what saves the user from a deploy-time surprise
+  // where the simulator said "all good" and production silently
+  // misdispatches.
+  //
+  // Warning severity (not error) — the workflow still applies; we just
+  // make the hazard visible.
+  for (const e of wf.enums) {
+    const buckets = new Map<number, string[]>();
+    for (const v of e.variants) {
+      if (!v.name) continue;
+      const code = v.name.charCodeAt(0) % 10;
+      const list = buckets.get(code) ?? [];
+      list.push(v.name);
+      buckets.set(code, list);
+    }
+    for (const names of buckets.values()) {
+      if (names.length <= 1) continue;
+      diags.push({
+        severity: 'warning',
+        message:
+          `enum "${e.name}": variants ${names.map((n) => `"${n}"`).join(', ')} collide at runtime ` +
+          `(canonical SOL bytecode dispatches enum variants by first-character hash; same-first-character variants ` +
+          `compare equal at runtime even though the simulator runs them correctly). Rename one of them so every variant has a distinct first character.`,
+        code: 'enum-first-char-collision',
+      });
+    }
+  }
+
   return diags;
 }
 
