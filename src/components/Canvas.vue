@@ -866,6 +866,23 @@ function distributeSelected(mode: DistributeMode) {
   }
 }
 
+// MiniMap auto-hide threshold. Workflows with very few nodes don't
+// benefit from an overview (you can already see the whole graph at
+// reasonable zoom); the minimap becomes pure visual clutter. Above
+// MINIMAP_THRESHOLD nodes the overview becomes genuinely useful for
+// navigation. Counted across all functions in the workflow, not just
+// the active function, so the minimap stays visible when you switch
+// to a small auxiliary function inside a large workflow.
+const MINIMAP_THRESHOLD = 6;
+const showMinimap = computed(() => {
+  let total = 0;
+  for (const fn of graph.workflow.functions) {
+    total += fn.nodes.length;
+    if (total > MINIMAP_THRESHOLD) return true;
+  }
+  return false;
+});
+
 // Empty-state hint visibility: only when the function contains just the
 // auto-placed Start node and zero edges. Hides the moment any real node
 // or edge appears so it never overlaps graph content.
@@ -1029,8 +1046,37 @@ onBeforeUnmount(() => {
       :delete-key-code="['Backspace', 'Delete']"
     >
       <Background variant="dots" :pattern-color="'rgba(255, 255, 255, 0.06)'" :gap="20" :size="1" />
-      <Controls :show-interactive="false" />
+      <Controls :show-interactive="false">
+        <!--
+          Fit-to-selection button slotted into Vue Flow's built-in
+          Controls bar. Discoverable counterpart to the `1` keyboard
+          shortcut and the always-available "Fit graph" control above.
+          Disabled when there's no selection so it's clear what the
+          button operates on.
+        -->
+        <button
+          type="button"
+          class="vue-flow__controls-button sf-fit-selection-btn"
+          :disabled="selectedCount === 0"
+          title="Fit selection (1)"
+          aria-label="Fit selection to view"
+          @click="fitSelection"
+        >
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+            <rect x="3" y="3" width="10" height="10" rx="1" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2 1.6" />
+            <path d="M6 8 L8 10 L10 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </Controls>
+      <!--
+        Minimap auto-hides for very small workflows where it's just
+        clutter. Above ~6 nodes the overview becomes genuinely useful;
+        below that the canvas reads cleanly without it. Threshold
+        chosen so the simplest "trigger → let → branch → print → print"
+        shape (~5 nodes) keeps the canvas clean.
+      -->
       <MiniMap
+        v-if="showMinimap"
         pannable
         zoomable
         :node-color="minimapNodeColor"
