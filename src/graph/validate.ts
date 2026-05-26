@@ -17,6 +17,7 @@ import type {
   SolWorkflow,
 } from './schema';
 import { typeEqual, typeLabel } from './schema';
+import { lintInlineExpression } from './expressionLint';
 
 export type Severity = 'error' | 'warning';
 
@@ -92,6 +93,33 @@ function validateFunction(
           functionId: fn.id,
           code: 'missing-input',
         });
+      }
+    }
+
+    // Lint every inline expression the node carries. An inline
+    // expression that fails lint is dangerous in two distinct ways:
+    // the emitter inserts it verbatim into generated SOL (which the
+    // canonical compiler may reject), and the simulator evaluates it
+    // via `new Function` (which would run arbitrary JS if the
+    // expression contains JS globals). Either way, the workflow must
+    // not reach Apply with the bad string in place.
+    //
+    // The lint code is `bad-inline-expression`; combined with the
+    // `missing-input` code above, these are the two diagnostic codes
+    // the Sol Man store treats as "never bypassable via force=true".
+    if (n.expressions) {
+      for (const [portId, expr] of Object.entries(n.expressions)) {
+        if (typeof expr !== 'string' || expr.trim() === '') continue;
+        const lint = lintInlineExpression(expr);
+        if (lint) {
+          diags.push({
+            severity: 'error',
+            message: `${nodeLabel(n)} (${portId}): ${lint.message}`,
+            nodeId: n.id,
+            functionId: fn.id,
+            code: 'bad-inline-expression',
+          });
+        }
       }
     }
 

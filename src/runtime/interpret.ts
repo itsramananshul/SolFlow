@@ -25,6 +25,7 @@ import type {
   GraphNode,
   SolWorkflow,
 } from '@/graph/schema';
+import { lintInlineExpression } from '@/graph/expressionLint';
 
 export interface RunResult {
   ok: boolean;
@@ -688,6 +689,19 @@ function toInt(v: unknown): number {
 // =============================================================
 
 function evalInline(ctx: RunCtx, scope: Scope, expr: string): unknown {
+  // Defense in depth: lint the expression even though the validator was
+  // supposed to have done it already. The simulator is the last gate
+  // before `new Function`, and if anything bypasses the validator (a
+  // hand-edited workflow JSON, an old loaded snapshot, a Sol Man
+  // generation that wasn't validated) we refuse to evaluate rather than
+  // executing arbitrary JS.
+  const lint = lintInlineExpression(expr);
+  if (lint) {
+    throw new RuntimeError(
+      `inline expression rejected by lint (${lint.code}): ${lint.message}`,
+    );
+  }
+
   // Translate SOL syntax that JS can't parse.
   // E::V → "E::V" string. (Wired enumVariant nodes also produce this string,
   // so equality compares correctly.)
