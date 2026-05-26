@@ -210,12 +210,107 @@ with no special-cased `else if` production.
 
 ## §4 Expressions and operators
 
-> Substantive content lands in commit 3.
+The expression chain is a fourteen-level Pratt-style cascade
+(`parser.rs:584–595`). Each production calls the next-tighter one
+and then loops applying any operators that belong at this
+precedence. Operators *at the same level* associate as marked.
 
-The expression chain is a Pratt-style cascade from highest precedence
-at the bottom to lowest at the top, defined at
-`parser.rs:584–595`. A summary table will be reproduced here
-together with the postfix and primary productions.
+### Precedence table (lowest → highest)
+
+| Level | Production | Operators | Assoc | Result type |
+|---|---|---|---|---|
+| 1 | `assignment` | `=` | right | type of RHS |
+| 2 | `logic_or` | `\|\|` | left | `bool` |
+| 3 | `logic_and` | `&&` | left | `bool` |
+| 4 | `bitwise_or` | `\|` | left | `int` |
+| 5 | `bitwise_xor` | `^` | left | `int` |
+| 6 | `bitwise_and` | `&` | left | `int` |
+| 7 | `equality` | `==` `!=` | left | `bool` |
+| 8 | `relational` | `<` `<=` `>` `>=` | left | `bool` |
+| 9 | `shift` | `<<` `>>` | left | `int` |
+| 10 | `additive` | `+` `-` | left | operand type |
+| 11 | `multiplicative` | `*` `/` | left | operand type |
+| 12 | `unary` | `!` `-` `~` (prefix) | right | operand type |
+| 13 | `postfix` | `.` `[ ]` | left | depends |
+| 14 | `primary` | literals, identifier, `(…)`, calls, struct literal, enum variant, array literal | — | — |
+
+### Expression productions
+
+```
+expr           =  assignment
+
+assignment     =  logic_or  [ '='  assignment ]
+logic_or       =  logic_and    { '||'  logic_and }
+logic_and      =  bitwise_or   { '&&'  bitwise_or }
+bitwise_or     =  bitwise_xor  { '|'   bitwise_xor }
+bitwise_xor    =  bitwise_and  { '^'   bitwise_and }
+bitwise_and    =  equality     { '&'   equality }
+equality       =  relational   { ('==' | '!=')   relational }
+relational     =  shift        { ('<' | '<=' | '>' | '>=')  shift }
+shift          =  additive     { ('<<' | '>>')   additive }
+additive       =  multiplicative { ('+' | '-')   multiplicative }
+multiplicative =  unary        { ('*' | '/')   unary }
+
+unary          =  ( '!' | '-' | '~' ) unary
+               |  postfix
+
+postfix        =  primary { '.' IDENT  |  '[' expr ']' }
+
+primary        =  INTEGER
+               |  FLOAT
+               |  STRING
+               |  CHAR
+               |  BOOL
+               |  IDENT '(' [ expr_list ] ')'                    (* function call *)
+               |  IDENT '{' [ field_init_list ] '}'              (* struct literal — see can_struct below *)
+               |  IDENT '::' IDENT                               (* enum variant *)
+               |  IDENT                                          (* bare identifier reference *)
+               |  '(' expr ')'                                   (* grouping *)
+               |  '[' [ expr_list ] ']'                          (* array literal *)
+
+expr_list           =  expr { ',' expr }
+field_init_list     =  IDENT ':' expr { ',' IDENT ':' expr }
+```
+
+### The `can_struct` flag (parser state)
+
+Struct literals share a leading `IDENT '{' …` shape with the body
+block of `if` / `while` / `for-in`. To resolve the ambiguity the
+parser carries a `can_struct: bool` flag (`parser.rs:131, 394–397,
+408–411, 428–431`), defaulting to true. Before parsing the condition
+of `if` / `while` / `for-in`, the parser sets it to false; the
+struct-literal rule in `primary` checks it before consuming the
+`{`. The flag is reset to true inside parentheses (`parser.rs:714–716`).
+
+Effect, expressed as a guard on the production:
+
+```
+primary  →  IDENT '{' field_init_list '}'   only when can_struct == true
+```
+
+In source-code terms: to use a struct literal as a condition, wrap
+it in parentheses:
+
+```sol
+if (Point { x: 0, y: 0 }) { … }
+```
+
+### Operator absences (for completeness)
+
+The grammar above is exhaustive. The following constructs do *not*
+appear in the parser:
+
+- `%` (modulo)
+- `**` (exponentiation)
+- `?:` (ternary)
+- `?.` (safe access)
+- `??` (nullish coalescing)
+- `..` / `..=` (ranges)
+- `=>` (closure / fat arrow)
+- `in` outside of `for-in` headers
+- `as` outside of `import` aliases
+
+Each of these is rejected at lex/parse time.
 
 ---
 
