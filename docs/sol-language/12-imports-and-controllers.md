@@ -73,6 +73,33 @@ The runtime dispatches the call through the host's transport layer
 stack. From the program's point of view the call is synchronous
 and returns a single value (or `Void`).
 
+### Runtime transport (snapshot, 2026-05-26)
+
+The VM implements `Inst::ExtCall` with hand-rolled HTTP/1.1
+over a plain `TcpStream` (`vm.rs:469–579`). This is a snapshot of
+one host's transport and is **not** part of the language; a future
+runtime may switch transports. Today's behavior:
+
+| Aspect | Behavior |
+|---|---|
+| Transport | TCP socket. **HTTP/1.1 only.** No HTTPS. The runtime strips a literal `http://` prefix and then assumes the rest is `host[:port]/path`. URLs starting with `https://` will be parsed incorrectly (the runtime strips nothing, the host portion becomes `https:`, the port parse falls back to `80`) and either fail to connect or connect to the wrong place. |
+| Connection | New TCP connection per call; `Connection: close` header. No keep-alive. No retries. |
+| Timeout | **None.** A dead or hung endpoint will hang the SOL session indefinitely. |
+| Default port | `80` when the URL has no `:port`. |
+| Request body | `{"type":"request", "name":"<function-name>", "args":[ … ]}`. Arguments are encoded per `arg_types`: `Type::Integer` → JSON number; `Type::Float` → JSON number (or `null` if `NaN`/`inf` un-encodable); `Type::String` → JSON string; `Type::Bool` → JSON bool; `Type::Char` → JSON string of one character; any other type → Debug-formatted string fallback. |
+| Response | Reads the status line, drains headers until a blank line, reads the remainder as JSON. **No HTTP status-code check** — a `400` or `500` with a JSON body is treated identically to a `200`. |
+| Response shape | Expects a JSON object with a `data` field. Missing / wrong-typed `data` produces the default value for the declared return type — `0` for `int`, `0.0` for `float`, `false` for `bool`, `"?"` for `char`, the stringified JSON for `str`. **No error is raised** — the program continues with the default value. |
+| Panics | `unwrap()` is used liberally for connect failure, network write, JSON parse, and JSON serialize failures. Any of these panics terminates the session (chapter 14 §14.9). |
+
+The combined effect: ExtCall is best treated as *eventually
+consistent best-effort*. A program that depends on it should
+treat the default return value as "the call may have silently
+failed" and design accordingly — for example, by validating the
+response shape itself via `rpc_data` and `if` checks before
+acting on it.
+
+Logged as **T9012** in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
+
 ### Endpoint resolution at compile time
 
 The host runtime supplies a *function-name → endpoint-URL* mapping

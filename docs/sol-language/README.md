@@ -22,7 +22,7 @@ behavior is flagged as a tool-side mismatch.
 | **Newcomer to SOL** — wants to read & write `.sol` files | [01 — Overview](./01-overview.md) → [02 — File structure](./02-file-structure.md) | 03 → 11 in order, then [16 — Examples](./16-examples.md) |
 | **SolFlow user** — wants to know how visual nodes turn into SOL | [18 — SolFlow mapping](./18-solflow-mapping.md) | 04 / 05 / 07 / 12, then [ERROR_REFERENCE](./ERROR_REFERENCE.md) |
 | **Sol Man / LLM tooling author** | [19 — Sol Man generation guide](./19-solman-generation-guide.md) | 18, then [SPEC](./SPEC.md) + [ERROR_REFERENCE](./ERROR_REFERENCE.md) |
-| **Compiler / IDE contributor** | [00 — Source audit](./00-source-audit.md) | [SPEC](./SPEC.md), [GRAMMAR](./GRAMMAR.md), [14 — Runtime semantics](./14-runtime-semantics.md) |
+| **Compiler / IDE contributor** | [00 — Source audit](./00-source-audit.md) | [SPEC](./SPEC.md), [GRAMMAR](./GRAMMAR.md), [14 — Runtime semantics](./14-runtime-semantics.md), [20 — Implementation notes](./20-implementation-notes.md) |
 | **Looking up an error** | [ERROR_REFERENCE.md](./ERROR_REFERENCE.md) | (each entry links back to the relevant chapter) |
 
 ---
@@ -53,6 +53,7 @@ behavior is flagged as a tool-side mismatch.
 | 17 | [`17-style-guide.md`](./17-style-guide.md) | Naming, formatting, ordering, idiomatic patterns |
 | 18 | [`18-solflow-mapping.md`](./18-solflow-mapping.md) | SolFlow node ↔ SOL syntax mapping; port contracts; export rules |
 | 19 | [`19-solman-generation-guide.md`](./19-solman-generation-guide.md) | Generation rules for LLM-based SOL/graph synthesis |
+| 20 | [`20-implementation-notes.md`](./20-implementation-notes.md) | Deep implementation details — codegen pipeline, slot mechanics, struct/array runtime layout, RPC wire shapes, `ExtCall` transport, the implementation's current gaps |
 
 ### Normative references
 
@@ -111,6 +112,7 @@ behavior is flagged as a tool-side mismatch.
 | `17 – 17-style-guide.md` | Substantive |
 | `18 – 18-solflow-mapping.md` | Substantive |
 | `19 – 19-solman-generation-guide.md` | Substantive |
+| `20 – 20-implementation-notes.md` | Substantive |
 | `SPEC.md` | Substantive |
 | `GRAMMAR.md` | Substantive |
 | `ERROR_REFERENCE.md` | Substantive |

@@ -948,6 +948,235 @@ concatenate via an `ext function`.
 
 ---
 
+### T9006 — `TypeMismatch::ArraySize` is computed but never surfaced
+
+**Category:** tool — diagnostic-quality gap
+
+**Description:** The `type_eq` helper distinguishes
+`TypeMismatch::ArraySize` (sizes differ but inner type matches)
+from `TypeMismatch::Inequal` (generic mismatch). Every analyzer
+call site collapses both via `.is_err()` into the same generic
+diagnostic `cannot ... mismatched types`. The user therefore
+can't tell from the message that the size was the specific
+problem.
+
+**Where it lives:** `util.rs:1–14`; all `analyzer.rs` call sites
+that consult `type_eq`.
+
+**Recommendation:** A future analyzer should match on the
+`TypeMismatch` variant and emit a distinct "array size mismatch:
+`[3]int` vs `[5]int`" message for the size case.
+
+**Related chapter:** [04 §4.6](./04-types.md)
+
+---
+
+### T9007 — Tuple type equality truncates to the shorter length
+
+**Category:** tool — compiler bug (latent)
+
+**Description:** `util.rs:17–23` compares tuple types with
+`types_lhs.iter().zip(types_rhs).any(|(l, r)| type_eq(l, r).is_err())`.
+`zip` truncates to the shorter iterator, so a difference in
+arity is silently ignored — `(int, int)` and `(int, int, int)`
+compare equal.
+
+**Where it lives:** `util.rs:17–23`.
+
+**Recommendation:** Add a `types_lhs.len() == types_rhs.len()`
+guard.
+
+**Latency:** Tuple types have no surface value form today; this
+bug is currently unreachable from user code but would become live
+the moment tuple literals land. Logged proactively.
+
+**Related chapter:** [04 §4.4, 04 §4.6](./04-types.md)
+
+---
+
+### T9008 — Function type equality ignores return types
+
+**Category:** tool — compiler bug (latent)
+
+**Description:** `util.rs:24–32` compares function types only by
+matching the `Void`-ness flags of the two return types. If both
+returns are `Void` or both are non-`Void`, the actual return types
+are not compared. So `function() -> int` and `function() -> str`
+are considered equal because both have non-`Void` returns and
+zero params.
+
+**Where it lives:** `util.rs:24–32`. Also affected: the tuple
+zip-truncation (T9007) applies to params, so `function(int, int)`
+and `function(int, int, int)` would compare equal.
+
+**Recommendation:** Replace the void-flag dance with a direct
+`type_eq(*ret_lhs, *ret_rhs)` call, and add a param-arity guard.
+
+**Latency:** First-class function values don't exist in SOL
+today; this bug is unreachable from user code but would become
+live if function types were ever exchanged between sites.
+
+**Related chapter:** [04 §4.6](./04-types.md)
+
+---
+
+### T9009 — Unknown primitive name silently treated as nominal type
+
+**Category:** tool — analyzer gap
+
+**Description:** `parser.rs:198–209` recognizes `int, float, str,
+char, bool` as primitive type names in type position; anything
+else becomes `Type::Ident(name)` — a nominal struct/enum
+reference. The analyzer **does not** check at the declaration
+site that the named type actually exists; the check only happens
+at use sites that walk into the type (e.g. field access).
+
+In practice: a typo like `string` for `str` is silently accepted
+in any struct field, function parameter, or `let` annotation.
+The fixture `largemini.sol` uses `name: string` and `name:
+string` in `struct Person`, which the bytecode emitter happily
+processes because it doesn't validate struct field types.
+
+**Where it lives:** `parser.rs:198–209`, `analyzer.rs:138–145`
+(`let` and `struct` decl paths skip value/field-type checks).
+
+**Recommendation:** Either special-case the common misspellings
+(`string` → `str`) with a helpful diagnostic, or run a full
+struct/enum resolution pass before analyzing function bodies.
+
+**Related chapter:** [04 §4.1](./04-types.md), [09 §9.1](./09-structs.md)
+
+---
+
+### T9010 — Several VM ops silently no-op on type mismatch
+
+**Category:** tool — runtime soft-fail
+
+**Description:** Multiple VM instruction handlers do an
+`if let HeapObject::X(...) = ...` match and silently fall through
+when the heap reference is the wrong shape:
+
+- `Inst::GetField`, `Inst::SetField` (`vm.rs:198–212`) — expect
+  `HeapObject::Struct`
+- `Inst::GetElem`, `Inst::SetElem`, `Inst::NewArray` reads,
+  `Inst::ArrayLen` (`vm.rs:220–243`) — expect
+  `HeapObject::Array`
+- `Inst::ConcatStr`, `Inst::EqStr` (`vm.rs:245–261`) — expect
+  `HeapObject::String`
+
+When the match fails, **the expected push does not happen**, and
+subsequent instructions pop from a stack that's shorter than they
+expect, surfacing as `Runtime Error: Stack underflow` or wrong-
+value behavior later in the program.
+
+**Where it lives:** `vm.rs` per-op handlers above.
+
+**Recommendation:** Replace the silent fall-through with an
+explicit `panic!("Runtime Error: <op> expected <kind>")`. This
+fails loudly at the actual mistake instead of corrupting the
+stack and failing somewhere downstream.
+
+**Latency:** Should not arise in well-emitted bytecode. Can
+arise from compiler bugs, hand-written bytecode, or future
+features that introduce new `HeapObject` variants.
+
+**Related chapter:** [14 §14.6, 14 §14.7](./14-runtime-semantics.md)
+
+---
+
+### T9011 — Void function `Ret` leaves `0` on the caller's stack
+
+**Category:** tool — runtime behavior worth knowing
+
+**Description:** `Inst::Ret` (`vm.rs:283–293`) unwinds the call
+frame and pushes `0` onto the caller's stack. The emitter
+appends `Inst::Ret` at the end of every function body
+(`bytecode.rs:414`), so:
+
+- A function declared without `-> T` (Void) always ends with
+  `Ret`. Callers see `0` pushed.
+- Even a `Void` function compiles to "leaves 0 on the caller's
+  stack".
+- The analyzer treats `Void` as a separate type with no surface
+  spelling — but at the VM level, a Void function call is
+  indistinguishable from "returns the integer 0".
+
+For `start` returning via a bare `return;` or by falling off the
+end, the host sees `0`. This is usually the desired exit code,
+but a `start` that finishes with a non-zero top-of-stack value
+might end up returning whatever was left there by the prior
+instruction.
+
+**Where it lives:** `vm.rs:283–293`, `bytecode.rs:414`.
+
+**Recommendation:** Behavior is consistent and predictable;
+just be aware. When designing a host that inspects `start`'s
+return value, treat Void-returning entries as returning `0`.
+
+**Related chapter:** [05 §5.3, 05 §5.6](./05-functions.md), [14 §14.10](./14-runtime-semantics.md)
+
+---
+
+### T9012 — `ExtCall` transport: hand-rolled HTTP/1.1, no HTTPS, no timeout
+
+**Category:** tool — runtime limitation
+
+**Description:** The VM's `Inst::ExtCall` (`vm.rs:469–579`) opens
+a fresh TCP connection per call and writes a hand-formatted
+HTTP/1.1 request. The relevant limitations:
+
+- **HTTP only.** The runtime strips a leading `http://` and
+  assumes the rest is `host[:port]/path`. URLs starting with
+  `https://` are parsed incorrectly and either fail to connect or
+  hit the wrong destination.
+- **No timeout.** A hung endpoint hangs the SOL session.
+- **No HTTP status check.** A non-2xx response with a JSON body
+  is treated identically to a success.
+- **Default values on missing/wrong response shape.** A response
+  whose `data` field is missing or of the wrong JSON type
+  produces the declared return type's default value (0, 0.0,
+  false, "?", or stringified JSON) — *silently*.
+- **Panics on connect / write / JSON failures.** These propagate
+  out as uncaught Rust panics and terminate the session.
+
+**Where it lives:** `vm.rs:469–579`.
+
+**Recommendation:** Defensive SOL programs that call `ext`
+functions should: (1) check return values for default-equivalent
+sentinels when correctness matters; (2) factor any long-running
+or potentially-failing call behind a host-supplied `ext function`
+that the host can wrap in its own timeout/retry policy.
+
+**Related chapter:** [12 §12.4](./12-imports-and-controllers.md), [14 §14.9](./14-runtime-semantics.md)
+
+---
+
+### T9013 — Bare expression statements emit code that is immediately popped
+
+**Category:** tool — language minor
+
+**Description:** Statements like `100 + 200;` and `f();` (call of
+a non-void function used as a statement) are parser-accepted
+expression statements (chapter 03 §3.4). The bytecode emitter
+compiles them, then immediately emits `Inst::Pop` to discard the
+result (`bytecode.rs:218–223`). The expression's side effects
+happen, but the value is discarded.
+
+**Where it lives:** `bytecode.rs:166–177, 218–223`.
+
+**Recommendation:** Don't write expression statements whose only
+purpose is to compute a value. Either assign to a `let` or omit.
+For function calls whose return value you don't care about, the
+pattern is fine — the implicit `Pop` is exactly what you want.
+
+The fixture `largemini.sol::blockIsolation` uses `100 + 200;` as
+a deliberate no-op inside an isolating block, which is a fine
+illustration of the pattern.
+
+**Related chapter:** [03 §3.4](./03-syntax.md)
+
+---
+
 ## Maintenance
 
 - New diagnostics are added in this file *first*, then linked from

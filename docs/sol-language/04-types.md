@@ -249,23 +249,121 @@ Detail lives in chapter 09 (structs) and chapter 10 (enums).
 
 ## 4.6 Type equality
 
-The analyzer uses a single `type_eq` helper
-(`crate::sol::util::type_eq`, imported in `analyzer.rs:3`) to
-decide whether two `Type` values are compatible. Its rule:
+The analyzer uses a single `type_eq` helper (`util.rs:1–42`) to
+decide whether two `Type` values are compatible. The full source
+is small enough to reproduce, and several of its rules are
+non-obvious or buggy in ways that matter to anyone writing
+production SOL.
 
-- Same primitive variant ⇒ equal.
-- `Type::Array { inner: a, … }` vs. `Type::Array { inner: b, … }`
-  ⇒ requires `type_eq(a, b)`. The size is **not** compared for
-  equality — `[3]int` and `[5]int` are treated as the same array
-  type for purposes of assignment and argument passing. (Whether
-  this is intentional is *uncertain*; document the current
-  behavior and re-check when the analyzer is refactored.)
-- `Type::Ident(name)` ⇒ equal iff both names match string-wise.
-- Anything else ⇒ not equal.
+### The actual rules
 
-(Exact `util.rs` contents to be added when the file is read in a
-follow-up pass; the rules above are inferred from analyzer call
-sites.)
+The helper returns `Result<(), TypeMismatch>` where
+`TypeMismatch` has two variants — `Inequal` (the generic
+mismatch) and `ArraySize` (specifically a size disagreement on
+otherwise-matching array types). At every analyzer call site
+today both variants collapse into the same "cannot ... mismatched
+types" diagnostic (the call sites use `.is_err()`), but the
+underlying distinction is real and a future analyzer could lift
+it into a more precise message.
+
+| `lhs` | `rhs` | Result |
+|---|---|---|
+| Same primitive (`Integer/Float/String/Char/Bool/Void`) | Same | `Ok(())` |
+| `Ident(a)` | `Ident(b)` | `Ok(())` iff `a == b` |
+| `Array { size: s1, inner: i1 }` | `Array { size: s2, inner: i2 }` | `Ok(())` iff `type_eq(i1, i2)` *and* `s1 == s2`; if inner matches but sizes differ, `Err(ArraySize)` |
+| `Tuple(ts1)` | `Tuple(ts2)` | `Ok(())` iff every zipped pair is `Ok` (see "tuple bug" below) |
+| `Function { params: p1, ret: r1 }` | `Function { params: p2, ret: r2 }` | see "function bug" below |
+| Anything else | — | `Err(Inequal)` |
+
+### Confirmed — arrays DO compare sizes
+
+```sol
+let a: [3]int = [1, 2, 3];
+let b: [5]int = a;            // analyzer: cannot assign mismatched types
+```
+
+This is **opposite** of what an earlier draft of this manual
+claimed. The size comparison happens at `util.rs:12`. If you
+want a function that accepts arrays of any length, declare its
+parameter as `[]T` (unsized) — `Array { size: None, inner: T }`
+treats `None == None` as equal, and the call site can pass any
+sized or unsized array provided the inner type matches.
+
+Sized-to-unsized matching is **also size-sensitive** because the
+sizes (`Some(N)` vs. `None`) are not equal. A `[3]int`-typed
+literal cannot be passed where `[]int` is declared, and vice
+versa. To be safely portable, pick `[]T` everywhere unless the
+size is part of the contract.
+
+### Buggy — tuple equality truncates to the shorter length
+
+```rust
+// util.rs:17–23
+Type::Tuple(types_lhs) => {
+    if let Type::Tuple(types_rhs) = rhs {
+        if types_lhs.iter().zip(types_rhs).any(|(l, r)| type_eq(l.to_owned(), r).is_err()) {
+            Err(TypeMismatch::Inequal)
+        } else { Ok(()) }
+    } else { Err(TypeMismatch::Inequal) }
+}
+```
+
+`iter().zip()` truncates to the shorter operand. So
+`(int, int)` and `(int, int, int)` are **considered equal** —
+the third element is silently ignored. There is no
+length-comparison guard.
+
+Since the surface syntax has no tuple value form (chapter 04
+§4.4), this bug is currently latent — it can only fire if you
+declare differently-arity tuple types in function signatures, and
+the call-site rule then doesn't catch the arity mismatch. Logged
+as T9007.
+
+### Buggy — function equality ignores return types
+
+```rust
+// util.rs:24–32
+Type::Function { params: params_lhs, ret: ret_lhs } => {
+    if let Type::Function { params: params_rhs, ret: ret_rhs } = rhs {
+        match (type_eq(*ret_lhs, Type::Void).is_ok(),
+               type_eq(*ret_rhs, Type::Void).is_ok()) {
+            (true, false) | (false, true) => Err(TypeMismatch::Inequal),
+            _ => if params_lhs.iter().zip(params_rhs)
+                    .any(|(l, r)| type_eq(l.to_owned(), r).is_err()) {
+                Err(TypeMismatch::Inequal)
+            } else { Ok(()) }
+        }
+    } else { Err(TypeMismatch::Inequal) }
+}
+```
+
+Reading the match: the return-type comparison checks only
+"is one void and the other non-void?". If both are void or both
+are non-void, **the actual return types are not compared.** So
+`function() -> int` and `function() -> str` are considered
+equal — both have void-ness `false`, both have zero params.
+
+Combined with the tuple zip-truncation, this means: two
+function types with different return types and different param
+counts can compare equal as long as the **non-void-ness flags
+match** and the **prefix params match**.
+
+Since function types have no surface spelling in SOL, this bug
+is also currently latent — function symbols are introduced via
+the analyzer's pass-1 registration (`analyzer.rs:84–89`) and
+compared only when a name is resolved, not when function values
+are exchanged. Logged as T9008.
+
+### Practical takeaway
+
+For day-to-day SOL programming, type equality behaves as you
+expect for primitives and named types. The hazards above only
+appear in:
+
+- Array types — sizes are compared; pick `[]T` when you mean
+  "any length".
+- Tuple and function types — which today have no source-level
+  user-facing role; the bugs are real but latent.
 
 ---
 
@@ -343,10 +441,13 @@ in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
 - `analyzer.rs:305–337` — unary operator type rules
 - `analyzer.rs:455–466` — array index type rule
 - `analyzer.rs:409–435` — field access type rule
+- `util.rs:1–42` — `type_eq` helper (full source — including
+  the tuple/function bugs documented in §4.6)
 - `vm.rs:143–146` — integer arithmetic (i64)
 - `vm.rs:156–166` — float arithmetic
 - `vm.rs:177–178` — non-short-circuiting logical ops
 - `vm.rs:7–11, 50–54, 109–112` — heap-stored strings
 - `lexer.rs:21–25` — primitive literal token shapes
 - Fixtures: `test_arith.sol`, `test_edge.sol`, `test_array.sol`,
-  `test_struct.sol`, `error_runtime.sol`
+  `test_struct.sol`, `error_runtime.sol`, `largemini.sol`
+  (uses `string` as a type name — see chapter 20 §20.5)
