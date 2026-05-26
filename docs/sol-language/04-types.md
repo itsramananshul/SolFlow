@@ -139,11 +139,13 @@ referenced by index.
 
 **Allowed operations:**
 
-- `==` / `!=` — the analyzer accepts them (requires both operands
-  to be `str`), but **the VM only emits integer / float / char
-  comparisons** — string equality is not implemented at the bytecode
-  level today. Treat `str == str` as *uncertain*. Use it sparingly
-  until a fixture confirms the behavior.
+- `==` / `!=` — **Confirmed** to do content equality at runtime
+  via `Inst::EqStr` (`bytecode.rs:683`, `vm.rs:255–261`). The
+  fixture `largemini.sol::eqString` asserts `print("abc" == "abc")`
+  returns `1` and `print("abc" != "xyz")` returns `1`, which only
+  works if the underlying op compares heap-stored string content
+  rather than heap-index identity. Inequality uses `EqStr` followed
+  by `LogNot` (`bytecode.rs:684–687`).
 
 There is **no string concatenation operator**. There is **no string
 indexing**. There are **no length / slice / find / split builtins**.

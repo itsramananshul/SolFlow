@@ -54,6 +54,7 @@ behavior is flagged as a tool-side mismatch.
 | 18 | [`18-solflow-mapping.md`](./18-solflow-mapping.md) | SolFlow node ↔ SOL syntax mapping; port contracts; export rules |
 | 19 | [`19-solman-generation-guide.md`](./19-solman-generation-guide.md) | Generation rules for LLM-based SOL/graph synthesis |
 | 20 | [`20-implementation-notes.md`](./20-implementation-notes.md) | Deep implementation details — codegen pipeline, slot mechanics, struct/array runtime layout, RPC wire shapes, `ExtCall` transport, the implementation's current gaps |
+| 21 | [`21-behavior-classification.md`](./21-behavior-classification.md) | Behavior stability badges — Specified / Current-impl / Accidental / Emergent / Undefined / Unstable. The single place to look when asking "can I rely on this?" |
 
 ### Normative references
 
@@ -113,6 +114,7 @@ behavior is flagged as a tool-side mismatch.
 | `18 – 18-solflow-mapping.md` | Substantive |
 | `19 – 19-solman-generation-guide.md` | Substantive |
 | `20 – 20-implementation-notes.md` | Substantive |
+| `21 – 21-behavior-classification.md` | Substantive |
 | `SPEC.md` | Substantive |
 | `GRAMMAR.md` | Substantive |
 | `ERROR_REFERENCE.md` | Substantive |

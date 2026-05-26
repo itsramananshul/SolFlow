@@ -79,6 +79,43 @@ let flag: bool;       // legal to parse; flag has whatever 0-bits mean as bool
 
 Avoid the uninitialized form in production code.
 
+### Top-level `let` is severely broken — don't use it
+
+A `let` declaration at file scope (outside any function body) is
+parser-accepted, analyzer-accepted, and emits code that runs at
+startup before `start` is called. The codegen and runtime *do
+not* propagate the bound value into function bodies in any
+correct way.
+
+The mechanics are documented in detail in [chapter 20 §20.2](./20-implementation-notes.md)
+and tracked as `T9014` in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md#t9014--top-level-let-is-broken-reading-from-a-function-panics-at-runtime).
+The short version: each `function` decl resets the codegen's
+local-slot counter, and the function's runtime frame pointer
+sits *above* the top-level slot, so a function-body read of the
+top-level name either panics on out-of-bounds stack access or
+silently returns whatever happens to be in the function's frame
+at that offset.
+
+**Don't write top-level `let`s** until the compiler is fixed.
+Move every binding into a function body — typically `start` or a
+helper called by `start`.
+
+```sol
+// BAD — runtime panic when start tries to return g
+let g: int = 42;
+function start() -> int { return g; }
+
+// GOOD
+function start() -> int {
+    let g: int = 42;
+    return g;
+}
+```
+
+No fixture in the corpus exercises the broken pattern. This
+warning exists to prevent the obvious port from another language
+that says "just declare a constant at the top".
+
 *Parse error — empty initializer:*
 
 ```sol

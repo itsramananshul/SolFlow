@@ -492,20 +492,289 @@ prioritization.
 
 ---
 
-## 20.13 Sources cited in this chapter
+## 20.13 Function declaration emit — inline with `Jump`-over
+
+`bytecode.rs:393–422` shows the per-function code emission
+pattern. Functions are emitted *inline* in the main instruction
+stream, with an `Inst::Jump(...)` placeholder that the codegen
+patches to skip past the function body during normal top-level
+execution.
+
+```text
+<top-level code so far>
+Jump(end_of_foo)         // placeholder; patched after body emit
+foo_entry:                // recorded in self.functions["foo"]
+  <foo body>
+  Ret
+end_of_foo:
+<more top-level code>
+```
+
+Calls into `foo` use `Inst::Call(foo_entry, n)`, jumping into
+the inlined body. After the body's `Ret`, the next-instruction
+pointer points at whatever comes after the `Ret` — which is the
+patched `Jump` target (end_of_foo). Execution flows back through
+the caller normally.
+
+Two consequences worth knowing:
+
+1. **Per-function locals reset.** Each `DeclFunc` emits
+   `self.locals.clear(); self.next_slot = 0;` at the start
+   (`bytecode.rs:401–402`). This is what makes top-level `let`
+   broken (§20.14 below) — the per-function reset throws away
+   the codegen's record of any top-level binding.
+2. **`active_scopes` is dead infrastructure.** The
+   `push(scope_from(scope_id))` / `pop()` calls at
+   `bytecode.rs:409–411, 416–418` populate a `Vec<Scope>` that
+   nothing else in the codegen reads. The field exists, gets
+   maintained, and serves no purpose.
+
+---
+
+## 20.14 Top-level `let` — bytecode-level walk
+
+The combination of three implementation details makes top-level
+`let` unsafe to use. None of the three is individually surprising;
+the interaction is.
+
+1. **Top-level code emits at `fp = 0`.** Before the implicit
+   `Call(start_addr, 0)` runs (`bytecode.rs:159–161`), there is
+   no frame on the call stack, the VM's `fp` is `0`, and any
+   top-level `StoreLocal(0)` writes to `stack[0]`.
+2. **The implicit `Call` sets `fp = stack.len() - arg_count`.**
+   For `start` with no arguments, `arg_count = 0`, so `fp` becomes
+   the *current top of the stack* — past any top-level state.
+3. **The codegen's `find_local_offset` auto-creates a fresh local
+   when a name isn't already registered in `self.locals`**
+   (`bytecode.rs:559–578`). When a function body reads a
+   top-level name, the codegen registers it as a *new* local at
+   the function's `next_slot = 0`, and emits `LoadLocal(0)`. At
+   runtime that's `stack[fp + 0]` — past the top-level data.
+
+Concrete walk for `let g: int = 42; function start() -> int { return g; }`:
+
+```text
+Codegen emit (in order):
+  PushConst(42)          // top-level let g
+  StoreLocal(0)          // codegen.locals = {"g": (0, Integer)}; next_slot = 1
+  Jump(end_of_start)     // placeholder
+  start_entry:
+    // DeclFunc reset: locals.clear(); next_slot = 0
+    // body emit:
+    LoadLocal(0)         // find_local_offset("g") not in locals →
+                         //   walk type_tables → found Integer → register at slot 0
+    RetVal
+    Ret                  // implicit
+  end_of_start:
+  Call(start_entry, 0)   // appended
+
+VM execution:
+  fp = 0, stack = []
+  → PushConst(42): stack = [42]
+  → StoreLocal(0): pops 42, writes to stack[0]. stack = [42], fp = 0.
+  → Jump to Call(start_entry, 0).
+  → Call: push frame {return_ptr=end, old_fp=0}; fp = stack.len() - 0 = 1; goto start_entry.
+  → LoadLocal(0): idx = fp + 0 = 1. stack.len() == 1 → PANIC: index out of bounds.
+```
+
+If the stack happens to have additional values pushed before the
+`LoadLocal` runs (e.g. from intervening expression evaluation),
+the read may return garbage instead of panicking — which is worse,
+because it silently corrupts subsequent computation.
+
+Logged as **T9014** in
+[`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md). Recommendation:
+don't write top-level `let`s.
+
+---
+
+## 20.15 Forward function calls and `display_type` falls back to `Integer`
+
+The codegen's `fn_returns` map is populated piecewise:
+
+- Built-in RPC return types are inserted at the start of
+  `gen_bcode` (`bytecode.rs:117–121`).
+- `DeclExtFunc` return types are inserted in pass 1
+  (`bytecode.rs:133–136`).
+- *Regular* `DeclFunc` return types are inserted in pass 2 *at
+  the moment the function decl is emitted*
+  (`bytecode.rs:397–399`).
+
+Pass 2 walks the program in source order. So when a call site
+emits *before* its target function's decl is emitted, the
+codegen's `fn_returns.get(name)` returns `None`. The
+`infer_type` helper used by `display_type` (`bytecode.rs:627–629`)
+silently falls back to `Type::Integer`:
+
+```rust
+Ast::ExprFuncCall { name, .. } => {
+    self.fn_returns.get(name).cloned().unwrap_or(Type::Integer)
+}
+```
+
+Practical impact: `print(forward_call())` where `forward_call`
+returns `str` dispatches via `Inst::PrintInt` instead of
+`Inst::PrintString`. The heap index of the string gets printed
+as a decimal number rather than its content.
+
+Logged as **T9015**. Defense: declare each function *before*
+its first call site, or avoid using forward-called functions
+inside `print` where the return type isn't `int`.
+
+---
+
+## 20.16 Built-in name dispatch precedence
+
+`bytecode.rs:423–481` shows the call-site dispatch order:
+
+1. If the name is exactly `"print"` and `args` is non-empty →
+   `print` dispatch.
+2. Otherwise if the name is exactly `"rpc_request"` →
+   `SerializeRequest`.
+3. Otherwise if the name is exactly `"rpc_response"` →
+   `SerializeResponse`.
+4. Otherwise if the name is exactly `"rpc_name"` →
+   `DeserializeRequestName`.
+5. Otherwise if the name is exactly `"rpc_args"` →
+   `DeserializeRequestArgs`.
+6. Otherwise if the name is exactly `"rpc_data"` →
+   `DeserializeResponseData`.
+7. Otherwise if `self.ext_functions.contains(name)` → `ExtCall`.
+8. Otherwise if `self.functions.get(name)` resolves → local
+   `Call(addr, n)`.
+9. Otherwise → placeholder `Call(0, n)` + `pending_calls.push`.
+
+The first six checks are string-equality against built-in names
+and **happen before the `ext_functions` and local-function
+checks**. A user-declared `ext function rpc_request(...) -> ...;`
+is silently shadowed; the bytecode emitter sees the call name as
+the built-in and emits `Inst::SerializeRequest`, ignoring the
+user's host endpoint binding.
+
+Logged as **T9016**. Defense: don't reuse any of `print`,
+`rpc_request`, `rpc_response`, `rpc_name`, `rpc_args`, `rpc_data`
+as an `ext function` or local function name.
+
+---
+
+## 20.17 CLI parser edge cases
+
+The standalone SOL compiler's CLI (`cli.rs`) supports two flag
+forms:
+
+- `--long-flag` — toggled true if mentioned (e.g. `--debug-tokens`,
+  `--debug-ast`)
+- `-short-option value` — takes a value as the next argument
+
+The implementation has two latent panics worth knowing:
+
+- **Empty argv element.** `arg.chars().nth(0).unwrap()`
+  (`cli.rs:20`) panics on `""`.
+- **Single-character argv element.** `arg.chars().nth(1).unwrap()`
+  (`cli.rs:21`) panics on a bare `-`.
+
+The OS rarely passes empty entries; a bare `-` is uncommon as a
+SOL CLI argument. The panics are unlikely in practice but worth
+noting for tools that wrap the binary. Logged as **T9017**.
+
+The known debug flags the binary recognizes
+(`src/sol/main.rs:18, 24`):
+
+- `--debug-tokens` — dump the lexer's token stream to stderr.
+- `--debug-ast` — dump the parser's `Program` (Vec<Ast>) to
+  stderr.
+
+The binary's exit code is the VM's `run()` return value: zero
+means success, non-zero is treated as test failure
+(`src/sol/main.rs:37–40`). The compiler exits `1` if the program
+returns non-zero. So the conventional `return 0;` at the end of
+`start` matters: it's the success exit code.
+
+---
+
+## 20.18 VM assumptions about emitter correctness
+
+The VM is a deliberately thin interpreter. Many of its handlers
+assume the bytecode was emitted correctly and do not defend
+against malformed sequences. Worth knowing because a future tool
+that emits bytecode directly (bypassing the codegen) must honor
+these assumptions or trigger silent corruption.
+
+| Assumption | Where | What happens if violated |
+|---|---|---|
+| `pop` is called with at least one value on the stack | `vm.rs:77` | `Runtime Error: Stack underflow` panic |
+| `LoadLocal(offset)` / `StoreLocal(offset)` reference valid stack positions | `vm.rs:118–131` | LoadLocal panics on out-of-bounds; StoreLocal grows the stack with `0`-fill (so writes silently succeed for any offset, however large) |
+| Heap indices point at the expected `HeapObject` variant | `vm.rs:189–214, 220–243, 245–261` | The `if let HeapObject::X = ...` silently no-ops — see T9010 |
+| `Call(addr, n)`'s `addr` points at a function body's first instruction | `vm.rs:274–281` | The VM jumps; if `addr` doesn't point at function code, the next op runs as bytecode wherever the data happens to look like an op |
+| `Jump(target)` / `JumpFalse(target)` point inside the program | `vm.rs:264–272` | `inst_ptr` is set; the next `step()` reads `program[inst_ptr]`, which `panic!`s if out of bounds |
+| `Ret` is reached exactly once per frame | `vm.rs:283–293` | Otherwise the call stack and value stack diverge; subsequent `Ret`s read the wrong frame |
+| `RetVal` is preceded by exactly one pushed return value | `vm.rs:295–306` | Otherwise the wrong value is returned to the caller |
+| `print` ops' top-of-stack value matches the declared type | `vm.rs:309–336` | `PrintChar` constructs a char from arbitrary bits and may produce `?`; `PrintString` indexes into the heap and could panic or silently print whatever object is at that index |
+
+These are not bugs; they are the trade-off the VM makes for
+simplicity. A future "verified bytecode" mode would add type
+tags to stack slots and a verifier pass between codegen and
+execution.
+
+---
+
+## 20.19 Compile-time and runtime panic paths summary
+
+Consolidated list of every site that calls `process::exit(1)`
+or `panic!`/`unreachable!()` in the compiler crate. A future
+diagnostic-refactor would convert each of these into a structured
+error result.
+
+### Compile-time (exit before running any code)
+
+- `lexer.rs:298` — unrecognized character
+- `parser.rs:152–154, 191–192, 215, 245, 254, 263, 292, 301, 387, 446, 454, 464, 491, 501, 522, 532, 540, 613, 703, 741, 748` — every parse-error site (`eat()`, `panic!`, and explicit `eprintln + exit`)
+- `analyzer.rs:51` — duplicate symbol
+- `analyzer.rs:175, 191, 203, 207` — type-check errors for control flow
+- `analyzer.rs:222, 229, 236, 249, 256, 267, 276, 285, 293, 311, 319, 327, 334, 348, 353, 360, 368, 377, 385, 392, 400, 412, 418, 422, 428, 439, 444, 449, 470, 486, 493` — type-check errors for expressions
+- `analyzer.rs:460, 465` — array index / index-on-non-array
+- `bytecode.rs:363, 458` — invalid assignment LHS; missing ext endpoint
+- `bytecode.rs:113` — invalid constant AST node passed to `PushConst`
+
+### Runtime (panic during VM execution)
+
+- `vm.rs:77` — stack underflow
+- `vm.rs:113` — invalid constant AST node (defensive; should be unreachable for correctly-emitted bytecode)
+- `vm.rs:138` — `Dup` on empty stack
+- `vm.rs:146` — integer division by zero (via Rust `i64` arithmetic)
+- `vm.rs:345, 350, 358` — `rpc_request` runtime type mismatches
+- `vm.rs:394` — `rpc_response` expected a string
+- `vm.rs:423–430, 440–448, 455–465` — `rpc_*` JSON parse / field-missing
+- `vm.rs:475, 479, 491, 524, 544` — `ExtCall` URL/name type, connect, JSON parse failures
+- Implicit `Vec` out-of-bounds — array index, struct field, heap index — anywhere the VM does `vec[i]` without explicit bounds check
+
+The compile-time list is long. The runtime list is short and
+mostly defensive. Both lists are queued for refactor in
+`SOL_CRATE_IDE_READINESS_PLAN.md` §1 blocker #2 (errors-as-values).
+
+---
+
+## 20.20 Sources cited in this chapter
 
 - `init.rs:14–32` — pipeline composition
 - `bytecode.rs:62–67, 559–578` — `Codegen` locals table and the
   `find_local_offset` quirk
-- `bytecode.rs:123–139, 494–520` — struct layout and field op
-  emission
+- `bytecode.rs:117–139` — pre-registration of RPC builtins, ext
+  functions, struct layouts
 - `bytecode.rs:142–177, 218–223` — `is_expression_node`
   classification and the implicit `Pop`
 - `bytecode.rs:151–157, 478–481` — `pending_calls` fixup
 - `bytecode.rs:272–328` — `for-in` desugar
+- `bytecode.rs:393–422` — function declaration emission with
+  `Jump`-over (§20.13)
+- `bytecode.rs:401–402` — per-function reset of locals/next_slot
+- `bytecode.rs:423–481` — call-site dispatch precedence (§20.16)
 - `bytecode.rs:423–453, 634–654` — `print` dispatch and
   `display_type`
+- `bytecode.rs:494–520` — struct construction / field load/store
 - `bytecode.rs:522–532` — array literal codegen
+- `bytecode.rs:627–629` — `infer_type` fallback to `Integer`
+  (§20.15)
 - `vm.rs:118–131, 274–306` — call frame mechanics
 - `vm.rs:189–214, 220–243, 245–261` — struct/array/string runtime
   ops (silent-no-op behavior — T9010)
@@ -513,5 +782,9 @@ prioritization.
 - `vm.rs:339–476` — RPC serialization layout
 - `vm.rs:469–579` — `ExtCall` transport (T9012)
 - `util.rs:1–42` — `type_eq` helper (T9006 / T9007 / T9008)
+- `cli.rs:19–22` — CLI argv panics (T9017)
+- `src/sol/main.rs:12–44` — compiler binary entry point + debug
+  flags
 - `parser.rs:198–209` — primitive type recognition (T9009)
-- Fixture: `largemini.sol` (uses `string` as a type name — §20.5)
+- Fixtures: `largemini.sol` (uses `string` as a type name —
+  §20.5; asserts content-equality of strings via `eqString`)

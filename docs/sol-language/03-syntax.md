@@ -337,12 +337,22 @@ the alias as a `Void`-typed name (`analyzer.rs:166–171`); no module
 resolution happens today. **Treat `import` as parser-accepted but
 semantically inert** until the analyzer wires it up.
 
-### `let` at top level
+### `let` at top level — **don't use**
 
 `let` is a valid top-level declaration (it's in the dispatcher at
-`parser.rs:185`), but the analyzer doesn't do anything special with
-file-level lets; it adds them to the global type table. Idiomatic
-SOL puts variable declarations inside function bodies.
+`parser.rs:185`), and the analyzer happily registers it in the
+global type table — but the **runtime is broken for this case**.
+The codegen's per-function reset of the local-slot counter
+combined with the runtime's frame-pointer arithmetic means a
+function-body read of a top-level binding either panics on
+out-of-bounds stack access or silently returns unrelated stack
+data.
+
+Full mechanics in [chapter 06 §6.1](./06-variables-and-scope.md),
+[chapter 20 §20.2](./20-implementation-notes.md), and
+[`ERROR_REFERENCE.md#T9014`](./ERROR_REFERENCE.md#t9014--top-level-let-is-broken-reading-from-a-function-panics-at-runtime).
+Idiomatic SOL puts every variable declaration inside a function
+body.
 
 ---
 

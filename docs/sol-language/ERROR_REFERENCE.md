@@ -1151,6 +1151,184 @@ that the host can wrap in its own timeout/retry policy.
 
 ---
 
+### T9014 — Top-level `let` is broken; reading from a function panics at runtime
+
+**Category:** tool — compiler bug (severe; latent because no
+fixture exercises it)
+
+**Description:** A `let` at the top level of a SOL source file
+compiles successfully but does *not* produce a globally-readable
+binding. The mechanics:
+
+1. The analyzer registers the name in the global type table.
+2. The codegen emits `Inst::StoreLocal(0)` (or whatever the next
+   slot happens to be) at the top of the program's main flow.
+   The value is written to `stack[fp + 0]` — and at top-level
+   execution, `fp = 0`, so `stack[0]` gets the value.
+3. Each `DeclFunc` then runs `self.locals.clear()` and
+   `self.next_slot = 0` (`bytecode.rs:401–402`). So inside the
+   function body, the codegen has no record of the top-level
+   binding.
+4. When the function body references the top-level name, the
+   codegen's `find_local_offset` (`bytecode.rs:559–578`) doesn't
+   find it in `locals`, walks `type_tables`, **creates a fresh
+   local at the function's current next_slot** (which starts at
+   `0`), and emits `LoadLocal(0)`.
+5. At runtime, the function's frame pointer `fp` is set to
+   `stack.len() - arg_count` *above* the top-level slot. So
+   `LoadLocal(0)` reads `stack[fp + 0]` — which is past where the
+   top-level value was stored. If the stack is shorter than
+   `fp + 0`, the read **panics** with `index out of bounds`. If
+   the stack happens to have garbage from a prior frame, the
+   read returns garbage.
+
+**Bad example:**
+
+```sol
+let g: int = 42;
+function start() -> int {
+    return g;
+}
+```
+
+**What actually happens:**
+
+- Top-level emits `PushConst(42); StoreLocal(0)` → `stack = [42]`,
+  `fp = 0`.
+- `Jump` past the function body to the appended `Call(start_addr, 0)`.
+- `Call`: pushes a frame, sets `fp = stack.len() - 0 = 1`.
+- Body runs `LoadLocal(0)` → reads `stack[fp + 0] = stack[1]`.
+- `stack.len() == 1` → **index out of bounds → runtime panic.**
+
+**Where it lives:** `bytecode.rs:401–402` (per-function reset of
+locals/next_slot), `bytecode.rs:559–578` (`find_local_offset`
+auto-creates a fresh slot), `vm.rs:118–122` (`LoadLocal` does an
+unchecked stack index).
+
+**Recommendation:** **Don't use top-level `let` in production
+SOL.** Move every binding inside a function. A future fix would
+have the codegen recognize global-scope symbols at the type-table
+level and either emit them as well-known fixed-offset globals or
+desugar reads of them into a separate `LoadGlobal` op.
+
+**Latency:** No fixture in the corpus exercises this — every
+fixture wraps state inside a function. The bug is latent in
+practice, but anyone porting an idiom from another language ("just
+declare a global constant at the top of the file") will hit it
+immediately.
+
+**Severity:** Severe. This is not silent corruption — it is
+either an immediate panic (best case) or a silent read of
+unrelated stack data (worst case).
+
+**Related chapters:** [03 §3.3](./03-syntax.md), [06 §6.1](./06-variables-and-scope.md), [20 §20.2](./20-implementation-notes.md)
+
+---
+
+### T9015 — Local function call's `fn_returns` race for forward calls
+
+**Category:** tool — analyzer/codegen gap
+
+**Description:** The `Codegen.fn_returns` map is populated for
+struct and `ext function` declarations in pass 1
+(`bytecode.rs:124–139`), and for *regular* function declarations
+in pass 2 *at the moment the function is emitted*
+(`bytecode.rs:399`). Built-in RPC return types are also pre-
+registered (`bytecode.rs:117–121`).
+
+The issue: if a call site emits *before* its target function is
+emitted (forward call), the codegen's `fn_returns.get(name)`
+returns `None`. The `infer_type` helper used by `display_type`
+(`bytecode.rs:627–629`) then falls back to `Type::Integer`:
+
+```rust
+Ast::ExprFuncCall { name, .. } => {
+    self.fn_returns.get(name).cloned().unwrap_or(Type::Integer)
+}
+```
+
+Practical impact: `print(forward_call())` where `forward_call`
+returns `str` will dispatch via `Inst::PrintInt`, printing the
+string's heap index as a decimal number rather than its contents.
+
+**Bad example:**
+
+```sol
+function start() -> int {
+    print(get_name());     // forward call; get_name not yet emitted
+    return 0;
+}
+
+function get_name() -> str {
+    return "hello";
+}
+```
+
+**Diagnostic:** none — silent wrong-output bug.
+
+**Recommendation:** Pre-populate `fn_returns` with every regular
+function's return type in pass 1, the same way `DeclExtFunc`
+already does. Until then, declare a function *before* its first
+call site, or accept that `print` of a forward call's result
+prints garbage for non-int return types.
+
+**Where it lives:** `bytecode.rs:117–121, 124–139, 423–432,
+627–629`.
+
+**Latency:** Trips immediately if anyone writes `print(name())`
+where `name`'s return type isn't `int` and `name` is declared
+later in source. No fixture in the corpus exercises this pattern.
+
+**Related chapters:** [13 §13.1](./13-builtins-and-stdlib.md), [20 §20.6](./20-implementation-notes.md)
+
+---
+
+### T9016 — Built-in RPC names shadow user `ext function` declarations
+
+**Category:** tool — language minor
+
+**Description:** The call-site dispatch (`bytecode.rs:423–481`)
+matches the function name against the built-in names *before*
+checking the `ext_functions` set. So if a user declares
+`ext function rpc_request(payload: str) -> str;` and the host
+endpoint table provides a URL for `rpc_request`, the user's
+declaration is silently ignored — every call to `rpc_request`
+is emitted as the built-in `SerializeRequest` op, not as
+`ExtCall`.
+
+**Recommendation:** Don't reuse any of `print`, `rpc_request`,
+`rpc_response`, `rpc_name`, `rpc_args`, `rpc_data` as an `ext
+function` name. The compiler does not warn about the shadow.
+
+**Where it lives:** `bytecode.rs:423–453` (built-in dispatch
+checked first), `bytecode.rs:454–466` (`ext_functions` check
+checked second).
+
+**Related chapter:** [13](./13-builtins-and-stdlib.md), [12 §12.1](./12-imports-and-controllers.md)
+
+---
+
+### T9017 — `CliParser` panics on empty or single-character arguments
+
+**Category:** tool — CLI minor
+
+**Description:** The CLI parser (`cli.rs:19–22`) does
+`arg.chars().nth(0).unwrap()` and `arg.chars().nth(1).unwrap()`.
+An empty argv element (`""`) or a single-character argument (`"-"`)
+panics with `called Option::unwrap() on a None value`.
+
+In practice the OS rarely passes empty argv entries and a bare
+`-` is uncommon as a CLI argument, but this is a real
+uncaught-panic surface in tooling that wraps the SOL compiler
+binary.
+
+**Where it lives:** `cli.rs:19–22`.
+
+**Recommendation:** Replace `.unwrap()` with explicit length
+checks and a friendlier diagnostic.
+
+---
+
 ### T9013 — Bare expression statements emit code that is immediately popped
 
 **Category:** tool — language minor
