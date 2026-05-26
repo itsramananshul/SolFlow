@@ -89,8 +89,35 @@ behavior is flagged as a tool-side mismatch.
 
 ## Status
 
-These docs are written incrementally. The audit (chapter 00) and the
-chapter scope statements (01–19 plus the normative references) land
-first; substantive content lands in subsequent commits. Each chapter
-header carries a clear `Status:` line indicating what is in place
-versus pending.
+| Chapter / file | State |
+|---|---|
+| `00 – 00-source-audit.md` | Substantive |
+| `01 – 01-overview.md` | Scope statement (substantive treatment lives across chapters 02 – 14) |
+| `02 – 02-file-structure.md` | Scope statement; the substantive material lives in chapter 03 + GRAMMAR §2 |
+| `03 – 03-syntax.md` | Substantive |
+| `04 – 04-types.md` | Substantive |
+| `05 – 05-functions.md` | Substantive |
+| `06 – 06-variables-and-scope.md` | Substantive |
+| `07 – 07-control-flow.md` | Substantive |
+| `08 – 08-expressions.md` | Substantive |
+| `09 – 09-structs.md` | Substantive |
+| `10 – 10-enums.md` | Substantive |
+| `11 – 11-arrays.md` | Substantive |
+| `12 – 12-imports-and-controllers.md` | Substantive (host-runtime section dated as a 2026-05-26 snapshot) |
+| `13 – 13-builtins-and-stdlib.md` | Substantive |
+| `14 – 14-runtime-semantics.md` | Substantive |
+| `15 – 15-errors-and-diagnostics.md` | Substantive |
+| `16 – 16-examples.md` | Substantive |
+| `17 – 17-style-guide.md` | Substantive |
+| `18 – 18-solflow-mapping.md` | Substantive |
+| `19 – 19-solman-generation-guide.md` | Substantive |
+| `SPEC.md` | Substantive |
+| `GRAMMAR.md` | Substantive |
+| `ERROR_REFERENCE.md` | Substantive |
+| `EXAMPLES.md` | Substantive (lookup index; the guided tour lives in chapter 16) |
+| `internal-notes.md` | Maintainer-only |
+
+Each chapter header carries its own `Status:` line and snapshot
+date where relevant. When the canonical compiler changes a rule
+that this manual documents, the matching chapter + cross-references
+should be updated in the same documentation pass.
