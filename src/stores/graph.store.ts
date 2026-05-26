@@ -992,17 +992,32 @@ export const useGraphStore = defineStore('graph', () => {
 
   // Debounced autosave + history snapshot. Replays skip both.
   let saveTimer: number | undefined;
+  /**
+   * Synchronously persist the current workflow to localStorage. Called
+   * by both the debounced autosave (after 600ms idle) and the
+   * `beforeunload` handler below so changes made within the debounce
+   * window are not lost when the user closes the tab. Idempotent and
+   * cheap to call repeatedly.
+   */
+  function flushSave() {
+    if (saveTimer !== undefined) {
+      window.clearTimeout(saveTimer);
+      saveTimer = undefined;
+    }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(workflow.value));
+    } catch {
+      /* quota or unavailable — ignore */
+    }
+  }
+
   watch(
     () => workflow.value,
     () => {
       if (isReplaying) return;
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(() => {
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(workflow.value));
-        } catch {
-          /* quota or unavailable — ignore */
-        }
+        flushSave();
       }, 600);
 
       if (historyTimer !== undefined) window.clearTimeout(historyTimer);
@@ -1012,6 +1027,17 @@ export const useGraphStore = defineStore('graph', () => {
     },
     { deep: true },
   );
+
+  // R1.7 / T9036 — flush the autosave debounce on tab close so the
+  // user doesn't lose changes made in the 600ms before they close.
+  // `beforeunload` is the last synchronous opportunity to write to
+  // localStorage; we run flushSave even if no save is pending (cheap
+  // no-op in that case).
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', () => {
+      flushSave();
+    });
+  }
 
   return {
     // state
