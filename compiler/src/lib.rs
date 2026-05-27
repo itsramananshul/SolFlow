@@ -15,10 +15,17 @@ pub mod parser;
 pub mod analyzer;
 pub mod bytecode;
 pub mod util;
+pub mod diagnostic;
+pub mod api;
 
-// Phase B.2 additions — diagnostics + result-returning API. Land
-// in commits 2 onwards; declared here so the module tree is stable
-// from commit 1 and downstream consumers can import either tree.
-//
-// pub mod diagnostic;
-// pub mod api;
+// Convenience re-exports for the most-used public types. Callers
+// can `use solflow_compiler::{compile_source, SolDiagnostic};`
+// without having to remember which module each type lives in.
+pub use api::{
+    AnalyzedProgram, CompileResult, CompiledProgram, analyze_source, compile_source, lex_source,
+    parse_source,
+};
+pub use diagnostic::{
+    DiagnosticPhase, DiagnosticSeverity, RelatedSpan, SolDiagnostic, SourceSpan, codes,
+    format_diagnostic,
+};

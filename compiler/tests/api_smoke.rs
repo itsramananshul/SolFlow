@@ -7,6 +7,7 @@
 //! diagnostics-as-values work fixes that, after which negative
 //! fixtures get their own test file (`diagnostics.rs`).
 
+use solflow_compiler::compile_source;
 use solflow_compiler::lexer::Lexer;
 use solflow_compiler::parser::Parser;
 use solflow_compiler::analyzer::Analyzer;
@@ -64,5 +65,30 @@ fn every_positive_fixture_compiles() {
         // panic, but the assertion guards against silent surprises.
         compile_fixture(name);
         println!("ok: {name}");
+    }
+}
+
+/// Smoke test for the new B.2 public API. Calls `compile_source`
+/// on each positive fixture's text, asserts that the returned
+/// `CompileResult` carries a value and reports no errors. Once
+/// c3-c5 land, this becomes the more rigorous "no diagnostics"
+/// gate; for now it just verifies the API wires up.
+#[test]
+fn compile_source_api_smokes_every_positive_fixture() {
+    for name in POSITIVE_FIXTURES {
+        let path = fixture_path(name);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let result = compile_source(&source);
+        assert!(
+            result.value.is_some(),
+            "{name}: compile_source returned no value"
+        );
+        assert!(
+            !result.has_errors(),
+            "{name}: compile_source reported errors: {:?}",
+            result.diagnostics,
+        );
+        println!("api ok: {name}");
     }
 }

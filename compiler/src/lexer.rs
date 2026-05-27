@@ -203,6 +203,17 @@ impl Lexer {
         }
     }
 
+    /// Construct a lexer from an in-memory source string. Required
+    /// for any caller that doesn't have a file path — notably the
+    /// WASM bridge (B.4) and the editor's source-pane parser path.
+    /// Closes audit blocker #6.
+    pub fn from_str(source: &str) -> Self {
+        Self {
+            source: source.chars().collect(),
+            index: 0usize,
+        }
+    }
+
     pub fn tokens(&mut self) -> Vec<Token> {
         std::iter::from_fn(|| self.next_token()).collect()
     }
