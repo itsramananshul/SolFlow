@@ -901,7 +901,75 @@ export const useGraphStore = defineStore('graph', () => {
   // Bulk replace (for Load + Sample)
   // -----------------------------------------------------------
 
-  function loadWorkflow(wf: SolWorkflow) {
+  /**
+   * Cheap structural schema validation for workflows entering the
+   * store from any source other than the bootstrap path. Returns a
+   * list of human-readable problems (empty on success). Defends
+   * against the T9034 hazard: hand-edited JSON, malformed Sol Man
+   * output, and dropped files can otherwise crash downstream code.
+   *
+   * The check is structural only — no semantic validation; that
+   * happens later via validateWorkflow().
+   */
+  function validateWorkflowShape(wf: unknown): string[] {
+    const problems: string[] = [];
+    if (wf === null || typeof wf !== 'object') {
+      problems.push('Workflow is not a JSON object.');
+      return problems;
+    }
+    const w = wf as Record<string, unknown>;
+    if (w.schemaVersion !== 1) {
+      problems.push(`Unsupported schemaVersion: ${String(w.schemaVersion)}. This editor speaks schemaVersion 1.`);
+    }
+    if (!Array.isArray(w.functions) || w.functions.length === 0) {
+      problems.push('Missing or empty `functions` array.');
+    } else {
+      for (let i = 0; i < w.functions.length; i++) {
+        const fn = w.functions[i] as Record<string, unknown> | null;
+        if (!fn || typeof fn !== 'object') {
+          problems.push(`functions[${i}] is not an object.`);
+          continue;
+        }
+        if (typeof fn.id !== 'string' || fn.id === '') {
+          problems.push(`functions[${i}] has no id.`);
+        }
+        if (typeof fn.name !== 'string') {
+          problems.push(`functions[${i}] has no name.`);
+        }
+        if (!Array.isArray(fn.nodes)) {
+          problems.push(`functions[${i}].nodes is not an array.`);
+        }
+        if (!Array.isArray(fn.edges)) {
+          problems.push(`functions[${i}].edges is not an array.`);
+        }
+      }
+    }
+    if (!Array.isArray(w.imports)) problems.push('Missing `imports` array.');
+    if (!Array.isArray(w.structs)) problems.push('Missing `structs` array.');
+    if (!Array.isArray(w.enums))   problems.push('Missing `enums` array.');
+    if (w.meta === null || typeof w.meta !== 'object') {
+      problems.push('Missing `meta` object.');
+    }
+    return problems;
+  }
+
+  function loadWorkflow(wf: SolWorkflow): boolean {
+    // Validate at the boundary. A malformed workflow rejected here
+    // never reaches the store, so downstream consumers (Inspector,
+    // Canvas, validator, emitter) never see an inconsistent shape.
+    // Closes T9034.
+    const problems = validateWorkflowShape(wf);
+    if (problems.length > 0) {
+      try {
+        useToastStore().error(
+          'Could not load workflow',
+          problems[0] + (problems.length > 1 ? ` (+${problems.length - 1} more)` : ''),
+        );
+      } catch {
+        /* if Pinia isn't ready yet, just skip the toast */
+      }
+      return false;
+    }
     workflow.value = wf;
     activeFunctionId.value = wf.functions[0]?.id ?? '';
     const dropped = rebuildAllPorts();
@@ -920,6 +988,7 @@ export const useGraphStore = defineStore('graph', () => {
         /* if Pinia isn't ready yet, just skip the toast */
       }
     }
+    return true;
   }
 
   function newWorkflow() {

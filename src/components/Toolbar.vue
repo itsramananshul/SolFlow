@@ -153,11 +153,13 @@ async function onFileChosen(event: Event) {
   try {
     const text = await file.text();
     const parsed = JSON.parse(text) as SolWorkflow;
-    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.functions)) {
-      throw new Error('Not a valid SolFlow workflow file.');
+    // loadWorkflow runs full schema validation; we only toast success
+    // when it accepts the workflow. If it returns false it has already
+    // surfaced the specific problem via its own toast.error.
+    const ok = graph.loadWorkflow(parsed);
+    if (ok) {
+      toasts.success('Workflow loaded', `Loaded "${parsed.meta?.name || file.name}".`);
     }
-    graph.loadWorkflow(parsed);
-    toasts.success('Workflow loaded', `Loaded "${parsed.meta?.name || file.name}".`);
   } catch (e) {
     toasts.error('Could not load workflow', (e as Error).message);
   } finally {

@@ -353,11 +353,13 @@ function onDrop(event: DragEvent) {
         .text()
         .then((text) => {
           const parsed = JSON.parse(text);
-          if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.functions)) {
-            throw new Error('Not a SolFlow workflow file');
+          // Defer schema checks to loadWorkflow — it owns the canonical
+          // shape validation and toasts the specific issue. We only
+          // toast success when the store accepts the workflow.
+          const ok = graph.loadWorkflow(parsed);
+          if (ok) {
+            toasts.success('Workflow loaded', `Dropped "${parsed.meta?.name || file.name}" onto the canvas.`);
           }
-          graph.loadWorkflow(parsed);
-          toasts.success('Workflow loaded', `Dropped "${parsed.meta?.name || file.name}" onto the canvas.`);
         })
         .catch((e) => toasts.error('Could not load workflow', (e as Error).message));
       return;
