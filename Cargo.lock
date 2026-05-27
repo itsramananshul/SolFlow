@@ -130,6 +130,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "solflow_host_spec"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "solflow_compiler",
+]
+
+[[package]]
 name = "solflow_runtime"
 version = "0.1.0"
 dependencies = [
