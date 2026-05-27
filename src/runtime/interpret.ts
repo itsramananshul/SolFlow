@@ -1,11 +1,29 @@
 /**
- * SolFlow Phase A — in-browser SOL interpreter.
+ * SolFlow — LEGACY graph-walking JS interpreter.
  *
- * PHASE A — TEMPORARY IMPLEMENTATION.
- * Walks the workflow graph and simulates execution so users can test their
- * workflows in the browser without the SOL controller. Replacement target:
- * Phase B WASM `compile() + VM::run()` running real bytecode against the
- * actual SOL VM.
+ * NOT AUTHORITATIVE — SUPERSEDED BY CANONICAL WASM VM.
+ *
+ * The trusted simulation path is now `runSource()` in
+ * `@/compiler/api`, which compiles the SOL through the canonical
+ * Rust compiler and executes via the canonical SOL VM compiled to
+ * WASM. See `docs/sol-language/SIMULATOR_PARITY.md` for the drift
+ * audit that motivated the replacement.
+ *
+ * This file is kept for two narrow purposes:
+ *   1. The RunModal's canvas playback animation needs per-node
+ *      visit events to highlight nodes as they "execute". The
+ *      canonical VM operates on flat bytecode and doesn't carry
+ *      node-id mapping; rather than synthesize fake mappings we
+ *      keep the JS interpreter as an ANIMATION-ONLY driver. The
+ *      modal label is explicit: "approximate animation".
+ *   2. Sol Man's preview cards run small graph fragments to show
+ *      expected output. Those are short, well-typed snippets where
+ *      JS approximation closely matches canonical semantics. They
+ *      should migrate when canonical-VM run becomes cheap enough
+ *      (it's already fast).
+ *
+ * DO NOT extend this file with new semantics. Add to the runtime
+ * crate instead so canonical and editor stay aligned.
  *
  * Scope:
  * - All 22 wired node kinds (let, assign, print, return, branch, while,

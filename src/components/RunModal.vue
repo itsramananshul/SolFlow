@@ -3,6 +3,8 @@ import { computed, ref, watch } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { recordTrace, type Trace } from '@/runtime/simulate';
+import { runSource } from '@/compiler/api';
+import type { RunEnvelope, RuntimeError } from '@/compiler/types';
 
 const graph = useGraphStore();
 const sim = useSimulationStore();
@@ -10,26 +12,83 @@ const sim = useSimulationStore();
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
+// --- B.10: canonical SOL VM execution (primary) ------------
+//
+// `runEnvelope` holds the result of `compile(emitted) + run`. The
+// `output`, `return_value`, and `runtime_error` shown to the user
+// come from here — these are CANONICAL SOL semantics, not the
+// JS approximation.
+const runEnvelope = ref<RunEnvelope | null>(null);
+
+// --- Legacy JS-trace path (canvas playback only) -----------
+//
+// We still record a JS interpreter trace so the canvas can
+// animate node-by-node playback. That animation is APPROXIMATE
+// (per SIMULATOR_PARITY.md). The modal's text output panel now
+// uses the canonical envelope above; the canvas playback is
+// labeled "approximate animation" so users know not to trust
+// its per-node timing as semantics.
 const trace = ref<Trace | null>(null);
+
 const isRunning = ref(false);
-const result = computed(() => trace.value?.result ?? null);
 
 const tabs = ['output', 'sol'] as const;
 type Tab = (typeof tabs)[number];
 const activeTab = ref<Tab>('output');
 
-function execute() {
+async function execute() {
   isRunning.value = true;
-  // Defer so the UI updates before the synchronous interpreter runs.
-  setTimeout(() => {
-    try {
-      trace.value = recordTrace(graph.workflow);
-      // Kick off canvas playback alongside the modal display.
-      if (trace.value) sim.play(trace.value, { workflow: graph.workflow });
-    } finally {
-      isRunning.value = false;
-    }
-  }, 50);
+  runEnvelope.value = null;
+  trace.value = null;
+  // Defer to next tick so the UI shows "Running…" before WASM kicks in.
+  await new Promise((r) => setTimeout(r, 0));
+  try {
+    // Canonical run (the authoritative output).
+    runEnvelope.value = await runSource(graph.emitted.source);
+    // Legacy JS trace for canvas animation only.
+    trace.value = recordTrace(graph.workflow);
+    if (trace.value) sim.play(trace.value, { workflow: graph.workflow });
+  } finally {
+    isRunning.value = false;
+  }
+}
+
+// ---- Derived display state ----
+const compileFailed = computed(
+  () => runEnvelope.value !== null && !runEnvelope.value.ok,
+);
+const compileDiagnostics = computed(
+  () => runEnvelope.value?.diagnostics ?? [],
+);
+const runResult = computed(() => runEnvelope.value?.run ?? null);
+const runErrorMsg = computed(() => {
+  const err = runResult.value?.runtime_error;
+  if (!err) return null;
+  return formatRuntimeError(err);
+});
+const completedOk = computed(
+  () =>
+    runEnvelope.value !== null
+    && runEnvelope.value.ok
+    && runResult.value !== null
+    && runResult.value.runtime_error === null,
+);
+
+function formatRuntimeError(e: RuntimeError): string {
+  switch (e.kind) {
+    case 'DivByZero':
+      return 'Division by zero.';
+    case 'IndexOutOfBounds':
+      return `Array index out of bounds: index ${e.index}, length ${e.length}.`;
+    case 'StackUnderflow':
+      return 'Stack underflow — this is a compiler bug; please report.';
+    case 'StepLimit':
+      return `Execution step limit reached (${e.limit.toLocaleString()} instructions). The program may have an infinite loop.`;
+    case 'ExtCallBlocked':
+      return `External function call to "${e.function_name}" at ${e.url} is blocked. External calls are not available in browser simulation — deploy to run them for real.`;
+    case 'HeapShapeMismatch':
+      return `Heap shape mismatch: expected ${e.expected}, got ${e.got}. Likely a compiler bug; please report.`;
+  }
 }
 
 function replay() {
@@ -39,8 +98,9 @@ function replay() {
 const copyState = ref<'idle' | 'copied'>('idle');
 
 async function copyOutput() {
-  if (!result.value) return;
-  const text = result.value.output.join('\n');
+  const out = runResult.value?.output;
+  if (!out) return;
+  const text = out.join('\n');
   try {
     await navigator.clipboard.writeText(text);
     copyState.value = 'copied';
@@ -91,7 +151,7 @@ function onBackdrop(e: MouseEvent) {
         <header class="modal-header">
           <div class="header-left">
             <span class="title">Run workflow</span>
-            <span class="subtle">in-browser interpreter · Phase A</span>
+            <span class="subtle">canonical SOL VM · WASM</span>
           </div>
           <div class="header-right">
             <button
@@ -129,14 +189,17 @@ function onBackdrop(e: MouseEvent) {
             {{ t === 'output' ? 'Output' : 'Generated SOL' }}
           </button>
           <div class="tab-spacer" />
-          <div class="status" v-if="result">
+          <div class="status" v-if="runEnvelope">
             <span
               class="status-dot"
-              :class="result.ok ? 'ok' : 'err'"
+              :class="completedOk ? 'ok' : 'err'"
             />
-            {{ result.ok ? 'completed' : 'failed' }}
-            <span class="subtle">
-              · {{ result.steps }} steps · {{ result.durationMs }}ms
+            <template v-if="compileFailed">compile failed</template>
+            <template v-else-if="runResult?.runtime_error">runtime error</template>
+            <template v-else-if="completedOk">completed</template>
+            <template v-else>—</template>
+            <span class="subtle" v-if="runResult">
+              · {{ runResult.steps.toLocaleString() }} step{{ runResult.steps === 1 ? '' : 's' }}
             </span>
           </div>
         </nav>
@@ -145,31 +208,66 @@ function onBackdrop(e: MouseEvent) {
           <!-- Output tab -->
           <section v-if="activeTab === 'output'" class="pane">
             <div v-if="isRunning" class="empty">Running…</div>
-            <template v-else-if="result">
-              <div v-if="result.error" class="error">
-                <strong>Runtime error</strong>
-                <div class="error-msg">{{ result.error }}</div>
+            <template v-else-if="runEnvelope">
+              <!-- Compile errors short-circuit execution -->
+              <div v-if="compileFailed" class="error">
+                <strong>Compile failed — execution skipped</strong>
+                <ul class="diag-list">
+                  <li
+                    v-for="(d, i) in compileDiagnostics"
+                    :key="i"
+                    :class="d.severity.toLowerCase()"
+                  >
+                    <span class="diag-code">{{ d.code }}</span>
+                    <span class="diag-phase">{{ d.phase }}</span>
+                    <span class="diag-msg">{{ d.message }}</span>
+                  </li>
+                </ul>
               </div>
-              <div v-if="result.output.length === 0 && !result.error" class="empty">
+
+              <!-- Runtime error from canonical VM -->
+              <div v-else-if="runErrorMsg" class="error">
+                <strong>Runtime error · {{ runResult?.runtime_error?.kind }}</strong>
+                <div class="error-msg">{{ runErrorMsg }}</div>
+              </div>
+
+              <!-- Empty success -->
+              <div
+                v-else-if="runResult && runResult.output.length === 0 && completedOk"
+                class="empty"
+              >
                 Program ran with no print output.
               </div>
-              <div v-if="result.output.length > 0" class="output-block">
+
+              <!-- Print output -->
+              <div v-if="runResult && runResult.output.length > 0" class="output-block">
                 <div class="output-toolbar">
-                  <span class="output-label">stdout · {{ result.output.length }} {{ result.output.length === 1 ? 'line' : 'lines' }}</span>
+                  <span class="output-label">
+                    stdout · {{ runResult.output.length }} {{ runResult.output.length === 1 ? 'line' : 'lines' }}
+                  </span>
                   <button class="ghost" @click="copyOutput">
                     {{ copyState === 'copied' ? '✓ Copied' : 'Copy' }}
                   </button>
                 </div>
                 <div class="output-rows">
-                  <div v-for="(line, i) in result.output" :key="i" class="output-row">
+                  <div
+                    v-for="(line, i) in runResult.output"
+                    :key="i"
+                    class="output-row"
+                  >
                     <span class="row-num">{{ String(i + 1).padStart(2, ' ') }}</span>
                     <span class="row-text">{{ line }}</span>
                   </div>
                 </div>
               </div>
-              <div v-if="result.returnValue !== undefined" class="return-row">
+
+              <!-- Return value (suppressed on runtime error) -->
+              <div
+                v-if="runResult && runResult.return_value !== null && completedOk"
+                class="return-row"
+              >
                 <span class="subtle">return:</span>
-                <code>{{ formatReturn(result.returnValue) }}</code>
+                <code>{{ formatReturn(runResult.return_value) }}</code>
               </div>
             </template>
           </section>
@@ -192,9 +290,10 @@ function onBackdrop(e: MouseEvent) {
 
         <footer class="modal-footer">
           <span class="subtle">
-            Phase A interpreter: walks the wired graph and evaluates inline
-            expressions client-side. The real SOL VM runs server-side in
-            Phase B.
+            Output above comes from the canonical SOL VM compiled to WASM.
+            Canvas playback animation uses an approximate JS interpreter for
+            per-node highlighting only — trust the text output for semantics.
+            External calls are blocked in browser simulation.
           </span>
         </footer>
       </div>
@@ -396,6 +495,32 @@ function formatReturn(v: unknown): string {
   font-family: var(--sf-font-mono);
   color: var(--sf-text-0);
 }
+.diag-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.diag-list li {
+  display: grid;
+  grid-template-columns: 60px 70px 1fr;
+  gap: 8px;
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+  color: var(--sf-text-0);
+  padding: 2px 0;
+}
+.diag-code { font-weight: 600; }
+.diag-list li.error .diag-code { color: var(--sf-error, #d96666); }
+.diag-list li.warning .diag-code { color: var(--sf-warning); }
+.diag-phase {
+  color: var(--sf-text-3);
+  text-transform: lowercase;
+  font-size: 0.625rem;
+}
+.diag-msg { white-space: pre-wrap; word-break: break-word; }
 .return-row {
   margin-top: 12px;
   display: flex;

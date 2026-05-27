@@ -67,3 +67,48 @@ export interface CompiledProgramView {
   program: Program;
   instruction_count: number;
 }
+
+// ----------------------------------------------------------------
+//  B.10 — canonical-VM execution
+// ----------------------------------------------------------------
+
+/**
+ * Structured runtime error from the canonical SOL VM. Discriminated
+ * union; `kind` is the tag the Rust side serializes via
+ * `#[serde(tag = "kind")]`.
+ */
+export type RuntimeError =
+  | { kind: 'DivByZero' }
+  | { kind: 'IndexOutOfBounds'; index: number; length: number }
+  | { kind: 'StackUnderflow' }
+  | { kind: 'StepLimit'; limit: number }
+  | { kind: 'ExtCallBlocked'; function_name: string; url: string }
+  | { kind: 'HeapShapeMismatch'; expected: string; got: string };
+
+/**
+ * The `run` field of the {@link RunEnvelope}. Null when compile
+ * failed; non-null when execution was attempted (even if it ended
+ * in a runtime error).
+ */
+export interface RunResult {
+  /** Top-of-stack value at termination. Null on runtime error. */
+  return_value: number | null;
+  /** Captured `print` output, in canonical order. */
+  output: string[];
+  /** Number of VM steps executed. */
+  steps: number;
+  /** Structured runtime error if execution didn't complete cleanly. */
+  runtime_error: RuntimeError | null;
+}
+
+/**
+ * The envelope `run_source_json` returns. `ok` reflects
+ * compile-stage success; `run.runtime_error` may still be
+ * non-null on `ok: true`.
+ */
+export interface RunEnvelope {
+  ok: boolean;
+  value: { instruction_count: number } | null;
+  diagnostics: SolDiagnostic[];
+  run: RunResult | null;
+}

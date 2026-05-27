@@ -15,6 +15,7 @@ import type {
   CompileEnvelope,
   CompiledProgramView,
   Program,
+  RunEnvelope,
 } from './types';
 
 // Vite resolves this through the wasm-pack package.json in
@@ -61,6 +62,29 @@ export async function compileSource(
   return JSON.parse(
     mod.compile_source_json(source),
   ) as CompileEnvelope<CompiledProgramView>;
+}
+
+/**
+ * Compile + run a SOL source via the canonical SOL VM (B.10).
+ *
+ * The single entry point for canonical-semantics simulation in
+ * SolFlow. Returns:
+ *   - compile diagnostics (always populated)
+ *   - `run: null` when compile failed
+ *   - `run: { return_value, output, steps, runtime_error }`
+ *     when execution was attempted
+ *
+ * External calls (`ext function ... at <url>`) are intentionally
+ * blocked — `run.runtime_error` will be `{ kind: 'ExtCallBlocked' }`
+ * when the program reaches one. The editor surfaces this honestly
+ * rather than faking a successful HTTP roundtrip.
+ *
+ * Infinite loops are bounded by a step limit (default 1M) on the
+ * Rust side; surfaces as `{ kind: 'StepLimit' }`.
+ */
+export async function runSource(source: string): Promise<RunEnvelope> {
+  const mod = await loadModule();
+  return JSON.parse(mod.run_source_json(source)) as RunEnvelope;
 }
 
 /**
