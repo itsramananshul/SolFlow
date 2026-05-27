@@ -3,25 +3,102 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useGraphStore } from '@/stores/graph.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useUIStore } from '@/stores/ui.store';
+import { useControllerStore } from '@/stores/controller.store';
 import { recordTrace, type Trace } from '@/runtime/simulate';
 import { runSource } from '@/compiler/api';
-import type { RunEnvelope, RuntimeError, SourceSpan } from '@/compiler/types';
+import { compileForController } from '@/runtime-host/encode';
+import {
+  ControllerClientErr,
+  type ControllerClientError,
+} from '@/runtime-host/client';
+import type {
+  RunEnvelope,
+  RuntimeError,
+  SolDiagnostic,
+  SourceSpan,
+} from '@/compiler/types';
+import type { RunRecord } from '@/runtime-host/types';
 import { findNodeForSpan } from '@/graph/nodeLookup';
 
 const graph = useGraphStore();
 const sim = useSimulationStore();
 const ui = useUIStore();
+const controller = useControllerStore();
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-// --- B.10: canonical SOL VM execution (primary) ------------
+// --- B.10: canonical SOL VM execution (browser-sim mode) ----
 //
-// `runEnvelope` holds the result of `compile(emitted) + run`. The
-// `output`, `return_value`, and `runtime_error` shown to the user
-// come from here — these are CANONICAL SOL semantics, not the
-// JS approximation.
+// `runEnvelope` holds the result of `compile(emitted) + run` via
+// the in-browser WASM VM. Output, return value, and runtime_error
+// come from here — canonical SOL semantics, not the JS approx.
 const runEnvelope = ref<RunEnvelope | null>(null);
+
+// --- Phase C C.2 c63: controller-local execution mode -------
+//
+// When `mode === 'controller-local'`, `execute()` compiles for
+// wire, POSTs to the controller, polls until terminal, and the
+// rendered output below pulls from the resulting RunRecord.
+
+type ExecutionMode = 'browser-sim' | 'controller-local';
+
+const STORAGE_KEY_MODE = 'solflow.run.mode';
+const mode = ref<ExecutionMode>(loadStoredMode());
+
+type ControllerRunState =
+  | { kind: 'idle' }
+  | { kind: 'compiling' }
+  | { kind: 'compile_failed'; diagnostics: SolDiagnostic[] }
+  | { kind: 'submitting' }
+  | {
+      kind: 'running';
+      workflowId: string;
+      runId: string;
+      record: RunRecord;
+      startedAt: number;
+    }
+  | {
+      kind: 'done';
+      workflowId: string;
+      runId: string;
+      record: RunRecord;
+      durationMs: number;
+    }
+  | {
+      kind: 'controller_error';
+      phase: 'submit' | 'create' | 'poll';
+      error: ControllerClientError;
+      workflowId?: string;
+      runId?: string;
+    };
+
+const controllerRun = ref<ControllerRunState>({ kind: 'idle' });
+
+/** Abort signal for the active controller run (poll loop). */
+let controllerAbort: AbortController | null = null;
+
+function loadStoredMode(): ExecutionMode {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY_MODE);
+    return v === 'controller-local' ? 'controller-local' : 'browser-sim';
+  } catch {
+    return 'browser-sim';
+  }
+}
+
+function setMode(next: ExecutionMode) {
+  if (next === mode.value) return;
+  mode.value = next;
+  try {
+    localStorage.setItem(STORAGE_KEY_MODE, next);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Disabled when the controller isn't connected. Tooltip explains why. */
+const controllerModeDisabled = computed(() => !controller.isConnected);
 
 // --- Legacy JS-trace path (canvas playback only) -----------
 //
@@ -49,39 +126,298 @@ async function execute() {
   isRunning.value = true;
   runEnvelope.value = null;
   trace.value = null;
+  controllerRun.value = { kind: 'idle' };
+  if (controllerAbort) {
+    controllerAbort.abort();
+    controllerAbort = null;
+  }
   // Defer to next tick so the UI shows "Running…" before WASM kicks in.
   await new Promise((r) => setTimeout(r, 0));
   try {
-    // Canonical run (the authoritative output).
-    runEnvelope.value = await runSource(graph.emitted.source);
-    // Legacy JS trace for canvas animation only.
-    trace.value = recordTrace(graph.workflow);
-    if (trace.value) sim.play(trace.value, { workflow: graph.workflow });
+    if (mode.value === 'browser-sim') {
+      // Canonical run (the authoritative output) in-browser.
+      runEnvelope.value = await runSource(graph.emitted.source);
+      // Legacy JS trace for canvas animation only.
+      trace.value = recordTrace(graph.workflow);
+      if (trace.value) sim.play(trace.value, { workflow: graph.workflow });
+    } else {
+      await executeControllerLocal();
+    }
   } finally {
     isRunning.value = false;
   }
 }
 
+async function executeControllerLocal() {
+  controllerAbort = new AbortController();
+  const abortSignal = controllerAbort.signal;
+
+  // 1. Compile for wire (WASM, same canonical pipeline as browser-sim).
+  controllerRun.value = { kind: 'compiling' };
+  const env = await compileForController(graph.emitted.source);
+  if (!env.ok || !env.value) {
+    controllerRun.value = {
+      kind: 'compile_failed',
+      diagnostics: env.diagnostics,
+    };
+    return;
+  }
+
+  // 2. Submit workflow + create run + poll until terminal.
+  controllerRun.value = { kind: 'submitting' };
+  const client = controller.getClient();
+  const submitStart = Date.now();
+  let workflowId: string | undefined;
+  let runId: string | undefined;
+  try {
+    const submitRes = await client.submitWorkflow(
+      {
+        name: workflowDisplayName(),
+        bytecode: env.value.bytecode,
+        instruction_spans: env.value.instruction_spans,
+        source: graph.emitted.source,
+      },
+      { signal: abortSignal, timeoutMs: 10_000 },
+    );
+    workflowId = submitRes.workflow_id;
+
+    const created = await client.createRun(
+      {
+        workflow_id: workflowId,
+        trigger: { kind: 'Manual' },
+      },
+      { signal: abortSignal, timeoutMs: 5_000 },
+    );
+    runId = created.run_id;
+    controllerRun.value = {
+      kind: 'running',
+      workflowId,
+      runId,
+      record: {
+        id: runId,
+        workflow_id: workflowId,
+        status: created.status,
+        trigger: { kind: 'Manual' },
+        inputs: {},
+        diagnostics: [],
+        created_at: submitStart,
+      },
+      startedAt: submitStart,
+    };
+
+    // 3. Poll until terminal.
+    const final = await client.pollRun(runId, {
+      intervalMs: 150,
+      overallTimeoutMs: 60_000,
+      signal: abortSignal,
+    });
+    const durationMs = Date.now() - submitStart;
+    controllerRun.value = {
+      kind: 'done',
+      workflowId,
+      runId,
+      record: final,
+      durationMs,
+    };
+  } catch (e) {
+    if (e instanceof ControllerClientErr) {
+      const phase: 'submit' | 'create' | 'poll' = workflowId
+        ? (runId ? 'poll' : 'create')
+        : 'submit';
+      controllerRun.value = {
+        kind: 'controller_error',
+        phase,
+        error: e.payload,
+        workflowId,
+        runId,
+      };
+    } else {
+      controllerRun.value = {
+        kind: 'controller_error',
+        phase: 'submit',
+        error: { kind: 'network', message: e instanceof Error ? e.message : String(e) },
+      };
+    }
+  } finally {
+    controllerAbort = null;
+  }
+}
+
+/** Display name for the workflow submission. C.2 doesn't yet have
+ *  workflow names in the graph store, so we synthesize one based
+ *  on the active function. */
+function workflowDisplayName(): string {
+  const fn = graph.workflow.functions.find((f) => f.id === graph.activeFunctionId)
+    ?? graph.workflow.functions[0];
+  return fn ? `editor:${fn.name}` : 'editor:workflow';
+}
+
 // ---- Derived display state ----
-const compileFailed = computed(
-  () => runEnvelope.value !== null && !runEnvelope.value.ok,
-);
-const compileDiagnostics = computed(
-  () => runEnvelope.value?.diagnostics ?? [],
-);
-const runResult = computed(() => runEnvelope.value?.run ?? null);
+//
+// Both modes converge on the same shapes so the rest of the
+// template doesn't need to branch. The browser-sim path reads
+// from `runEnvelope`; the controller-local path reads from
+// `controllerRun` and synthesizes a `RunResult`-shaped object
+// the existing UI rendering can consume unchanged.
+
+/**
+ * True iff a result exists to render. The template uses this in
+ * the same spot it previously checked `runEnvelope`.
+ */
+const hasResult = computed(() => {
+  if (mode.value === 'browser-sim') return runEnvelope.value !== null;
+  const c = controllerRun.value;
+  return c.kind !== 'idle' && c.kind !== 'compiling' && c.kind !== 'submitting';
+});
+
+const compileFailed = computed(() => {
+  if (mode.value === 'browser-sim') {
+    return runEnvelope.value !== null && !runEnvelope.value.ok;
+  }
+  return controllerRun.value.kind === 'compile_failed';
+});
+
+const compileDiagnostics = computed<SolDiagnostic[]>(() => {
+  if (mode.value === 'browser-sim') return runEnvelope.value?.diagnostics ?? [];
+  const c = controllerRun.value;
+  return c.kind === 'compile_failed' ? c.diagnostics : [];
+});
+
+/**
+ * Unified `RunResult`-shaped object. For browser-sim it's the
+ * envelope's `run`. For controller-local we adapt the controller's
+ * `RunRecord` shape — events + structured runtime errors land in
+ * C.5; until then, controller-mode runs render output + return
+ * value, and Failed maps to a synthetic generic-runtime-error.
+ */
+type UnifiedRunResult = NonNullable<RunEnvelope['run']>;
+const runResult = computed<UnifiedRunResult | null>(() => {
+  if (mode.value === 'browser-sim') return runEnvelope.value?.run ?? null;
+  const c = controllerRun.value;
+  if (c.kind !== 'done') return null;
+  const r = c.record;
+  const output = r.output;
+  if (!output) return null;
+  const isFailed = r.status === 'Failed';
+  return {
+    return_value: output.return_value,
+    output: output.output,
+    steps: output.steps,
+    // C.5: controller will populate structured runtime errors via
+    // the event stream. For C.2 we only know the run failed; the
+    // `[controller] ...` line in `output.output` carries the reason.
+    runtime_error: isFailed
+      ? { kind: 'ExtCallBlocked', function_name: '(controller)', url: '(see output)' }
+      : null,
+    runtime_error_source_span: null,
+    // Trace streaming lands in C.5. Empty here is honest, not a
+    // missing feature — the trace tab surfaces this explicitly.
+    trace: [],
+    trace_truncated: false,
+  };
+});
+
 const runErrorMsg = computed(() => {
+  // For controller-local mode, render a tailored "Failed (see
+  // output above)" message instead of the synthesized
+  // ExtCallBlocked variant, which is misleading.
+  if (mode.value === 'controller-local') {
+    const c = controllerRun.value;
+    if (c.kind === 'done' && c.record.status === 'Failed') {
+      return 'Run failed on the controller. See the output below for the controller-side reason. Structured runtime-error details (div-by-zero / step-limit / etc.) stream from the controller in Phase C C.5.';
+    }
+    return null;
+  }
   const err = runResult.value?.runtime_error;
   if (!err) return null;
   return formatRuntimeError(err);
 });
-const completedOk = computed(
-  () =>
-    runEnvelope.value !== null
-    && runEnvelope.value.ok
-    && runResult.value !== null
-    && runResult.value.runtime_error === null,
-);
+
+const completedOk = computed(() => {
+  if (mode.value === 'browser-sim') {
+    return (
+      runEnvelope.value !== null
+      && runEnvelope.value.ok
+      && runResult.value !== null
+      && runResult.value.runtime_error === null
+    );
+  }
+  const c = controllerRun.value;
+  return c.kind === 'done' && c.record.status === 'Succeeded';
+});
+
+// Controller-specific display state.
+
+const controllerPhaseLabel = computed(() => {
+  const c = controllerRun.value;
+  switch (c.kind) {
+    case 'idle':
+      return null;
+    case 'compiling':
+      return 'Compiling locally…';
+    case 'compile_failed':
+      return 'Compile failed';
+    case 'submitting':
+      return 'Submitting workflow to controller…';
+    case 'running':
+      return 'Running on controller…';
+    case 'done':
+      return c.record.status === 'Succeeded' ? 'Completed' : 'Failed';
+    case 'controller_error':
+      return 'Controller error';
+  }
+  return null;
+});
+
+const controllerMeta = computed(() => {
+  const c = controllerRun.value;
+  if (c.kind === 'running' || c.kind === 'done') {
+    return {
+      workflowId: c.workflowId,
+      runId: c.runId,
+      status: c.kind === 'done' ? c.record.status : 'Running',
+      durationMs: c.kind === 'done' ? c.durationMs : null,
+    };
+  }
+  if (c.kind === 'controller_error') {
+    return {
+      workflowId: c.workflowId ?? null,
+      runId: c.runId ?? null,
+      status: 'Errored',
+      durationMs: null,
+    };
+  }
+  return null;
+});
+
+/** Editor↔controller transport-layer error message (NOT runtime). */
+const controllerErrorMessage = computed(() => {
+  const c = controllerRun.value;
+  if (c.kind !== 'controller_error') return null;
+  return formatControllerError(c.phase, c.error);
+});
+
+function formatControllerError(phase: string, e: ControllerClientError): string {
+  const phaseLabel = phase === 'submit'
+    ? 'submitting workflow'
+    : phase === 'create'
+      ? 'creating run'
+      : 'polling run status';
+  switch (e.kind) {
+    case 'network':
+      return `Controller unreachable while ${phaseLabel}. Is solflow-controller still running at ${controller.url}? ${e.message}`;
+    case 'timeout':
+      return `Controller timed out while ${phaseLabel} (${e.timeoutMs}ms). ${e.message}`;
+    case 'http':
+      return `Controller returned HTTP ${e.status}${e.code ? ` (${e.code})` : ''} while ${phaseLabel}. ${e.message}`;
+    case 'decode':
+      return `Controller response couldn't be parsed while ${phaseLabel}. ${e.message}`;
+    case 'version':
+      return `Host-spec major mismatch (controller=${e.controllerMajor}, editor=${e.editorMajor}). Reconnect from the controller settings modal after upgrading.`;
+    case 'aborted':
+      return 'Controller run cancelled.';
+  }
+}
 
 function formatRuntimeError(e: RuntimeError): string {
   switch (e.kind) {
@@ -135,9 +471,32 @@ watch(
   (now, prev) => {
     if (now && !prev) {
       trace.value = null;
+      // If the user previously chose controller-local but the
+      // controller is no longer connected, silently fall back to
+      // browser-sim rather than executing in a broken mode.
+      if (mode.value === 'controller-local' && !controller.isConnected) {
+        setMode('browser-sim');
+      }
       execute();
     } else if (!now) {
       sim.cancel();
+      // Abort any in-flight controller poll so the request doesn't
+      // keep running after the modal closes.
+      if (controllerAbort) {
+        controllerAbort.abort();
+        controllerAbort = null;
+      }
+    }
+  },
+);
+
+// If the controller disconnects while the modal is open and the
+// user is on controller-local mode, drop back to browser-sim.
+watch(
+  () => controller.isConnected,
+  (connected) => {
+    if (!connected && mode.value === 'controller-local' && props.open) {
+      setMode('browser-sim');
     }
   },
 );
@@ -264,14 +623,39 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
         <header class="modal-header">
           <div class="header-left">
             <span class="title">Run workflow</span>
-            <span class="subtle">canonical SOL VM · WASM</span>
+            <span class="subtle">
+              <template v-if="mode === 'browser-sim'">canonical SOL VM · WASM</template>
+              <template v-else>canonical SOL VM · controller {{ controller.url }}</template>
+            </span>
           </div>
           <div class="header-right">
+            <!-- Phase C C.2 c63: execution-mode selector -->
+            <div class="mode-toggle" role="tablist" aria-label="Execution mode">
+              <button
+                class="mode-btn"
+                :class="{ active: mode === 'browser-sim' }"
+                role="tab"
+                :aria-selected="mode === 'browser-sim'"
+                @click="setMode('browser-sim')"
+                title="Run in this browser via WASM. External calls blocked."
+              >Browser sim</button>
+              <button
+                class="mode-btn"
+                :class="{ active: mode === 'controller-local', disabled: controllerModeDisabled }"
+                role="tab"
+                :aria-selected="mode === 'controller-local'"
+                :disabled="controllerModeDisabled"
+                @click="setMode('controller-local')"
+                :title="controllerModeDisabled
+                  ? 'Connect a controller from Controller Settings to enable.'
+                  : 'Run via the connected SolFlow controller.'"
+              >Controller-local</button>
+            </div>
             <button
               class="ghost"
               @click="replay"
-              :disabled="isRunning || !trace || sim.isPlaying"
-              title="Replay simulation animation on canvas"
+              :disabled="isRunning || !trace || sim.isPlaying || mode === 'controller-local'"
+              title="Replay simulation animation on canvas (browser-sim only)"
             >
               ▷ Replay
             </button>
@@ -306,7 +690,25 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
             >{{ traceRows.length }}</span>
           </button>
           <div class="tab-spacer" />
-          <div class="status" v-if="runEnvelope">
+          <div class="status" v-if="controllerPhaseLabel">
+            <span
+              class="status-dot"
+              :class="
+                controllerRun.kind === 'controller_error' ? 'err'
+                : controllerRun.kind === 'done' && controllerRun.record.status === 'Failed' ? 'err'
+                : controllerRun.kind === 'done' ? 'ok'
+                : 'pending'
+              "
+            />
+            {{ controllerPhaseLabel }}
+            <span class="subtle" v-if="controllerMeta?.durationMs != null">
+              · {{ controllerMeta.durationMs }}ms
+            </span>
+            <span class="subtle" v-if="runResult">
+              · {{ runResult.steps.toLocaleString() }} step{{ runResult.steps === 1 ? '' : 's' }}
+            </span>
+          </div>
+          <div class="status" v-else-if="hasResult">
             <span
               class="status-dot"
               :class="completedOk ? 'ok' : 'err'"
@@ -324,8 +726,32 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
         <main class="body">
           <!-- Output tab -->
           <section v-if="activeTab === 'output'" class="pane">
-            <div v-if="isRunning" class="empty">Running…</div>
-            <template v-else-if="runEnvelope">
+            <div v-if="isRunning && !controllerPhaseLabel" class="empty">Running…</div>
+            <!-- Controller mode: show in-flight phase + meta -->
+            <div v-if="controllerPhaseLabel && controllerRun.kind !== 'done'" class="ctrl-status">
+              <div class="ctrl-status-row">
+                <span class="status-dot" :class="
+                  controllerRun.kind === 'controller_error' ? 'err' : 'pending'
+                " />
+                <strong>{{ controllerPhaseLabel }}</strong>
+              </div>
+              <div v-if="controllerMeta" class="ctrl-meta">
+                <div v-if="controllerMeta.workflowId" class="kv">
+                  <span class="k">workflow</span><code class="v">{{ controllerMeta.workflowId }}</code>
+                </div>
+                <div v-if="controllerMeta.runId" class="kv">
+                  <span class="k">run</span><code class="v">{{ controllerMeta.runId }}</code>
+                </div>
+              </div>
+            </div>
+
+            <!-- Controller-side error (network / version / http / etc) -->
+            <div v-if="controllerErrorMessage" class="error">
+              <strong>Controller error</strong>
+              <div class="error-msg">{{ controllerErrorMessage }}</div>
+            </div>
+
+            <template v-if="hasResult">
               <!-- Compile errors short-circuit execution -->
               <div v-if="compileFailed" class="error">
                 <strong>Compile failed — execution skipped</strong>
@@ -402,15 +828,41 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
                 <span class="subtle">return:</span>
                 <code>{{ formatReturn(runResult.return_value) }}</code>
               </div>
+
+              <!-- Controller-mode meta footer for completed runs -->
+              <div
+                v-if="mode === 'controller-local' && controllerMeta && controllerRun.kind === 'done'"
+                class="ctrl-footer"
+              >
+                <div class="kv">
+                  <span class="k">workflow</span><code class="v">{{ controllerMeta.workflowId }}</code>
+                </div>
+                <div class="kv">
+                  <span class="k">run</span><code class="v">{{ controllerMeta.runId }}</code>
+                </div>
+                <div class="kv">
+                  <span class="k">status</span><code class="v">{{ controllerMeta.status }}</code>
+                </div>
+                <div class="kv" v-if="controllerMeta.durationMs != null">
+                  <span class="k">duration</span><code class="v">{{ controllerMeta.durationMs }}ms</code>
+                </div>
+              </div>
             </template>
           </section>
 
-          <!-- Trace pane (B.D c44) -->
+          <!-- Trace pane (B.D c44; controller streaming → C.5) -->
           <section v-if="activeTab === 'trace'" class="pane">
             <template v-if="isRunning">
               <div class="empty">Running…</div>
             </template>
-            <template v-else-if="!runEnvelope || compileFailed">
+            <template v-else-if="mode === 'controller-local'">
+              <div class="empty">
+                Execution trace doesn't stream from the controller
+                yet — that lands in Phase C C.5 (event log + live
+                stream). For trace, switch to Browser sim.
+              </div>
+            </template>
+            <template v-else-if="!hasResult || compileFailed">
               <div class="empty">No execution trace — run a clean program to see one.</div>
             </template>
             <template v-else-if="traceRows.length === 0">
@@ -471,10 +923,18 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 
         <footer class="modal-footer">
           <span class="subtle">
-            Output above comes from the canonical SOL VM compiled to WASM.
-            Canvas playback animation uses an approximate JS interpreter for
-            per-node highlighting only — trust the text output for semantics.
-            External calls are blocked in browser simulation.
+            <template v-if="mode === 'browser-sim'">
+              Output above comes from the canonical SOL VM compiled to WASM.
+              Canvas playback animation uses an approximate JS interpreter for
+              per-node highlighting only — trust the text output for semantics.
+              External calls are blocked in browser simulation.
+            </template>
+            <template v-else>
+              Output above comes from the same canonical SOL VM running inside
+              the connected controller. Run history persists across controller
+              restarts. External calls land in C.4 (HTTP connector); they
+              still produce an honest "blocked" diagnostic for now.
+            </template>
           </span>
         </footer>
       </div>
@@ -595,6 +1055,97 @@ function formatReturn(v: unknown): string {
 }
 .status-dot.err {
   background: var(--sf-error);
+}
+.status-dot.pending {
+  background: var(--sf-warning);
+  animation: sf-pulse 1.2s ease-in-out infinite;
+}
+@keyframes sf-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+/* Phase C C.2 c63: execution-mode toggle in the header */
+.mode-toggle {
+  display: inline-flex;
+  background: var(--sf-bg-0);
+  border: 1px solid var(--sf-border);
+  border-radius: 4px;
+  margin-right: 4px;
+  overflow: hidden;
+}
+.mode-btn {
+  background: transparent;
+  border: none;
+  color: var(--sf-text-2);
+  font-size: 0.6875rem;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.mode-btn + .mode-btn { border-left: 1px solid var(--sf-border); }
+.mode-btn:hover:not(.disabled):not(.active) {
+  background: var(--sf-bg-2);
+  color: var(--sf-text-0);
+}
+.mode-btn.active {
+  background: var(--sf-accent, #5d8acf);
+  color: white;
+}
+.mode-btn.disabled,
+.mode-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Controller-mode status block (mid-run + meta footer) */
+.ctrl-status {
+  background: var(--sf-bg-2);
+  border: 1px solid var(--sf-border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.ctrl-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: var(--sf-text-0);
+}
+.ctrl-meta {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ctrl-footer {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--sf-border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.kv {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.6875rem;
+}
+.kv .k {
+  flex: 0 0 80px;
+  font-size: 0.625rem;
+  color: var(--sf-text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.kv .v {
+  font-family: var(--sf-font-mono);
+  color: var(--sf-text-0);
+  background: var(--sf-bg-0);
+  padding: 0 6px;
+  border-radius: 2px;
 }
 
 .body {
