@@ -64,6 +64,9 @@ cargo run --bin sol -- tests/fixtures/retest.sol
 | B.8 — Graph→source canonicalization | ✅ MVP (determinism + round-trip snapshot tests) |
 | B.9 — Source ↔ graph sync model | 🟡 Philosophy (`docs/sol-language/SYNC_MODEL.md`) |
 | B.10 — Canonical SOL VM in WASM | ✅ MVP (see `../runtime/`) — canonical-VM execution in browser |
+| B.11 — Final stabilization | ✅ DONE (VM hardening + `npm run check` + docs pass) |
+
+**Phase B is complete.** See [`../docs/sol-language/B_RELEASE_NOTES.md`](../docs/sol-language/B_RELEASE_NOTES.md) for the milestone-by-milestone summary.
 
 Notes:
 - [REMAINING_PANICS.md](REMAINING_PANICS.md) — intentional

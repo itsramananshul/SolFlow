@@ -1,138 +1,140 @@
-# SolFlow — Phase A Demo Vertical Slice
+# SolFlow
 
-> Production-grade visual IDE for the **SOL language** — Phase A vertical slice.
->
-> Not a demo gimmick: a real working slice of the product with a deliberately
-> limited language subset and a **temporary** TypeScript exporter that will be
-> replaced by a Rust/WASM compiler bridge in Phase B.
+> Visual IDE for the **SOL language**, backed by the canonical Rust
+> compiler + VM compiled to WebAssembly.
 
-## What this is
+SolFlow is a Vue 3 + Vue Flow editor where you can build workflows
+visually OR edit them as SOL source — both views are coherent
+because they share the same compiler. Diagnostics, parsing, type
+checking, code generation, and execution all run through the
+canonical SOL Rust crates compiled to WASM. No JavaScript
+reimplementation of language semantics owns user-displayed output.
 
-A Vue 3 + Vue Flow + Pinia + CodeMirror app that lets users:
+```
+┌───────────────────────────────┐    ┌──────────────────────────────┐
+│   Visual graph (Vue Flow)     │ ⇄  │   SOL source (CodeMirror)    │
+└──────────────┬────────────────┘    └──────────────┬───────────────┘
+               │ emit (TS)                          │ runSource (WASM)
+               ▼                                    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│       solflow_compiler (Rust) — lexer · parser · analyzer       │
+│       solflow_compiler::bytecode — codegen → Inst[]             │
+│       solflow_runtime (Rust)    — canonical SOL bytecode VM     │
+│       Compiled to WASM via solflow_compiler_wasm bridge         │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-1. **Manual Build** — drag nodes onto a canvas, wire control + data edges,
-   configure node parameters, and watch the live SOL source preview update.
-2. **Import workflow JSON** — load a previously-saved `SolGraph` JSON.
-3. **Export `.sol`** — download the canonical SOL source emitted from the
-   current graph.
-4. **Load sample workflows** — open a real, editable workflow loaded from
-   data (NOT hardcoded UI).
+## What you can do
 
-Supported SOL features:
-
-- multiple functions per file (tab bar)
-- structs + struct literals + field access + field assignment
-- enums + variant access
-- arrays (literal, index read, index write)
-- `while` and `for x in array` loops
-- `if` / `if-else`
-- `let`, assignment, `print`, `return`, user-defined function calls
-- arithmetic / comparison / logical operators
-- imports as a declarative side-panel (not callable in Phase A — SOL itself
-  doesn't resolve them yet)
+- **Build workflows visually** — drag nodes, wire control + data
+  edges, configure parameters, watch the SOL source preview
+  update live.
+- **Edit source with real compiler diagnostics** — open the source
+  pane, click Edit, and see lexer/parser/analyzer/codegen errors
+  with click-to-source navigation. The compiler is the canonical
+  Rust one, running in-browser via WASM.
+- **Import SOL → graph** — paste or load `.sol` source and click
+  "Import to graph". An honest import report classifies every
+  function as Full / Partial / Source-only / Unsupported; nothing
+  is silently dropped.
+- **Run workflows in-browser** — the Run modal compiles + executes
+  through the canonical SOL VM. Print output, return values, and
+  structured runtime errors all come from real bytecode execution.
+- **External calls are honestly blocked** in browser simulation
+  with a structured `ExtCallBlocked` diagnostic — no fake-success.
 
 ## Stack
 
-- **Vue 3** + Composition API + TypeScript (strict)
-- **Vue Flow** for the canvas
-- **Pinia** for state
-- **CodeMirror 6** for the source preview
-- **Vite 5** for dev / build
-- **nanoid** for stable node/edge IDs
+| Layer | Tech |
+|---|---|
+| Editor | Vue 3 (Composition API + TS strict), Vue Flow, Pinia, CodeMirror 6 |
+| Build | Vite 5 + `vite-plugin-wasm` + `vite-plugin-top-level-await` |
+| Compiler | `compiler/` — Rust crate (lexer, parser, analyzer, codegen) |
+| VM | `runtime/` — Rust crate (canonical bytecode interpreter) |
+| Bridge | `compiler-wasm/` — wasm-bindgen WASM bundle |
+| Tests | vitest (TS, 50 tests) + cargo workspace (Rust, 42 tests) |
 
 ## Run it
 
-```bash
-cd solflow-demo
-pnpm install
-pnpm dev           # http://localhost:5173
-```
-
-Build for production:
+One-time:
 
 ```bash
-pnpm build
-pnpm preview
+npm install
 ```
 
-Typecheck only (no emit):
+Dev server:
 
 ```bash
-pnpm typecheck
+npm run dev          # http://localhost:5173
 ```
 
-## Project structure
+Production build:
+
+```bash
+npm run build        # vue-tsc + vite build
+npm run preview
+```
+
+Verify everything (typecheck + TS tests + Rust workspace tests):
+
+```bash
+npm run check
+```
+
+Regenerate the importer's pre-baked AST fixtures (after compiler
+serde changes):
+
+```bash
+npm run regen:fixtures
+```
+
+Rebuild the WASM bundle (after Rust changes — requires
+`cargo install wasm-pack` + `rustup target add wasm32-unknown-unknown`):
+
+```bash
+npm run build:wasm
+```
+
+## Repository layout
 
 ```
-solflow-demo/
-├── src/
-│   ├── main.ts                       Vue app bootstrap
-│   ├── App.vue                       three-pane shell
-│   ├── components/                   UI components
-│   │   ├── Toolbar.vue
-│   │   ├── FunctionTabs.vue
-│   │   ├── Sidebar.vue               tab host: Palette / Types / Imports
-│   │   ├── NodePalette.vue
-│   │   ├── TypesPanel.vue            struct + enum editor
-│   │   ├── ImportsPanel.vue          declarative imports
-│   │   ├── Canvas.vue                Vue Flow wrapper
-│   │   ├── SolNode.vue               single component renders ALL node kinds
-│   │   ├── Inspector.vue             per-kind property editor
-│   │   ├── SourcePreview.vue         live CodeMirror SOL view
-│   │   └── DiagnosticsDrawer.vue
-│   ├── graph/                        graph model + helpers
-│   │   ├── schema.ts                 SolGraph + Node + Edge + Type types
-│   │   ├── kinds.ts                  per-kind palette/port metadata
-│   │   ├── factory.ts                createNode() helpers
-│   │   ├── scope.ts                  in-scope variable walking
-│   │   └── validate.ts               client-side validation
-│   ├── emit/                         **TEMPORARY** Graph→SOL exporter
-│   │   ├── emit.ts                   walks graph, emits SOL string
-│   │   └── README.md                 marks file as temporary; Phase B replaces
-│   ├── stores/
-│   │   ├── graph.store.ts            Pinia: workflow state, undo, autosave
-│   │   └── ui.store.ts               Pinia: panel state
-│   ├── samples/                      sample workflows as DATA
-│   │   ├── hello.json                jjsi-style
-│   │   ├── monitor.json              jj_comp-style
-│   │   ├── orchestration.json        s1-style
-│   │   └── payments.json             s2-style
+SolFlow/
+├── src/                          # Vue editor
+│   ├── components/               # SolNode, SourcePreview, RunModal, ImportReportModal, CompilerDiagnosticPanel, ...
+│   ├── compiler/                 # TS wrapper around the WASM bridge (api.ts, ast.ts, types.ts)
+│   ├── graph/                    # graph schema, factory, validator, emitter, importer
+│   ├── runtime/interpret.ts      # LEGACY — canvas-animation driver only; not authoritative
+│   ├── stores/                   # Pinia: graph, ui, simulation, toast, sol-man
+│   ├── samples/                  # sample workflows (data, not hardcoded)
 │   └── styles/
-│       ├── tokens.css                design tokens (dark theme)
-│       └── theme.css                 component theming
-├── index.html
-├── package.json
-├── tsconfig.json
+├── compiler/                     # Rust — standalone SOL compiler crate
+├── compiler-wasm/                # Rust — wasm-bindgen bridge; pkg/ committed
+├── runtime/                      # Rust — canonical SOL VM, browser-safe
+├── docs/sol-language/            # Language docs (read 00 first)
+├── scripts/                      # Dev tooling (regenerate-ast-fixtures.sh, ...)
 └── vite.config.ts
 ```
 
-## Phase A shortcuts (intentionally temporary)
+## Documentation
 
-Every file below is marked as Phase A; Phase B will replace each with the
-real Rust/WASM compiler bridge. None of these are "fake" — they all work
-correctly, they're just simpler than the production code path.
+| File | Read this when... |
+|---|---|
+| [`docs/sol-language/`](docs/sol-language/README.md) | learning SOL or its compiler |
+| [`docs/sol-language/PHASE_B_COMPILER_IDE_PLAN.md`](docs/sol-language/PHASE_B_COMPILER_IDE_PLAN.md) | catching up on what shipped in Phase B |
+| [`docs/sol-language/B_RELEASE_NOTES.md`](docs/sol-language/B_RELEASE_NOTES.md) | reading the Phase B summary |
+| [`docs/sol-language/IMPORT_COMPATIBILITY.md`](docs/sol-language/IMPORT_COMPATIBILITY.md) | understanding what AST→graph import does + doesn't preserve |
+| [`docs/sol-language/CANONICALIZATION.md`](docs/sol-language/CANONICALIZATION.md) | understanding the canonical export rules |
+| [`docs/sol-language/SYNC_MODEL.md`](docs/sol-language/SYNC_MODEL.md) | understanding why source↔graph sync is explicit-action |
+| [`docs/sol-language/SIMULATOR_PARITY.md`](docs/sol-language/SIMULATOR_PARITY.md) | historical record of JS-sim drift (resolved by canonical-VM-in-WASM) |
+| [`compiler/REMAINING_PANICS.md`](compiler/REMAINING_PANICS.md) | catalogued intentional panic/exit sites |
+| [`compiler/UPSTREAM.md`](compiler/UPSTREAM.md) + [`runtime/UPSTREAM.md`](runtime/UPSTREAM.md) | crate provenance + surgical-edit catalogs |
 
-| Shortcut | What it does | Replacement |
-|---|---|---|
-| `src/emit/emit.ts` | TypeScript walker that converts SolGraph → SOL source. | Phase B: WASM call to `emit_sol(graph_to_ast(graph))`. |
-| `src/graph/validate.ts` | Client-side port-type + missing-input + branch-termination checks. | Phase B: WASM call to `analyze_ast`. |
-| One-way `Graph → SOL` only | No `.sol` import (no parser yet). | Phase B: WASM `parse_sol` lets us import any `.sol`. |
-| `localStorage` autosave + JSON download for persistence | No server. | Phase B: workflows persisted in Postgres via SolFlow server. |
-| No "Run" button | Can't execute SOL from the demo. | Phase B: ship to SOL controller over HTTP/RPC. |
-| Single user, no auth | Browser tab is the session. | Phase B: real auth. |
-| No Sol Man (AI assistant) | Phase 6+. | Phase B+. |
+## Phase status
 
-## Phase A → Phase B migration
-
-The seams that make replacement clean:
-
-- `src/emit/emit.ts` — same TS signature in Phase B; impl delegates to WASM.
-- `src/graph/validate.ts` — same shape; impl calls `analyze_ast`.
-- `src/graph/schema.ts` — strict subset of Phase B's `SolGraph`; forward-compat.
-- All node components — unchanged in Phase B; just more kinds added.
-
-See `reference/SOL_VISUAL_EDITOR_ANALYSIS.md` for the full Phase B plan.
+- **Phase A** — visual editor with TS-only graph + temporary emitter. ✅ Shipped, foundation for Phase B.
+- **Phase B** — canonical Rust compiler + VM compiled to WASM, AST→graph importer, source spans, rich diagnostics, round-trip stability, canonical-VM execution. ✅ Shipped (B.1–B.11).
+- **Phase C** — deployment, controller integration, multi-user, real external calls. Not started.
 
 ## License
 
-TBD — see `reference/WORKFLOW_PLATFORM_BLUEPRINT.md` §21 open decisions.
+TBD.

@@ -1,24 +1,21 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
-> **Status:** B.1–B.10 complete (2026-05-27). SolFlow now runs
-> on **canonical SOL semantics throughout** — the lexer, parser,
-> analyzer, codegen, AND the VM are all the canonical Rust
-> implementations, compiled to WASM. The legacy JS interpreter
-> is reduced to a canvas-animation driver only. The Run modal's
-> output panel displays whatever the canonical SOL VM produces;
-> external network calls are honestly blocked with a structured
-> diagnostic rather than faked.
+> **Status:** Phase B **complete** (2026-05-27, milestones
+> B.1–B.11). See `B_RELEASE_NOTES.md` for the summary. SolFlow
+> runs on canonical SOL semantics throughout the compile +
+> execute pipeline; 92 tests across two test runners verify
+> coherence. `npm run check` runs everything.
 >
-> **What's open in Phase B**: per-node bytecode mapping (would
-> let the canvas highlight semantically-accurate node execution
-> instead of approximate JS-trace), AST-level source spans
-> (would unlock analyzer-row click-to-source + statement-level
-> import attachment), and B.11 stabilization passes. None of
-> these block the "SolFlow is a real compiler-backed IDE"
-> claim — the foundation is in place.
+> **What's deliberately deferred beyond Phase B** (cataloged in
+> `B_RELEASE_NOTES.md` under "What's intentionally not in
+> Phase B"): per-node bytecode mapping, AST-level source spans,
+> Node-target WASM for true end-to-end round-trip tests, Web
+> Worker offloading, `fieldSet`/`indexSet` importer mapping,
+> top-level-let preservation. None block "SolFlow is a real
+> compiler-backed visual IDE."
 >
-> **Branch:** `feat/solflow-phase-a` (Phase B work continues here
-> until a `feat/solflow-phase-b` branch is cut).
+> **Branch:** `feat/solflow-phase-a` — Phase B landed
+> incrementally on this branch.
 
 This document is the master plan for turning SolFlow from a
 graph-first SOL workflow editor into a real compiler-backed SOL
@@ -1082,7 +1079,27 @@ few weeks and closes the same demo-visible gap.
 - No full bytecode-VM-in-WASM port
 - No simulator removal — keep both paths available
 
-### B.11 — Final Phase B stabilization
+### B.11 — Final Phase B stabilization ✅ **DONE** (c32–c34)
+
+> **Landed 2026-05-27.** Three commits:
+>
+> - **c32**: VM hardening sweep — `GetField` / `SetField` OOB
+>   converted from raw `fields[idx]` panics to structured
+>   `RunError::IndexOutOfBounds`. Defense against bytecode the
+>   editor could construct via importer paths the analyzer
+>   hasn't fully validated. 2 new tests.
+> - **c33**: Dev ergonomics — `npm run check` single command runs
+>   typecheck + vitest + workspace cargo test (92 tests total).
+>   New `scripts/regenerate-ast-fixtures.sh` for one-command
+>   importer fixture refresh after compiler serde changes.
+> - **c34**: Documentation pass — root README rewritten
+>   (was Phase-A flavored), new `B_RELEASE_NOTES.md` summarizes
+>   what landed across all 11 milestones, Phase B plan marked
+>   complete. Skipped reliability checklist (canonical VM IS the
+>   reliability fix) and chapter rewrites (would be massive; the
+>   release notes capture what matters).
+
+### B.11 — original plan below
 
 **Goal:** measure, fix, polish, document. The "polish + ship"
 end of Phase B that mirrors A.10's role in Phase A.
