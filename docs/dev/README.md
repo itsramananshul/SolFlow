@@ -12,6 +12,8 @@ compiler, or runtime.
   canonical Phase C contract)
 - **[Phase C Roadmap](./PHASE_C_ROADMAP.md)** — C.1 → C.8
   milestone delivery plan
+- **[Local Controller](./CONTROLLER_LOCAL.md)** — Phase C C.2
+  how-to-run + env vars + API reference + troubleshooting
 - **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — code style + test discipline
 
 ## Deep dives

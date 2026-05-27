@@ -50,39 +50,74 @@ milestones build against a stable contract.
 
 ---
 
-### C.2 — Controller MVP (local)
+### C.2 — Controller MVP (local) ✅ SHIPPED
 
 **Goal.** A running controller binary on `localhost` that accepts
 workflow submissions + creates + executes runs via the canonical
 SOL VM.
 
-**Deliverables.**
-- `controller/` binary target (`cargo run -p solflow_controller`)
-  serving HTTP on a configurable port
-- SQLite persistence (schema from architecture §6) with
-  `sqlx` migrations
-- HTTP API: `POST /workflows`, `POST /runs`, `GET /runs/:id`,
-  `DELETE /runs/:id`, `GET /healthz`
-- Editor connects via `ControllerSettingsModal`; on
-  connect-success, "Run" button gains a Mode selector
-  (browser-sim / controller-local)
-- Editor + controller exchange the new `host-spec` types
-- Run history persists across controller restart
+**Delivered (c59 – c66).**
+- `solflow_controller` binary (`cargo run -p solflow_controller`)
+  serving HTTP on `127.0.0.1:3939` by default, configurable via
+  env vars (`SOLFLOW_CONTROLLER_BIND` / `_DB` / `_STEP_LIMIT` /
+  `_TIMEOUT_SECS`); graceful ctrl-c + SIGTERM shutdown
+- `SqlitePersistence` (sqlx + `migrations/0001_initial.sql`)
+  implementing the `Persistence` trait, with in-memory variant
+  for tests
+- `LocalController` glues persistence + executor; mints workflow
+  / run IDs, content-hashes bytecode for replay + audit
+- HTTP API: `GET /healthz`, `POST /workflows`, `POST /runs`,
+  `GET /runs/:id`, `GET /workflows/:id/runs`,
+  `DELETE /runs/:id` (501 until C.6), uniform JSON error
+  envelopes, permissive CORS
+- `Inst` serde derive (c59) + `host-spec` wire-encoding helpers
+  (`encode_bytecode` / `encode_instruction_spans`) and TS-side
+  `compile_for_wire_json` entry point
+- `src/runtime-host/client.ts` — typed `controllerClient(url)`
+  with structured `ControllerClientError` (kinds: network /
+  timeout / http / decode / version / aborted), AbortSignal
+  timeouts, host-spec major check via `healthzChecked()`,
+  `pollRun` with overall-timeout
+- `useControllerStore` Pinia store + revised
+  `ControllerSettingsModal` with live connect / disconnect /
+  retry + distinct UX for each error kind + persisted URL +
+  silent reconnect on app mount
+- RunModal mode selector (browser-sim / controller-local) with
+  unified result rendering; controller path: compile → POST
+  /workflows → POST /runs → poll; meta footer with workflow_id
+  / run_id / status / duration
+- Per-controller run history (`useControllerRunHistoryStore`):
+  collapsible "Recent runs" with Reopen — re-fetches via
+  `GET /runs/:id` proving persistence survives controller
+  restarts
+- `docs/dev/CONTROLLER_LOCAL.md` — how-to-run + env vars +
+  troubleshooting + API quick reference
 
-**Success criteria.**
-- Editor can submit the Hello sample to a controller and see
+**Success criteria — met.**
+- ✅ Editor can submit the Hello sample to a controller and see
   the same output it gets in browser-sim
-- Editor can see run history across restarts of both editor and
-  controller
-- Step-limit + wall-clock-timeout enforced
+- ✅ Editor can see run history across restarts of both editor
+  and controller (Reopen exercises this)
+- ✅ Step-limit + wall-clock-timeout enforced (covered by
+  `executor::tests::execute_run_step_limit_enforced` +
+  `RunPolicy`)
 
-**Non-goals.**
+**Test coverage.**
+- Rust workspace: 77 tests across compiler / runtime / host-spec
+  / controller (20 controller tests cover persistence, executor,
+  LocalController end-to-end, axum server)
+- TypeScript: 97 vitest including 18-test client-suite
+  (normalization, every method, every error kind, timeout vs
+  abort discrimination, pollRun terminal + timeout)
+
+**Non-goals (deferred as planned).**
 - No real ExtCall — connectors land in C.4; until then,
   controller's ExtCall returns the same `ExtCallBlocked`
   structured error the browser-sim does
 - No scheduling — manual runs only
 - No real-time event stream — clients poll `GET /runs/:id` for
-  status until C.5
+  status; structured runtime-error details + execution trace
+  stream from controller land in C.5
 
 ---
 
@@ -232,8 +267,21 @@ These belong to Phase D or later:
   - c56 host-spec crate + TS mirror
   - c57 controller crate (traits + StubController)
   - c58 editor ControllerSettingsModal stub
-- **C.2 — Controller MVP (local)** — next milestone
-- All later milestones not started
+- **C.2 — Controller MVP (local)** — ✅ complete (c59–c66)
+  - c59 `Inst` serde + host-spec wire-encoding helpers
+  - c60 LocalController + SqlitePersistence + executor + axum
+    server + `solflow-controller` binary
+  - c61 typed `controllerClient(url)` + WASM
+    `compile_for_wire_json` entry point + corrected TS types
+  - c62 `useControllerStore` + live `ControllerSettingsModal`
+    with connect / disconnect / retry + version-mismatch UX
+  - c63 RunModal mode selector + controller-local execution
+    flow + unified result rendering
+  - c64 per-controller run history + Reopen
+  - c65 `CONTROLLER_LOCAL.md` how-to-run + README phase status
+  - c66 TS tests + polish + push
+- **C.3 — Scheduling MVP** — next milestone
+- C.4 / C.5 / C.6 / C.7 / C.8 — not started
 
 ## How to contribute to Phase C
 

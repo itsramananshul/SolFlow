@@ -7,8 +7,40 @@ SolFlow uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing pending — the most recent productization sweep landed as
-v0.2.0.
+### Added — Phase C C.2 (controller MVP, local)
+
+- **`solflow_controller` binary** — `cargo run -p solflow_controller`
+  boots a local HTTP controller (default `127.0.0.1:3939`) with
+  SQLite persistence. Config via `SOLFLOW_CONTROLLER_BIND`,
+  `_DB`, `_STEP_LIMIT`, `_TIMEOUT_SECS` env vars.
+- **`Controller Settings` modal** is now live (was a C.1 stub):
+  real /healthz check, connect/disconnect, retry on error,
+  prominent UX for each failure mode (network / timeout /
+  HTTP / decode / version-mismatch / invalid URL). URL +
+  auto-reconnect persisted to localStorage.
+- **Run modal mode selector** — Browser-sim / Controller-local
+  toggle. Controller-local mode compiles for wire, submits to
+  the controller, polls until terminal, shows workflow_id +
+  run_id + duration. Same canonical SOL VM either way.
+- **Run history per controller** — collapsible "Recent runs"
+  section in the Run modal with Reopen, proving the controller's
+  persistence survives restarts.
+- **Developer docs** — `docs/dev/CONTROLLER_LOCAL.md` with
+  how-to-run, env vars, HTTP API quick reference, troubleshooting.
+
+### Internal
+
+- `host-spec` ships JSON wire-encoding helpers (`encode_bytecode`,
+  `encode_instruction_spans`); `Inst` gains a feature-gated serde
+  derive.
+- New `src/runtime-host/client.ts` — typed `controllerClient(url)`
+  with structured `ControllerClientError`, AbortSignal timeouts,
+  host-spec major check, `pollRun` with overall-timeout.
+- Pinia stores: `useControllerStore` (connection state machine)
+  and `useControllerRunHistoryStore` (per-URL history index).
+- 20 new controller tests (Rust) covering persistence, executor,
+  LocalController end-to-end, and axum routes; 18 new client
+  tests (TS). Workspace totals: 77 Rust + 97 vitest.
 
 ## [0.2.0] — 2026-05-27 — Productization release
 
