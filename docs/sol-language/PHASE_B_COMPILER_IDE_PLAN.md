@@ -1,12 +1,10 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
-> **Status:** B.1, B.2, and B.3 groundwork **complete** (2026-05-27).
-> The standalone Rust compiler now lives in `compiler/` with a
-> `solflow_compiler` library + `sol` CLI; every compile-time error
-> returns a `SolDiagnostic` value rather than aborting the process;
-> AST + diagnostics derive `serde::{Serialize, Deserialize}` behind
-> an opt-in `serde` cargo feature. The crate is ready for the WASM
-> bridge in B.4.
+> **Status:** B.1, B.2, B.3 groundwork, and **B.4 + early B.5
+> complete** (2026-05-27). The standalone Rust compiler now runs
+> in the browser via wasm-bindgen; the SolFlow source editor shows
+> live, canonical compiler diagnostics while you type. AST → graph
+> import is the next major milestone.
 >
 > **Branch:** `feat/solflow-phase-a` (Phase B work continues here
 > until a `feat/solflow-phase-b` branch is cut).
@@ -626,7 +624,18 @@ impossible.
 - No WASM bridge wiring yet (B.4)
 - No mapping from Ast to graph yet (B.7)
 
-### B.4 — WASM bridge MVP
+### B.4 — WASM bridge MVP ✅ **DONE**
+
+> **Landed 2026-05-27.** `compiler-wasm/` sibling crate ships a
+> wasm-bindgen bridge. Exports `parse_source_json`,
+> `analyze_source_json`, `compile_source_json`, `version`. Stable
+> JSON-string envelope: `{ ok, value, diagnostics }`. Panic-safe
+> (catch_unwind → ICE diagnostic). Bundle is 280KB optimized
+> (`opt-level = "z"` + LTO + size-z). Generated `pkg/` is
+> committed so editor devs don't need a Rust toolchain. Vite
+> wires it up via `vite-plugin-wasm` + `vite-plugin-top-level-await`.
+> Native test suite (6/6) pins the envelope shape so the TS side
+> can rely on the contract.
 
 **Goal:** produce a `wasm-pack`-built npm-installable package
 containing the SOL compiler. Expose `compile(source: string):
@@ -680,7 +689,20 @@ milestone is editor-side work consuming the bridge.
 - No new compiler features
 - No graph-mapping work
 
-### B.5 — Parse SOL in browser
+### B.5 — Parse SOL in browser 🟡 **MVP done; full sync deferred**
+
+> **Landed 2026-05-27 (MVP).** Source editor (`SourcePreview.vue`)
+> now runs the canonical compiler against the user's buffer while
+> they edit. 250ms debounce, epoch-based stale-response cancel,
+> ICE-safe panic isolation. Diagnostics shown as `[code] [phase]
+> message` rows under the editor with severity-keyed colors.
+> Detached-edit banner copy updated to reflect the new state.
+>
+> **Still pending for full B.5:** spans (so we can highlight error
+> ranges in CodeMirror — the compiler doesn't yet attach spans at
+> every emit site), Web Worker offloading (debounce + 280KB WASM
+> is fast enough today; revisit on big files), AST → graph
+> importer is its own milestone (B.7).
 
 **Goal:** consume the WASM bridge from SolFlow. Add a "Parse
 this source" path that runs the canonical compiler on whatever

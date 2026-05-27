@@ -57,7 +57,9 @@ cargo run --bin sol -- tests/fixtures/retest.sol
 | B.2 — diagnostics as values | ✅ (lexer + parser + analyzer + codegen) |
 | B.2 polish — internal-error (ICE) boundary + 14-code test sweep | ✅ |
 | B.3 — AST serde derives | ✅ groundwork (feature-gated) |
-| B.4 — WASM bridge | pending |
+| B.4 — WASM bridge | ✅ MVP (see `../compiler-wasm/`) |
+| B.5 — Parse SOL in browser | ✅ MVP (live diagnostics in SourcePreview) |
+| B.7 — AST → graph importer | pending |
 
 Notes:
 - [REMAINING_PANICS.md](REMAINING_PANICS.md) — intentional
