@@ -188,6 +188,101 @@ full execution platform — different product:
 - Deployment / scheduling infrastructure.
 - Collaboration features.
 
+## Deferred-Phase-B bundle (B.D, post-stabilization, 2026-05-27)
+
+After B.11 closed Phase B, a follow-up bundle landed targeting the
+items listed in the original B_RELEASE_NOTES "What's intentionally
+not in Phase B" section. Four of the six items shipped; two stay
+deferred with documented reasoning.
+
+### Shipped
+
+**B.D c35 — AST source spans foundation.** Ten high-value struct
+variants (`Block`, `DeclFunc`, `DeclExtFunc`, `DeclVar`,
+`DeclStruct`, `DeclEnum`, `StmtImport`, `StmtIf`, `StmtWhile`,
+`StmtFor`) gain `span: Option<SourceSpan>` with
+`#[serde(default)]` for backward compat. Parser threads spans
+through; analyzer's `check()` reads them via a `node_span()`
+helper and attaches an approximate-but-real source location to
+every diagnostic. TS-side `ast.ts` mirrors the change with
+optional `span` fields. Tuple variants (`ExprInteger`, `ExprVar`,
+…) stay as-is — converting them for marginal benefit was
+rejected on discipline grounds.
+
+**B.D c37 — Importer expansion.** Three importer upgrades close
+the biggest "partial / source-only" gaps in
+`IMPORT_COMPATIBILITY.md`:
+- `varName.field = expr` → `fieldSet` node (struct name inferred
+  from a function-wide scope scan)
+- `array[i] = expr` → `indexSet` node (`elementType` defaults to
+  `any`; user can retype)
+- Top-level `let` → auto-wrapped into a synthetic `__init()`
+  function (with a notice documenting the scope change)
+- Importer source attachment now prefers AST span over textual
+  function-line scan (`scanFunctionLines` stays as fallback)
+
+**B.D c39 — Node-target WASM + true e2e round-trip tests.** New
+`compiler-wasm/pkg-node/` target (committed). Vitest now runs
+real `parse → import → emit → parse → import → compare` cycles
+via the canonical compiler. Catches integration drift that
+snapshot tests can't (e.g. emit producing syntax the parser
+rejects, HashMap ordering surviving past determinism guards).
+5 fixtures covered; top-level-let intentionally skipped (the
+`__init` auto-wrap is a known semantic-change, not round-trip
+stable).
+
+**B.D c36 — Per-instruction source-span sidecar.** Codegen now
+produces a `Vec<Option<SourceSpan>>` parallel to its `Vec<Inst>`
+output. Approach: save+restore `current_span` around each
+`compile()` call; backfill the sidecar with that span when
+the inner body returns. Granularity is block-level today;
+finer granularity requires per-leaf-expression spans (deferred).
+The VM doesn't yet emit per-step trace events — the data
+foundation is in place; the UI surface (live execution trace
+panel) is a small future commit.
+
+### Deferred (with reasoning)
+
+**B.D c38 — Web Worker offloading.** Skipped this bundle. The
+hot-path `parseSource` + `analyzeSource` runs in <50ms on typical
+files; the UI-freeze risk a worker would mitigate hasn't
+materialized at current scale. Doing it half-baked would mean
+restructuring lazy-load + envelope marshaling without measurable
+user benefit. Documented as intentional defer; revisit when a
+real perf complaint surfaces (long files, large struct
+declarations, or worker-only features like off-thread cancellation).
+
+**Per-statement / per-leaf-expression spans.** Spans on tuple
+variants (`ExprInteger`, `ExprVar`, `ExprString`, etc.) would
+unlock per-token diagnostic precision and per-statement
+canvas highlighting. Doing it without churning every match arm
+in analyzer/importer requires converting tuple variants to
+struct variants — a bigger shape change than this bundle's
+budget. Block-level span attribution covers the most common
+diagnostic UX cases.
+
+### Test scoreboard at B.D close
+
+```
+npm run check → all green
+  typecheck    ✓
+  vitest       ✓ 59 / 59
+    expressions   15
+    importer      11  (+3 fieldSet/indexSet/top-level-let)
+    round-trip    24
+    e2e-round-trip 9  (NEW — true parse→import→emit→parse cycles)
+  cargo workspace
+    compiler smoke      2 /  2
+    compiler diagnostics 12 / 12  (+1 instruction_spans test)
+    compiler serde       5 /  5
+    compiler-wasm       10 / 10
+    runtime             14 / 14
+                       ─────────
+                       43 / 43
+  ─────────────────────────────────
+  total: 102 tests ✓
+```
+
 ## Architectural commitments that survived Phase B
 
 The bigger-picture choices that the work didn't compromise on:

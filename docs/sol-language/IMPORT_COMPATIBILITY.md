@@ -30,7 +30,7 @@ across every statement in every function.
 | `struct Name { f: T, ... }` | **full** | Becomes a `StructDecl`. Field order is **alphabetical** in the imported graph (the AST's HashMap loses insertion order; sorting makes imports deterministic). |
 | `enum Name { V1, V2 }` | **full** | Becomes an `EnumDecl`. Variants ordered by parser-assigned ordinal. |
 | `import "path" as alias;` | **full** | Becomes an `ImportDecl`. Alias defaults to last path segment when omitted. |
-| Top-level `let` | **source-only** | SolFlow's schema doesn't model top-level lets — every binding must live inside a function. The importer surfaces a notice; the let is **lost on round-trip** (graph emitter wouldn't put it back). |
+| Top-level `let` | **partial** | Auto-wrapped into a synthetic `__init()` function (B.D c37). Preserves the binding through round-trip, but changes the let's scope from module-level to function-level — documented via an import notice. (Original was already broken: the graph emit pipeline can't produce module-level lets either, so any cross-function reference would fail analyzer's `SEMA_UNDEFINED_NAME`.) |
 
 ## Statements (inside function bodies)
 
@@ -38,8 +38,8 @@ across every statement in every function.
 |---|---|---|
 | `let name: T = expr;` | **partial** | Becomes a `let` node. `expr` lives as inline text on the `value` port. |
 | `name = expr;` (assignment) | **partial** | Becomes an `assign` node. Parser encodes this as `ExprBinary { op: 'Eq' }`; the importer handles both that and `ExprAssign`. |
-| `a.b = expr;` (field set) | **unsupported** | Placeholder `print` with the original assignment inline. Mapping to the dedicated `fieldSet` node requires resolving the LHS type at import time (B.8 work). |
-| `a[i] = expr;` (index set) | **unsupported** | Same reason — placeholder for now. |
+| `a.b = expr;` (field set) | **partial** | Becomes a `fieldSet` node. Struct name inferred from a function-wide scan of `let varName: TypeName` declarations + params (B.D c37). Falls back to empty `structName` with a warning when inference can't pin a type (typically: assigning through a function-call-returned struct, or deeply-nested member access). |
+| `a[i] = expr;` (index set) | **partial** | Becomes an `indexSet` node. `array`, `index`, `value` all live as inline expressions; `elementType` defaults to `any` (no analyzer type info at import time). |
 | `print(expr);` | **partial** | Becomes a `print` node; `expr` lives as inline text on `value`. Multi-arg `print(a, b)` is rendered as `[a, b]` (graph schema has one value port). |
 | `name(args);` (call) | **partial** | Becomes a `call` node if the function exists in the workflow; otherwise a placeholder `print` carrying `name(args)` as text plus a notice. |
 | `return [expr];` | **partial** | Becomes a `return` node. Optional value lives inline on `value`. |
@@ -89,8 +89,9 @@ Float literals always carry a decimal point in the printed form
 
 | Item | Plan |
 |---|---|
-| `fieldSet` / `indexSet` node mapping | B.8 — needs an analyzer step to resolve LHS types. |
-| Top-level lets | Either extend the graph schema or auto-wrap in an implicit `init()` function on import. |
+| `fieldSet` / `indexSet` node mapping | ✅ Shipped (B.D c37) with scope-based struct-name inference. |
+| Top-level lets | ✅ Shipped (B.D c37) — auto-wrapped into synthetic `__init()`. |
 | `ext function` graph representation | Could be a special trigger sub-kind; needs UI + semantics. |
-| Source-span preservation | Compiler doesn't yet attach spans at every emit site; once they're plumbed, the importer can carry them through into node `meta.sourceSpan` for hover/click-to-source. |
+| Source-span preservation | ✅ Shipped for the 10 high-value AST variants (B.D c35). Analyzer diagnostics + importer `meta.sourceLine` both consume them. Per-statement / per-leaf-expression spans remain coarser. |
+| Per-statement node mapping for fine-grained click-to-source | Build on the c36 `instruction_spans` sidecar — would need finer-grained AST span attachment + a VM step trace. |
 | `IndexMap` for ordered struct fields | Optional polish to keep user-authored field order round-trip safe. |
