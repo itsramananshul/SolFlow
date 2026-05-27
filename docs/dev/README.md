@@ -14,6 +14,8 @@ compiler, or runtime.
   milestone delivery plan
 - **[Local Controller](./CONTROLLER_LOCAL.md)** — Phase C C.2
   how-to-run + env vars + API reference + troubleshooting
+- **[Scheduling](./SCHEDULING.md)** — Phase C C.3 Timer + Event
+  triggers, cron syntax, webhook ingress
 - **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — code style + test discipline
 
 ## Deep dives

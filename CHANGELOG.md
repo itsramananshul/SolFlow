@@ -7,6 +7,39 @@ SolFlow uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Phase C C.3 (scheduling MVP)
+
+- **Timer + Event triggers** — workflows can now run on a cron
+  cadence or in response to webhook POSTs. The controller's
+  tokio scheduler ticks every second; due Timer schedules fire
+  automatically and Event schedules fire on
+  `POST /events/:path`.
+- **`Schedules` modal** (Toolbar clock icon) — workflow-scoped
+  list with enable/disable/delete, create form for Timer
+  (cron expression) and Event (path) triggers, and a test-fire
+  webhook pane so you can validate Event schedules without an
+  external sender.
+- **Schedule persistence** — schedules live in SQLite and survive
+  controller restarts. The scheduler resumes from the persisted
+  `next_fire_at`.
+- **HTTP API additions:**
+  `POST` / `GET` `/workflows/:id/schedules`,
+  `GET` / `DELETE` / `PATCH` `/schedules/:id`,
+  `POST /events/*path` (wildcard for multi-segment paths).
+- **`docs/dev/SCHEDULING.md`** — cron syntax cheatsheet,
+  HTTP API examples, failure-mode table.
+
+### Internal
+
+- 8 new schedule methods on the Persistence trait;
+  `TokioScheduler` in `controller/src/scheduler.rs` owns the
+  tick loop + cron normalization (`*/5 * * * *` style → 7-field
+  internal form).
+- `cron = "0.16"` added as a controller dep.
+- ControllerClient gains 6 schedule methods + structured-error
+  handling for all of them.
+- +14 Rust tests, +6 vitest. Totals: 91 rust + 124 vitest.
+
 ### Added — Phase C C.2 (controller MVP, local)
 
 - **`solflow_controller` binary** — `cargo run -p solflow_controller`

@@ -121,24 +121,64 @@ SOL VM.
 
 ---
 
-### C.3 — Scheduling MVP
+### C.3 — Scheduling MVP ✅ SHIPPED
 
 **Goal.** Timer + event triggers actually fire and create runs.
 
-**Deliverables.**
-- `schedules` table populated
-- Tokio scheduler task running cron expressions
-- `POST /workflows/:id/schedules` endpoint
-- Webhook endpoint `POST /events/:path` creates an Event-trigger
-  run
-- Editor "Schedules" panel in the workflow inspector
+**Delivered (c67 – c73).**
+- `migrations/0002_schedules.sql` — schedules table + partial
+  index on `(enabled, next_fire_at)` for the tick hot path
+- Persistence trait gains 8 schedule methods (put / get /
+  delete / list_for_workflow / list_due_timer /
+  list_enabled_event / update_next_fire / set_enabled)
+- `TokioScheduler` (controller/src/scheduler.rs) — 1s tick loop
+  that fires due Timer schedules, advances `next_fire_at` from
+  the cron expression, and handles webhook ingress via
+  `ingress_event(path, body)`
+- `LocalController::new()` starts the scheduler tick on boot;
+  `create_schedule` impl + non-trait helpers
+  (list/cancel/set_enabled/ingress_event) for the HTTP layer
+- HTTP routes: `POST` / `GET` `/workflows/:id/schedules`,
+  `GET` / `DELETE` / `PATCH` `/schedules/:id`,
+  `POST /events/*path` (wildcard for multi-segment paths)
+- TS `ControllerClient` gains createSchedule / listSchedules /
+  getSchedule / setScheduleEnabled / cancelSchedule /
+  triggerEvent
+- `SchedulesModal` (Toolbar → clock icon) — workflow-scoped
+  schedule list with enable/disable/delete, create form
+  (Timer cron / Event path), manual webhook-trigger pane for
+  testing
+- `docs/dev/SCHEDULING.md` — cron syntax + HTTP API examples
+  + failure-mode table
 
-**Success criteria.**
-- A Timer-triggered workflow with `*/5 * * * *` fires every 5
-  minutes
-- A schedule survives controller restart
-- A webhook POST creates a new run with the request body as
-  inputs
+**Success criteria — met.**
+- ✅ A Timer-triggered workflow with `*/5 * * * *` fires
+  automatically (live-tested: a `* * * * *` Timer registered at
+  T+0 produced two `Timer`-trigger runs by T+20s)
+- ✅ A schedule survives controller restart — same SQLite path,
+  schedules persist; scheduler tick resumes from `next_fire_at`
+- ✅ A webhook POST creates a new run with the request body as
+  inputs — `POST /events/ci/build` with `{"ref":"main"}`
+  produces a run with `inputs: {"ref":"main"}` and
+  `trigger.kind="Event"`
+
+**Test coverage.**
+- 41 controller tests (+14 over C.2): 7 persistence
+  (schedule CRUD + due filtering + enable/disable + delete),
+  9 scheduler (cron parse + register/cancel + ingress_event
+  match/no-match + end-to-end tick), 5 server route
+  (post_schedule happy + invalid-cron, full lifecycle,
+  unmatched path 404, matched event with inputs)
+- 124 vitest (+6): client suite covers all 6 new HTTP methods
+  including 404-no-match path
+
+**Non-goals (deferred as planned).**
+- No backfill / catchup semantics — if the controller is down
+  when a Timer should fire, the run doesn't backfill; next
+  scheduled fire continues normally
+- No timezone support — cron evaluates in UTC
+- No sub-second tick — fixed 1s cadence; sub-second scheduling
+  isn't a Phase C target
 
 ---
 
@@ -280,8 +320,16 @@ These belong to Phase D or later:
   - c64 per-controller run history + Reopen
   - c65 `CONTROLLER_LOCAL.md` how-to-run + README phase status
   - c66 TS tests + polish + push
-- **C.3 — Scheduling MVP** — next milestone
-- C.4 / C.5 / C.6 / C.7 / C.8 — not started
+- **C.3 — Scheduling MVP** — ✅ complete (c67–c73)
+  - c67 schedules table + Persistence trait extension
+  - c68 TokioScheduler (cron + event triggers)
+  - c69 LocalController integration + HTTP routes
+  - c70 TS client schedule methods
+  - c71 Editor SchedulesModal
+  - c72 SCHEDULING.md + roadmap + CHANGELOG
+  - c73 store tests + polish + close
+- **C.4 — Connector framework** — next milestone
+- C.5 / C.6 / C.7 / C.8 — not started
 
 ## How to contribute to Phase C
 
