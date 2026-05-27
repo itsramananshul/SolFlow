@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useSimulationStore } from '@/stores/simulation.store';
+import { useUIStore } from '@/stores/ui.store';
 import { recordTrace, type Trace } from '@/runtime/simulate';
 import { runSource } from '@/compiler/api';
-import type { RunEnvelope, RuntimeError } from '@/compiler/types';
+import type { RunEnvelope, RuntimeError, SourceSpan } from '@/compiler/types';
+import { findNodeForSpan } from '@/graph/nodeLookup';
 
 const graph = useGraphStore();
 const sim = useSimulationStore();
+const ui = useUIStore();
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -32,9 +35,15 @@ const trace = ref<Trace | null>(null);
 
 const isRunning = ref(false);
 
-const tabs = ['output', 'sol'] as const;
+const tabs = ['output', 'trace', 'sol'] as const;
 type Tab = (typeof tabs)[number];
 const activeTab = ref<Tab>('output');
+
+function tabLabel(t: Tab): string {
+  if (t === 'output') return 'Output';
+  if (t === 'trace') return 'Trace';
+  return 'Generated SOL';
+}
 
 async function execute() {
   isRunning.value = true;
@@ -135,6 +144,102 @@ watch(
 
 const sourceLines = computed(() => graph.emitted.source.split('\n'));
 
+// ----- B.D c44: execution trace UX helpers -----
+
+interface TraceRow {
+  index: number;
+  span: SourceSpan;
+  line: number;
+  col: number;
+  snippet: string;
+  /** If the span maps to a graph node, the node's id (canvas
+   *  focus target). Null means source-only navigation. */
+  nodeId: string | null;
+  /** Function name when nodeId is set (display only). */
+  fnName: string | null;
+}
+
+/** 1-indexed (line, col) for a byte offset into `source`. */
+function lineColAt(source: string, offset: number): { line: number; col: number } {
+  let line = 1;
+  let col = 1;
+  for (let i = 0; i < offset && i < source.length; i++) {
+    if (source.charCodeAt(i) === 10) { line++; col = 1; }
+    else col++;
+  }
+  return { line, col };
+}
+
+/** Source slice for a span, clamped, with newline → ⏎ for inline display. */
+function snippetFor(source: string, span: SourceSpan, max = 60): string {
+  const clamped = source.slice(span.start, Math.min(span.end, source.length));
+  const compact = clamped.replace(/\s+/g, ' ').trim();
+  if (compact.length === 0) return '(empty)';
+  return compact.length > max ? compact.slice(0, max - 1) + '…' : compact;
+}
+
+const traceRows = computed<TraceRow[]>(() => {
+  const tr = runResult.value?.trace ?? [];
+  if (tr.length === 0) return [];
+  const source = graph.emitted.source;
+  return tr.map((span, index) => {
+    const { line, col } = lineColAt(source, span.start);
+    const match = findNodeForSpan(graph.workflow, span);
+    return {
+      index,
+      span,
+      line,
+      col,
+      snippet: snippetFor(source, span),
+      nodeId: match?.node.id ?? null,
+      fnName: match?.fn.name ?? null,
+    };
+  });
+});
+
+const runtimeErrorLocation = computed(() => {
+  const r = runResult.value;
+  if (!r || !r.runtime_error_source_span) return null;
+  const source = graph.emitted.source;
+  const { line, col } = lineColAt(source, r.runtime_error_source_span.start);
+  const match = findNodeForSpan(graph.workflow, r.runtime_error_source_span);
+  return {
+    line,
+    col,
+    snippet: snippetFor(source, r.runtime_error_source_span),
+    nodeId: match?.node.id ?? null,
+    fnName: match?.fn.name ?? null,
+  };
+});
+
+/**
+ * Jump to a graph node on the canvas (uses the existing
+ * `ui.requestFocus` mechanism that Canvas + DiagnosticsDrawer
+ * also use) AND switch to its containing function. Closes the
+ * Run modal so the canvas is visible.
+ */
+function jumpToNode(fnName: string | null, nodeId: string | null) {
+  if (!nodeId) return;
+  if (fnName) {
+    const fn = graph.workflow.functions.find((f) => f.name === fnName);
+    if (fn) graph.setActiveFunction(fn.id);
+  }
+  ui.requestFocus(nodeId);
+  // Defer the close one frame so the focus request commits before
+  // the modal unmounts.
+  void nextTick(() => close());
+}
+
+/** Scroll the SOL preview tab to a specific line. Only meaningful
+ *  when the user is on the 'sol' tab; we switch them there. */
+function focusSourceLine(line: number) {
+  activeTab.value = 'sol';
+  void nextTick(() => {
+    const el = document.querySelector(`[data-sol-line="${line}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+}
+
 function close() {
   emit('close');
 }
@@ -186,7 +291,11 @@ function onBackdrop(e: MouseEvent) {
             :class="{ active: activeTab === t }"
             @click="activeTab = t"
           >
-            {{ t === 'output' ? 'Output' : 'Generated SOL' }}
+            {{ tabLabel(t) }}
+            <span
+              v-if="t === 'trace' && traceRows.length > 0"
+              class="tab-badge"
+            >{{ traceRows.length }}</span>
           </button>
           <div class="tab-spacer" />
           <div class="status" v-if="runEnvelope">
@@ -229,6 +338,22 @@ function onBackdrop(e: MouseEvent) {
               <div v-else-if="runErrorMsg" class="error">
                 <strong>Runtime error · {{ runResult?.runtime_error?.kind }}</strong>
                 <div class="error-msg">{{ runErrorMsg }}</div>
+                <!-- B.D c44: source span + optional node link -->
+                <div v-if="runtimeErrorLocation" class="error-where">
+                  <span class="subtle">at line {{ runtimeErrorLocation.line }}:{{ runtimeErrorLocation.col }}</span>
+                  ·
+                  <button
+                    class="link"
+                    @click="focusSourceLine(runtimeErrorLocation.line)"
+                  >show source</button>
+                  <template v-if="runtimeErrorLocation.nodeId">
+                    ·
+                    <button
+                      class="link"
+                      @click="jumpToNode(runtimeErrorLocation.fnName, runtimeErrorLocation.nodeId)"
+                    >show on canvas ({{ runtimeErrorLocation.fnName }})</button>
+                  </template>
+                </div>
               </div>
 
               <!-- Empty success -->
@@ -272,6 +397,53 @@ function onBackdrop(e: MouseEvent) {
             </template>
           </section>
 
+          <!-- Trace pane (B.D c44) -->
+          <section v-if="activeTab === 'trace'" class="pane">
+            <template v-if="isRunning">
+              <div class="empty">Running…</div>
+            </template>
+            <template v-else-if="!runEnvelope || compileFailed">
+              <div class="empty">No execution trace — run a clean program to see one.</div>
+            </template>
+            <template v-else-if="traceRows.length === 0">
+              <div class="empty">Execution produced no source-mapped steps.</div>
+            </template>
+            <template v-else>
+              <div class="output-toolbar">
+                <span class="output-label">
+                  {{ traceRows.length }} step{{ traceRows.length === 1 ? '' : 's' }}
+                  ({{ runResult?.steps }} VM instruction{{ runResult?.steps === 1 ? '' : 's' }})
+                </span>
+                <span v-if="runResult?.trace_truncated" class="trunc-tag">
+                  truncated at cap
+                </span>
+              </div>
+              <ul class="trace-list">
+                <li
+                  v-for="row in traceRows"
+                  :key="row.index"
+                  class="trace-row"
+                  :class="{ 'has-node': !!row.nodeId }"
+                >
+                  <span class="trace-step">#{{ row.index + 1 }}</span>
+                  <button
+                    class="trace-loc"
+                    :title="`Show source line ${row.line}`"
+                    @click="focusSourceLine(row.line)"
+                  >line {{ row.line }}:{{ row.col }}</button>
+                  <code class="trace-snippet">{{ row.snippet }}</code>
+                  <button
+                    v-if="row.nodeId"
+                    class="trace-node"
+                    :title="`Focus this node on the canvas (${row.fnName})`"
+                    @click="jumpToNode(row.fnName, row.nodeId)"
+                  >→ canvas</button>
+                  <span v-else class="trace-no-node">(no graph mapping)</span>
+                </li>
+              </ul>
+            </template>
+          </section>
+
           <!-- SOL preview -->
           <section v-if="activeTab === 'sol'" class="pane">
             <div class="output-toolbar">
@@ -284,6 +456,7 @@ function onBackdrop(e: MouseEvent) {
               v-for="(line, i) in sourceLines"
               :key="i"
               class="sol-line"
+              :data-sol-line="i + 1"
             ><span class="ln">{{ String(i + 1).padStart(2, ' ') }}</span>{{ line }}<br></span></pre>
           </section>
         </main>
@@ -521,6 +694,96 @@ function formatReturn(v: unknown): string {
   font-size: 0.625rem;
 }
 .diag-msg { white-space: pre-wrap; word-break: break-word; }
+
+/* B.D c44 — execution trace UI */
+.tab-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(98, 154, 220, 0.18);
+  color: var(--sf-text-0);
+  font-size: 0.5625rem;
+  font-family: var(--sf-font-mono);
+}
+.error-where {
+  margin-top: 8px;
+  font-size: 0.6875rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+.link {
+  background: transparent;
+  border: none;
+  color: var(--sf-accent, #5d8acf);
+  font-size: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.link:hover { color: var(--sf-text-0); }
+.trunc-tag {
+  font-size: 0.625rem;
+  font-family: var(--sf-font-mono);
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(232, 166, 87, 0.18);
+  color: var(--sf-warning);
+}
+.trace-list { list-style: none; padding: 0; margin: 0; }
+.trace-row {
+  display: grid;
+  grid-template-columns: 48px 88px 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 12px;
+  font-size: 0.6875rem;
+  font-family: var(--sf-font-mono);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+.trace-row.has-node { background: rgba(98, 154, 220, 0.04); }
+.trace-step {
+  color: var(--sf-text-3);
+  text-align: right;
+}
+.trace-loc {
+  background: transparent;
+  border: none;
+  color: var(--sf-accent, #5d8acf);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+.trace-loc:hover { text-decoration: underline; }
+.trace-snippet {
+  color: var(--sf-text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-node {
+  background: rgba(98, 154, 220, 0.14);
+  border: 1px solid rgba(98, 154, 220, 0.3);
+  color: var(--sf-text-0);
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 0.625rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+.trace-node:hover {
+  background: rgba(98, 154, 220, 0.28);
+}
+.trace-no-node {
+  color: var(--sf-text-3);
+  font-size: 0.625rem;
+  font-style: italic;
+}
 .return-row {
   margin-top: 12px;
   display: flex;
