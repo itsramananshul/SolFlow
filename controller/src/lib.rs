@@ -32,10 +32,12 @@
 pub mod executor;
 pub mod local;
 pub mod persistence;
+pub mod scheduler;
 pub mod server;
 
 pub use local::LocalController;
 pub use persistence::SqlitePersistence;
+pub use scheduler::TokioScheduler;
 
 use async_trait::async_trait;
 use solflow_host_spec::{
