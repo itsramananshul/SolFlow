@@ -3,7 +3,8 @@
  *
  * Demonstrates: imports + enum + struct + multiple helper functions +
  * nested if/else + enum variant comparison + struct construction.
- * This is the OpenPrem control-plane showcase workflow.
+ * A canonical multi-construct workflow used to exercise the editor's
+ * full node set in one program.
  */
 
 import {

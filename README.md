@@ -135,6 +135,11 @@ SolFlow/
 - **Phase B** — canonical Rust compiler + VM compiled to WASM, AST→graph importer, source spans, rich diagnostics, round-trip stability, canonical-VM execution. ✅ Shipped (B.1–B.11).
 - **Phase C** — deployment, controller integration, multi-user, real external calls. Not started.
 
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for repo layout, dev
+setup, and contribution guidelines.
+
 ## License
 
-TBD.
+MIT — see [`LICENSE`](./LICENSE).

@@ -28,7 +28,7 @@ export const SAMPLES: Sample[] = [
   {
     id: 'orchestration',
     name: 'Service Orchestration',
-    description: 'Full OpenPrem orchestration pattern: imports, enum, struct, multiple helpers. Modelled on s1.sol.',
+    description: 'Full orchestration pattern: imports, enum, struct, multiple helpers. Modelled on s1.sol.',
     build: buildOrchestration,
   },
   {

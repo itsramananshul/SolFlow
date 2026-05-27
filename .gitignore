@@ -1,6 +1,6 @@
-# Local reference material — never push.
-# Holds notes Claude built for itself + .sol fixtures borrowed from
-# the open-prem-main repo. Not part of SolFlow's deliverables.
+# Local maintainer-only reference material — never push.
+# Holds notes + .sol fixtures used during development. Not part of
+# SolFlow's deliverables.
 reference/
 
 # Standard ignores (will grow as MVP scaffolds)
