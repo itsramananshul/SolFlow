@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 
-use crate::{lexer::Token, parser::{Ast, Program, Type}, util::type_eq};
+use crate::{
+    diagnostic::{codes, DiagnosticPhase, SolDiagnostic},
+    lexer::Token,
+    parser::{Ast, Program, Type},
+    util::type_eq,
+};
 
 #[derive(Debug, Clone)]
 pub enum Symbol {
@@ -22,6 +27,10 @@ pub struct Analyzer {
     tts: Vec<TypeTableId>,
     can_break: bool,
     can_return: bool,
+    /// Diagnostics produced during analysis. Replaces the upstream
+    /// `eprintln! + process::exit(1)` pattern; callers drain this
+    /// after `run()` to surface every semantic error in one pass.
+    pub diagnostics: Vec<SolDiagnostic>,
 }
 
 impl Analyzer {
@@ -31,7 +40,19 @@ impl Analyzer {
             tts: Vec::new(),
             can_break: false,
             can_return: false,
+            diagnostics: Vec::new(),
         }
+    }
+
+    /// Push a semantic-phase error diagnostic onto the buffer.
+    /// Callers should then `return None` from `check()` so the
+    /// outer `?` propagator stops cascading into derived errors.
+    fn emit_error(&mut self, code: &'static str, message: impl Into<String>) {
+        self.diagnostics.push(SolDiagnostic::error(
+            DiagnosticPhase::Analyzer,
+            code,
+            message,
+        ));
     }
 
     fn new_table(&mut self) -> TypeTableId {
@@ -47,12 +68,11 @@ impl Analyzer {
         if self.tt_arena.is_empty() { self.new_table(); }
 
         let id = self.tts.last().unwrap();
-        if self.tt_arena[*id].insert(name.clone(), symbol.clone()).is_some() {
-            eprintln!("\x1b[0;31merror\x1b[0;0m: redefinition of `{}`", name);
-            std::process::exit(1);
+        if self.tt_arena[*id].insert(name.clone(), symbol).is_some() {
+            // Redefinition is reported but we keep the newer entry;
+            // continuing lets us surface every error in one analyze pass.
+            self.emit_error(codes::SEMA_REDEFINITION, format!("redefinition of `{name}`"));
         }
-
-        // eprintln!("[DEBUG] added {name} as {symbol:?}");
     }
     fn get_entry(&mut self, name: &String) -> Option<&Symbol> {
         let tables = self.tts.iter().map(|i| &self.tt_arena[*i]);
@@ -172,8 +192,11 @@ impl Analyzer {
             Ast::StmtIf { condition, body, alt } => {
                 let cond = self.check(condition)?;
                 if type_eq(cond.clone(), Type::Bool).is_err() {
-                    eprintln!("condition of if statement must be of type `bool`, got {:?}", cond);
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_WRONG_CONDITION_TYPE,
+                        format!("condition of if statement must be of type `bool`, got {cond:?}"),
+                    );
+                    return None;
                 }
                 self.check(body);
                 match alt {
@@ -188,8 +211,11 @@ impl Analyzer {
             Ast::StmtWhile { condition, body } => {
                 let cond = self.check(&mut *condition)?;
                 if type_eq(cond.clone(), Type::Bool).is_err() {
-                    eprintln!("condition of if statement must be of type `bool`, got {:?}", cond);
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_WRONG_CONDITION_TYPE,
+                        format!("condition of while statement must be of type `bool`, got {cond:?}"),
+                    );
+                    return None;
                 }
                 let old = self.can_break;
                 self.can_break = true;
@@ -199,13 +225,13 @@ impl Analyzer {
                 Some(Type::Void)
             }
             Ast::StmtFor { elem_name, array, body } => {
-                let Some(arr_type) = self.check(array) else {
-                    eprintln!("array in which for loop is iterating over must have the known type `Array`");
-                    std::process::exit(1);
-                };
+                let arr_type = self.check(array)?;
                 let Type::Array { inner, .. } = arr_type else {
-                    eprintln!("array in which for loop is iterating over must have the known type `Array`");
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_FOR_IN_NOT_ARRAY,
+                        "array in which for loop is iterating over must have the known type `Array`",
+                    );
+                    return None;
                 };
 
                 self.add_entry(elem_name.to_owned(), Symbol::Variable { kind: inner });
@@ -218,23 +244,32 @@ impl Analyzer {
             }
             Ast::ExprAssign { var_name, value } => {
                 let var_type = {
-                    let entry = self.get_entry(&var_name).unwrap_or_else(|| {
-                        eprintln!("variable `{var_name}` is assigned to before initialization");
-                        std::process::exit(1);
-                    });
+                    let Some(entry) = self.get_entry(&var_name) else {
+                        self.emit_error(
+                            codes::SEMA_UNDEFINED_NAME,
+                            format!("variable `{var_name}` is assigned to before initialization"),
+                        );
+                        return None;
+                    };
 
                     if let Symbol::Variable { kind: var_type } = entry {
                         var_type.clone()
                     } else {
-                        eprintln!("`{var_name}` is assigned to, however it is not a variable\n\t{entry:?}");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_NOT_VARIABLE,
+                            format!("`{var_name}` is assigned to, however it is not a variable"),
+                        );
+                        return None;
                     }
                 };
 
                 let rhs_type = self.check(value)?;
                 if type_eq(*var_type.clone(), rhs_type.clone()).is_err() {
-                    eprintln!("variable `{var_name}` is assigned to before initialization");
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_ASSIGN_TYPE_MISMATCH,
+                        format!("variable `{var_name}` of type {:?} cannot be assigned a value of type {rhs_type:?}", *var_type),
+                    );
+                    return None;
                 }
                 Some(rhs_type)
             }
@@ -246,26 +281,35 @@ impl Analyzer {
                     // Arithmetic Operations
                     Token::Plus | Token::Dash | Token::Star | Token::Slash => {
                         if type_eq(lhs_type.clone(), rhs_type.clone()).is_err() {
-                            eprintln!("mismatched types in arithmetic: {lhs_type:?} {op:?} {rhs_type:?}");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_ARITH_TYPE_MISMATCH,
+                                format!("mismatched types in arithmetic: {lhs_type:?} {op:?} {rhs_type:?}"),
+                            );
+                            return None;
                         }
                         // Arithmetic usually only works on numeric types
                         match lhs_type {
                             Type::Integer | Type::Float => Some(lhs_type),
                             _ => {
-                                eprintln!("arithmetic operation {op:?} not supported for type {lhs_type:?}");
-                                std::process::exit(1);
+                                self.emit_error(
+                                    codes::SEMA_ARITH_BAD_TYPE,
+                                    format!("arithmetic operation {op:?} not supported for type {lhs_type:?}"),
+                                );
+                                None
                             }
                         }
                     }
 
                     // Equality and Comparison (Always returns Boolean)
-                    Token::EqEq | Token::BangEq | 
-                    Token::MoreThan | Token::LessThan | 
+                    Token::EqEq | Token::BangEq |
+                    Token::MoreThan | Token::LessThan |
                     Token::MoreEq | Token::LessEq => {
                         if type_eq(lhs_type.clone(), rhs_type.clone()).is_err() {
-                            eprintln!("cannot compare mismatched types: {lhs_type:?} {op:?} {rhs_type:?}");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_COMPARE_TYPE_MISMATCH,
+                                format!("cannot compare mismatched types: {lhs_type:?} {op:?} {rhs_type:?}"),
+                            );
+                            return None;
                         }
                         Some(Type::Bool)
                     }
@@ -273,8 +317,11 @@ impl Analyzer {
                     // Logical Operations (Requires Booleans)
                     Token::AmpAmp | Token::PipePipe => {
                         if !matches!(lhs_type, Type::Bool) || !matches!(rhs_type, Type::Bool) {
-                            eprintln!("logical operation {op:?} requires boolean operands");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_LOGIC_NEEDS_BOOL,
+                                format!("logical operation {op:?} requires boolean operands"),
+                            );
+                            return None;
                         }
                         Some(Type::Bool)
                     }
@@ -282,23 +329,32 @@ impl Analyzer {
                     // Bitwise Operations (Usually requires Integers)
                     Token::Ampersand | Token::Pipe | Token::Caret | Token::LShift | Token::RShift => {
                         if !matches!(lhs_type, Type::Integer) || !matches!(rhs_type, Type::Integer) {
-                            eprintln!("bitwise operation {op:?} requires integer operands");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_BITWISE_NEEDS_INT,
+                                format!("bitwise operation {op:?} requires integer operands"),
+                            );
+                            return None;
                         }
                         Some(Type::Integer)
                     }
 
                     Token::Eq => {
                         if type_eq(lhs_type.clone(), rhs_type.clone()).is_err() {
-                            eprintln!("cannot assign mismatched types: {lhs_type:?} {op:?} {rhs_type:?}\n{lhs:?} = {rhs:?}");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_ASSIGN_TYPE_MISMATCH,
+                                format!("cannot assign mismatched types: {lhs_type:?} {op:?} {rhs_type:?}"),
+                            );
+                            return None;
                         }
                         Some(lhs_type)
                     }
 
                     _ => {
-                        eprintln!("unsupported binary operator: {op:?}\n{lhs:?}\n{rhs:?}");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_UNSUPPORTED_BINOP,
+                            format!("unsupported binary operator: {op:?}"),
+                        );
+                        None
                     }
                 }
             }
@@ -308,31 +364,43 @@ impl Analyzer {
                 match op {
                     Token::Dash => {
                         if type_eq(child_type.clone(), Type::Integer).is_err() && type_eq(child_type.clone(), Type::Float).is_err() {
-                            eprintln!("cannot negate a non number type: {child:?}({child_type:?})");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_NEGATE_NEEDS_NUMBER,
+                                format!("cannot negate a non-number type: {child_type:?}"),
+                            );
+                            None
                         } else {
                             Some(child_type)
                         }
                     }
                     Token::Bang => {
                         if type_eq(child_type.clone(), Type::Integer).is_err() && type_eq(child_type.clone(), Type::Float).is_err() && type_eq(child_type.clone(), Type::Bool).is_err() {
-                            eprintln!("can't not this type: {child:?}({child_type:?})");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_BANG_BAD_TYPE,
+                                format!("cannot apply `!` to this type: {child_type:?}"),
+                            );
+                            None
                         } else {
                             Some(child_type)
                         }
                     }
                     Token::Tilde => {
                         if type_eq(child_type.clone(), Type::Integer).is_err() {
-                            eprintln!("cannot bitwise invert a non integer type");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_TILDE_NEEDS_INT,
+                                format!("cannot bitwise invert a non-integer type: {child_type:?}"),
+                            );
+                            None
                         } else {
                             Some(child_type)
                         }
                     }
                     _ => {
-                        eprintln!("unsupported unary operator: {op:?}\n{child:?}");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_UNSUPPORTED_UNOP,
+                            format!("unsupported unary operator: {op:?}"),
+                        );
+                        None
                     }
                 }
             }
@@ -345,52 +413,73 @@ impl Analyzer {
                 }
                 if name == "rpc_request" {
                     if args.len() != 2 {
-                        eprintln!("rpc_request expects 2 arguments, got {}", args.len());
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_RPC_WRONG_ARITY,
+                            format!("rpc_request expects 2 arguments, got {}", args.len()),
+                        );
+                        return None;
                     }
                     let name_ty = self.check(&mut args[0])?;
                     if type_eq(name_ty, Type::String).is_err() {
-                        eprintln!("rpc_request: first argument must be str");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_RPC_BAD_SHAPE,
+                            "rpc_request: first argument must be str",
+                        );
+                        return None;
                     }
                     let args_ty = self.check(&mut args[1])?;
                     match args_ty {
                         Type::Array { .. } => {}
                         _ => {
-                            eprintln!("rpc_request: second argument must be an array");
-                            std::process::exit(1);
+                            self.emit_error(
+                                codes::SEMA_RPC_BAD_SHAPE,
+                                "rpc_request: second argument must be an array",
+                            );
+                            return None;
                         }
                     }
                     return Some(Type::String);
                 }
                 if name == "rpc_response" {
                     if args.len() != 1 {
-                        eprintln!("rpc_response expects 1 argument, got {}", args.len());
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_RPC_WRONG_ARITY,
+                            format!("rpc_response expects 1 argument, got {}", args.len()),
+                        );
+                        return None;
                     }
                     self.check(&mut args[0])?;
                     return Some(Type::String);
                 }
                 // 1. Fetch and clone the signature in a temporary scope
                 let (params, ret) = {
-                    let entry = self.get_entry(&name).unwrap_or_else(|| {
-                        eprintln!("attempting to make a function call on an undefined name `{name}`");
-                        std::process::exit(1);
-                    });
+                    let Some(entry) = self.get_entry(&name) else {
+                        self.emit_error(
+                            codes::SEMA_CALL_UNDEFINED,
+                            format!("attempting to make a function call on an undefined name `{name}`"),
+                        );
+                        return None;
+                    };
 
                     if let Symbol::Variable { kind } = entry && let Type::Function { params, ret } = *kind.to_owned() {
                         // Clone the params and ret to release the borrow on self
                         (params.clone(), ret.clone())
                     } else {
-                        eprintln!("attempting to make a function call on a non-function type: `{name}`");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_CALL_NOT_FUNCTION,
+                            format!("attempting to make a function call on a non-function type: `{name}`"),
+                        );
+                        return None;
                     }
                 }; // Borrow of self ends here
 
                 // 2. Validate argument count
                 if args.len() != params.len() {
-                    eprintln!("function `{name}` expects {} arguments but received {}", params.len(), args.len());
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_CALL_WRONG_ARITY,
+                        format!("function `{name}` expects {} arguments but received {}", params.len(), args.len()),
+                    );
+                    return None;
                 }
 
                 // 3. Check each argument (safe to borrow self mutably now)
@@ -398,8 +487,11 @@ impl Analyzer {
                     let arg_type = self.check(arg)?;
 
                     if type_eq(arg_type.clone(), param.clone()).is_err() {
-                        eprintln!("function `{name}` expected {:?} in position {i} but was passed {:?}", param, arg_type);
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_CALL_WRONG_ARG_TYPE,
+                            format!("function `{name}` expected {param:?} in position {i} but was passed {arg_type:?}"),
+                        );
+                        return None;
                     }
                 }
 
@@ -409,24 +501,36 @@ impl Analyzer {
             Ast::ExprMemAcc { lhs, member } => {
                 let lhs_type = self.check(lhs)?;
                 let Type::Ident(sname) = lhs_type else {
-                    eprintln!("{lhs_type:?} is not a struct with members");
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_MEMBER_NOT_STRUCT,
+                        format!("{lhs_type:?} is not a struct with members"),
+                    );
+                    return None;
                 };
 
                 let mem_type = {
                     let Some(entry) = self.get_entry(&sname) else {
-                        eprintln!("could not find struct `{sname}` in scope");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_UNKNOWN_STRUCT,
+                            format!("could not find struct `{sname}` in scope"),
+                        );
+                        return None;
                     };
 
                     let Symbol::Struct { fields } = entry else {
-                        eprintln!("`{sname}` is not a struct");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_NOT_A_STRUCT,
+                            format!("`{sname}` is not a struct"),
+                        );
+                        return None;
                     };
 
                     let Some(mem) = fields.get(member) else {
-                        eprintln!("`{sname}` has no member `{member}`");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_NO_SUCH_FIELD,
+                            format!("`{sname}` has no member `{member}`"),
+                        );
+                        return None;
                     };
 
                     mem.clone()
@@ -436,18 +540,27 @@ impl Analyzer {
             }
             Ast::ExprEnumVar { name, var } => {
                 let Some(entry) = self.get_entry(&name) else {
-                    eprintln!("could not find struct `{name}` in scope");
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_UNKNOWN_STRUCT,
+                        format!("could not find type `{name}` in scope"),
+                    );
+                    return None;
                 };
 
                 let Symbol::Enum { variants } = entry else {
-                    eprintln!("`{name}` is not an enum");
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_NOT_AN_ENUM,
+                        format!("`{name}` is not an enum"),
+                    );
+                    return None;
                 };
 
                 if variants.get(var).is_none() {
-                    eprintln!("`{name}` has no variant `{var}`");
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_NO_SUCH_VARIANT,
+                        format!("`{name}` has no variant `{var}`"),
+                    );
+                    return None;
                 };
 
                 Some(Type::Ident(name.clone()))
@@ -457,18 +570,31 @@ impl Analyzer {
                 let index_type = self.check(index)?;
 
                 if !matches!(index_type, Type::Integer) && !matches!(index_type, Type::Float) {
-                    panic!("Type Error: Array index must be an integer or float");
+                    self.emit_error(
+                        codes::SEMA_BAD_INDEX_TYPE,
+                        "array index must be an integer or float",
+                    );
+                    return None;
                 }
 
                 match lhs_type {
                     Type::Array { inner, .. } => Some(*inner),
-                    _ => panic!("Type Error: Cannot index into a non-array type"),
+                    _ => {
+                        self.emit_error(
+                            codes::SEMA_INDEX_NOT_ARRAY,
+                            "cannot index into a non-array type",
+                        );
+                        None
+                    }
                 }
             }
             Ast::ExprReturn { val } => {
                 if !self.can_return {
-                    eprintln!("illegal return statement");
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::SEMA_ILLEGAL_RETURN,
+                        "illegal return statement",
+                    );
+                    return None;
                 }
                 match val {
                     Some(v) => Some(self.check(&mut *v)?),
@@ -482,16 +608,22 @@ impl Analyzer {
             Ast::ExprBool(_) => Some(Type::Bool),
             Ast::ExprVar(name) => {
                 let var_type = {
-                    let entry = self.get_entry(&name).unwrap_or_else(|| {
-                        eprintln!("variable `{name}` could not be found in the current scope");
-                        std::process::exit(1);
-                    });
+                    let Some(entry) = self.get_entry(&name) else {
+                        self.emit_error(
+                            codes::SEMA_UNDEFINED_NAME,
+                            format!("variable `{name}` could not be found in the current scope"),
+                        );
+                        return None;
+                    };
 
                     if let Symbol::Variable { kind: var_type } = entry {
                         var_type.clone()
                     } else {
-                        eprintln!("`{name}` is not a variable\n\t{entry:?}");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::SEMA_NOT_VARIABLE,
+                            format!("`{name}` is not a variable"),
+                        );
+                        return None;
                     }
                 };
                 Some(*var_type)

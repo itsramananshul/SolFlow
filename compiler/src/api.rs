@@ -5,12 +5,10 @@
 //! produced value, a list of `SolDiagnostic`s, or both (warnings
 //! alongside a successful result).
 //!
-//! **B.2 status:** the API surface is final. The underlying
-//! lexer/parser/analyzer/codegen calls still `process::exit(1)`
-//! on errors — those conversions land in subsequent commits
-//! (c3 lexer + parser, c4 analyzer, c5 codegen). After the
-//! conversion commits the API will be honest about partial
-//! failures.
+//! **B.2 status:** the API surface is final. Lexer, parser, and
+//! analyzer all return `SolDiagnostic` values (c3 + c4). Codegen
+//! still `process::exit(1)`s on its two error sites — that
+//! conversion lands in c5.
 
 use crate::analyzer::{Analyzer, TypeTable};
 use crate::bytecode::{Codegen, Inst};
@@ -125,9 +123,10 @@ pub fn parse_source(source: &str) -> CompileResult<Program> {
 //  Analyze
 // =============================================================
 
-/// Parse + analyze. Lex / parse diagnostics propagate. **B.2
-/// baseline** wraps the verbatim `Analyzer::run`; the analyzer
-/// still `process::exit(1)`s on the first error. Converted in c4.
+/// Parse + analyze. Lex / parse / semantic diagnostics propagate.
+/// The analyzer reports every semantic error it encounters (no
+/// longer aborts on the first one); if any errors are present after
+/// analysis, no `AnalyzedProgram` is returned.
 pub fn analyze_source(source: &str) -> CompileResult<AnalyzedProgram> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
@@ -148,6 +147,15 @@ pub fn analyze_source(source: &str) -> CompileResult<AnalyzedProgram> {
 
     let mut analyzer = Analyzer::new();
     analyzer.run(&mut program);
+    diagnostics.append(&mut analyzer.diagnostics);
+
+    let has_errors = diagnostics
+        .iter()
+        .any(|d| d.severity == crate::diagnostic::DiagnosticSeverity::Error);
+    if has_errors {
+        return CompileResult::err(diagnostics);
+    }
+
     let result = AnalyzedProgram {
         program,
         tt_arena: analyzer.tt_arena,
@@ -164,7 +172,8 @@ pub fn analyze_source(source: &str) -> CompileResult<AnalyzedProgram> {
 // =============================================================
 
 /// Parse + analyze + code-generate. Same diagnostic semantics as
-/// `analyze_source`; codegen errors land in commits c4–c5.
+/// `analyze_source`; codegen's remaining `process::exit` sites
+/// land in c5.
 pub fn compile_source(source: &str) -> CompileResult<CompiledProgram> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
@@ -183,6 +192,15 @@ pub fn compile_source(source: &str) -> CompileResult<CompiledProgram> {
 
     let mut analyzer = Analyzer::new();
     analyzer.run(&mut program);
+    diagnostics.append(&mut analyzer.diagnostics);
+
+    if diagnostics
+        .iter()
+        .any(|d| d.severity == crate::diagnostic::DiagnosticSeverity::Error)
+    {
+        return CompileResult::err(diagnostics);
+    }
+
     let tt_arena_for_codegen = analyzer.tt_arena.clone();
     let mut codegen = Codegen::from(analyzer.tt_arena);
     let bytecode = codegen.gen_bcode(&program);
