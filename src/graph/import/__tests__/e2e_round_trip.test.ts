@@ -38,6 +38,10 @@ import { emit } from '@/emit/emit';
 const require = createRequire(import.meta.url);
 const wasm = require('../../../../compiler-wasm/pkg-node/solflow_compiler_wasm.js') as {
   parse_source_json(source: string): string;
+  analyze_source_json(source: string): string;
+  compile_source_json(source: string): string;
+  run_source_json(source: string): string;
+  version(): string;
 };
 
 const FIXTURES_DIR = join(
@@ -147,5 +151,141 @@ describe('B.D c39 — true end-to-end parse→import→emit→parse→compare', 
       // Will throw if parse fails.
       parse(emitted);
     }
+  });
+});
+
+// =============================================================
+//  B.D c45 — canonical-VM execution paths via Node WASM
+// =============================================================
+//
+// The c39 round-trip suite covered parse + import + emit. These
+// tests cover compile + run + structured-error paths, all the way
+// through the same `run_source_json` bridge the editor uses.
+
+interface RunEnvelopeShape {
+  ok: boolean;
+  value: { instruction_count: number } | null;
+  diagnostics: Array<{ code: string; severity: string }>;
+  run: {
+    return_value: number | null;
+    output: string[];
+    steps: number;
+    runtime_error: { kind: string; [k: string]: unknown } | null;
+    runtime_error_source_span: { start: number; end: number } | null;
+    trace: Array<{ start: number; end: number }>;
+    trace_truncated: boolean;
+  } | null;
+}
+
+function runWasm(source: string): RunEnvelopeShape {
+  return JSON.parse(wasm.run_source_json(source)) as RunEnvelopeShape;
+}
+
+describe('B.D c45 — canonical-VM execution via Node WASM', () => {
+  it('compile + run produces canonical output + return value', () => {
+    const env = runWasm(
+      `function start() -> int {
+         print("hello");
+         print(42);
+         return 7;
+       }`,
+    );
+    expect(env.ok).toBe(true);
+    expect(env.run).not.toBeNull();
+    expect(env.run!.output).toEqual(['hello', '42']);
+    expect(env.run!.return_value).toBe(7);
+    expect(env.run!.runtime_error).toBeNull();
+    expect(env.run!.steps).toBeGreaterThan(0);
+  });
+
+  it('runs a control-flow program end-to-end', () => {
+    const env = runWasm(
+      `function start() -> int {
+         let x: int = 0;
+         while (x < 5) { x = x + 1; }
+         return x;
+       }`,
+    );
+    expect(env.ok).toBe(true);
+    expect(env.run!.return_value).toBe(5);
+    expect(env.run!.runtime_error).toBeNull();
+  });
+
+  it('invalid source returns compile diagnostics, skips execution', () => {
+    const env = runWasm('function start() -> int { return 0 }'); // missing semi
+    expect(env.ok).toBe(false);
+    expect(env.run).toBeNull();
+    expect(env.diagnostics.length).toBeGreaterThan(0);
+    expect(env.diagnostics.some((d) => d.code.startsWith('E0'))).toBe(true);
+  });
+
+  it('runtime div-by-zero surfaces structured error + source span', () => {
+    const env = runWasm(
+      'function start() -> int { return 10 / 0; }',
+    );
+    expect(env.ok).toBe(true);
+    expect(env.run!.runtime_error).toEqual({ kind: 'DivByZero' });
+    // c42: span attached so editor can scroll to failure site.
+    expect(env.run!.runtime_error_source_span).not.toBeNull();
+    expect(env.run!.runtime_error_source_span!.start).toBeGreaterThanOrEqual(0);
+  });
+
+  it('execution trace surfaces de-duplicated source spans', () => {
+    const env = runWasm(
+      `function start() -> int {
+         let x: int = 1;
+         let y: int = 2;
+         return x + y;
+       }`,
+    );
+    expect(env.ok).toBe(true);
+    expect(env.run!.trace.length).toBeGreaterThan(0);
+    expect(env.run!.trace_truncated).toBe(false);
+    // Adjacent equal spans are de-duplicated.
+    for (let i = 1; i < env.run!.trace.length; i++) {
+      const prev = env.run!.trace[i - 1]!;
+      const cur = env.run!.trace[i]!;
+      const same = prev.start === cur.start && prev.end === cur.end;
+      expect(same).toBe(false);
+    }
+  });
+
+  it('ExtCall is blocked with structured error in browser sim', () => {
+    const env = runWasm(
+      `ext function fetch(url: str) -> int;
+       function start() -> int { return fetch("https://x"); }`,
+    );
+    // The compiler emits a codegen warning for missing endpoint
+    // configuration; the test just checks that EITHER:
+    //   a) compile fails (codegen E0051), OR
+    //   b) the run produces an ExtCallBlocked runtime error
+    if (!env.ok) {
+      expect(env.diagnostics.some((d) => d.code === 'E0051')).toBe(true);
+    } else {
+      expect(env.run!.runtime_error?.kind).toBe('ExtCallBlocked');
+    }
+  });
+
+  it('canonical execution from EMITTED-back-from-graph source', () => {
+    // Round-trip THEN execute: import original source, emit it as
+    // canonical form, then run the emitted form. Output must match
+    // the original source's output — proves the emitter doesn't
+    // change semantics across canonicalization.
+    const original = `function start() -> int {
+      let x: int = 3;
+      let y: int = 4;
+      print(x);
+      print(y);
+      return x + y;
+    }`;
+    const origEnv = runWasm(original);
+    expect(origEnv.ok).toBe(true);
+    const program = parse(original);
+    const { workflow } = importProgram(program, { name: 'e2e' }, original);
+    const emitted = emit(workflow).source;
+    const emittedEnv = runWasm(emitted);
+    expect(emittedEnv.ok).toBe(true);
+    expect(emittedEnv.run!.return_value).toBe(origEnv.run!.return_value);
+    expect(emittedEnv.run!.output).toEqual(origEnv.run!.output);
   });
 });
