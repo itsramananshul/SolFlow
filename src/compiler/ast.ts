@@ -119,6 +119,18 @@ export type Ast =
 
 // Struct payloads broken out for readability.
 
+/**
+ * Source byte range (B.D c35). Optional on each variant below — the
+ * parser populates it for these 10 struct variants; old AST JSON
+ * (pre-spans) deserializes with `span = undefined` and the
+ * analyzer + importer fall back to enclosing-block spans or textual
+ * heuristics.
+ */
+export interface AstSourceSpan {
+  start: number;
+  end: number;
+}
+
 export interface DeclFunc {
   name: string;
   /** Vec<(String, Type)> → array-of-pairs in JSON. */
@@ -127,18 +139,21 @@ export interface DeclFunc {
   body: Ast;
   /** TypeTableId; usize::MAX (large number) until the analyzer runs. */
   scope: number;
+  span?: AstSourceSpan;
 }
 
 export interface DeclExtFunc {
   name: string;
   params: [string, SolType][];
   ret: SolType;
+  span?: AstSourceSpan;
 }
 
 export interface DeclVar {
   name: string;
   kind: SolType;
   value: Ast | null;
+  span?: AstSourceSpan;
 }
 
 export interface DeclStruct {
@@ -146,39 +161,46 @@ export interface DeclStruct {
   /** HashMap<String, Type> → plain JSON object. Order is NOT stable
    *  (serde + HashMap); importers should sort by name. */
   fields: Record<string, SolType>;
+  span?: AstSourceSpan;
 }
 
 export interface DeclEnum {
   name: string;
   /** HashMap<String, isize> → plain JSON object. */
   variants: Record<string, number>;
+  span?: AstSourceSpan;
 }
 
 export interface Block {
   block: Ast[];
   scope: number;
+  span?: AstSourceSpan;
 }
 
 export interface StmtImport {
   path: string[];
   alias: string | null;
+  span?: AstSourceSpan;
 }
 
 export interface StmtIf {
   condition: Ast;
   body: Ast;
   alt: Ast | null;
+  span?: AstSourceSpan;
 }
 
 export interface StmtWhile {
   condition: Ast;
   body: Ast;
+  span?: AstSourceSpan;
 }
 
 export interface StmtFor {
   elem_name: string;
   array: Ast;
   body: Ast;
+  span?: AstSourceSpan;
 }
 
 // ----------------------------------------------------------------

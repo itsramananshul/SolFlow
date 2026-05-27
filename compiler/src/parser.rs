@@ -29,6 +29,21 @@ pub enum Type {
 }
 
 pub type Program = Vec<Ast>;
+
+// B.D c35 — span attachment.
+//
+// We add `span: Option<SourceSpan>` to a curated set of struct
+// variants (declarations + block-bearing statements). Tuple
+// variants (`ExprInteger(i128)`, etc.) stay as-is — converting
+// them to struct variants would churn every match arm in
+// analyzer/importer for marginal benefit. The analyzer's
+// `check()` looks up spans via `node_span(&Ast)`; when a leaf
+// expression doesn't carry a span, the analyzer uses the most
+// recent enclosing struct-variant span (approximate but real
+// source location, which is the upgrade that matters).
+//
+// `#[serde(default)]` keeps old AST JSON (pre-span) deserializing
+// cleanly — important for the importer's pre-baked fixtures.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Ast {
@@ -38,48 +53,68 @@ pub enum Ast {
         ret: Type,
         body: Box<Ast>,
         scope: TypeTableId,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
     DeclExtFunc {
         name: String,
         params: Vec<(String, Type)>,
         ret: Type,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
     DeclVar {
         name: String,
         kind: Type,
         value: Option<Box<Ast>>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
     DeclStruct {
         name: String,
         fields: HashMap<String, Type>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
     DeclEnum {
         name: String,
         variants: HashMap<String, isize>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
 
     Block {
         block: Vec<Ast>,
         scope: TypeTableId,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
     StmtImport {
         #[allow(dead_code)]
         path: Vec<String>,
         alias: Option<String>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
     StmtIf {
         condition: Box<Ast>,
         body: Box<Ast>,
         alt: Option<Box<Ast>>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
     StmtWhile {
         condition: Box<Ast>,
         body: Box<Ast>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
     StmtFor {
         elem_name: String,
         array: Box<Ast>,
         body: Box<Ast>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        span: Option<SourceSpan>,
     },
 
     #[allow(dead_code)]
@@ -207,6 +242,36 @@ impl Parser {
         // meaningful (typically the last `}` or `;`).
         let last = self.spans.last()?;
         Some(SourceSpan::new(last.end, last.end))
+    }
+
+    // B.D c35 — span-tracking helpers.
+    //
+    // Each AST-construction site captures `start = self.span_start()`
+    // BEFORE consuming any tokens for the construct, then builds the
+    // resulting span via `self.make_span(start)` AFTER the construct's
+    // last token was consumed. Result is `(start, prev_token_end)`,
+    // which is the natural source range for the entire construct.
+    //
+    // Returns None when spans aren't available (legacy `Parser::from`).
+
+    /// Byte offset where the next consumed token begins. Capture
+    /// this at the top of each parsing function whose AST node
+    /// carries a span field.
+    fn span_start(&self) -> usize {
+        self.current_span().map(|s| s.start).unwrap_or(0)
+    }
+
+    /// Build a span from a captured start to the end of the most
+    /// recently consumed token. Returns None when no spans are
+    /// available (legacy parser path).
+    fn make_span(&self, start: usize) -> Option<SourceSpan> {
+        if self.spans.is_empty() { return None; }
+        let end = if self.index > 0 && self.index - 1 < self.spans.len() {
+            self.spans[self.index - 1].end
+        } else {
+            start
+        };
+        Some(SourceSpan::new(start, end))
     }
 
     /// Push a structured diagnostic + set the fatal-error flag.
@@ -374,6 +439,7 @@ impl Parser {
     }
 
     fn ext_func_decl(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
         self.eat(TokenKind::Func, "expected `function` keyword after `ext`");
         let Token::Ident(name) = self.tokens[self.index].clone() else {
@@ -411,10 +477,11 @@ impl Parser {
 
         self.eat(TokenKind::Semi, "expected semicolon after ext function declaration");
 
-        Some(Ast::DeclExtFunc { name, params, ret })
+        Some(Ast::DeclExtFunc { name, params, ret, span: self.make_span(start) })
     }
 
     fn func_decl(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
         let Token::Ident(name) = self.tokens[self.index].clone() else {
             self.emit_error(codes::PARSE_BAD_NAME, "name expected after `function` keyword");
@@ -448,9 +515,10 @@ impl Parser {
 
         let body = Box::new(self.block()?);
 
-        Some(Ast::DeclFunc { name, params, ret, body, scope: usize::MAX })
+        Some(Ast::DeclFunc { name, params, ret, body, scope: usize::MAX, span: self.make_span(start) })
     }
     fn var_decl(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
 
         let Token::Ident(name) = self.advance().clone() else {
@@ -468,19 +536,21 @@ impl Parser {
 
         self.eat(TokenKind::Semi, "expected semicolon at the end of a variable declaration");
 
-        Some(Ast::DeclVar { name, kind, value })
+        Some(Ast::DeclVar { name, kind, value, span: self.make_span(start) })
     }
 
     fn block(&mut self) -> Option<Ast> {
         match self.tokens[self.index] {
             Token::LCurly => {
+                let start = self.span_start();
                 self.index += 1;
                 let mut stmts = Vec::new();
                 while noob!(self) && !matches!(self.tokens[self.index], Token::RCurly) {
                     stmts.push(self.statement()?);
                 }
                 self.eat(TokenKind::RCurly, "left curly brace is never closed");
-                Some(Ast::Block { block: stmts, scope: usize::MAX }) // scope isn't filled in until analysis
+                // scope isn't filled in until analysis; span is set now.
+                Some(Ast::Block { block: stmts, scope: usize::MAX, span: self.make_span(start) })
             }
             _ => self.statement(),
         }
@@ -510,6 +580,7 @@ impl Parser {
         }
     }
     fn for_stmt(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
 
         let Token::Ident(elem_name) = self.tokens[self.index].clone() else {
@@ -529,9 +600,10 @@ impl Parser {
         self.index -= 1;
         let body = Box::new(self.block()?);
 
-        Some(Ast::StmtFor { elem_name, array, body })
+        Some(Ast::StmtFor { elem_name, array, body, span: self.make_span(start) })
     }
     fn if_stmt(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
 
         let old = self.can_struct;
@@ -549,9 +621,10 @@ impl Parser {
             Some(Box::new(self.block()?))
         } else { None };
 
-        Some(Ast::StmtIf { condition, body, alt })
+        Some(Ast::StmtIf { condition, body, alt, span: self.make_span(start) })
     }
     fn while_stmt(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
 
         let old = self.can_struct;
@@ -563,10 +636,11 @@ impl Parser {
         self.index -= 1;
         let body = Box::new(self.block()?);
 
-        Some(Ast::StmtWhile { condition, body })
+        Some(Ast::StmtWhile { condition, body, span: self.make_span(start) })
     }
 
     fn import_stmt(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
 
         let mut path = Vec::new();
@@ -599,7 +673,7 @@ impl Parser {
         } else { None };
 
         self.eat(TokenKind::Semi, "expected semicolon at the end of an import statement");
-        Some(Ast::StmtImport { path, alias })
+        Some(Ast::StmtImport { path, alias, span: self.make_span(start) })
     }
     fn return_stmt(&mut self) -> Option<Ast> {
         self.index += 1;
@@ -614,6 +688,7 @@ impl Parser {
         Some(Ast::ExprReturn { val })
     }
     fn struct_decl(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
 
         let Token::Ident(name) = self.tokens[self.index].clone() else {
@@ -642,9 +717,10 @@ impl Parser {
         }
         self.eat(TokenKind::RCurly, "expected `}` to close struct declaration");
 
-        Some(Ast::DeclStruct { name, fields })
+        Some(Ast::DeclStruct { name, fields, span: self.make_span(start) })
     }
     fn enum_decl(&mut self) -> Option<Ast> {
+        let start = self.span_start();
         self.index += 1;
 
         let Token::Ident(name) = self.tokens[self.index].clone() else {
@@ -683,7 +759,7 @@ impl Parser {
         }
         self.eat(TokenKind::RCurly, "expected `}` to close enum declaration");
 
-        Some(Ast::DeclEnum { name, variants })
+        Some(Ast::DeclEnum { name, variants, span: self.make_span(start) })
     }
 
     fn left_rec(&mut self, symbols: &[TokenKind], child: fn(&mut Parser) -> Option<Ast>) -> Option<Ast>{

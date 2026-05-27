@@ -5,6 +5,10 @@
       "fields": {
         "x": "Integer",
         "y": "Integer"
+      },
+      "span": {
+        "start": 0,
+        "end": 31
       }
     }
   },
@@ -14,6 +18,10 @@
       "variants": {
         "Inactive": 1,
         "Active": 0
+      },
+      "span": {
+        "start": 32,
+        "end": 64
       }
     }
   },
@@ -31,6 +39,10 @@
                 "kind": "Integer",
                 "value": {
                   "ExprInteger": 0
+                },
+                "span": {
+                  "start": 96,
+                  "end": 111
                 }
               }
             },
@@ -42,10 +54,18 @@
               }
             }
           ],
-          "scope": 18446744073709551615
+          "scope": 18446744073709551615,
+          "span": {
+            "start": 90,
+            "end": 127
+          }
         }
       },
-      "scope": 18446744073709551615
+      "scope": 18446744073709551615,
+      "span": {
+        "start": 66,
+        "end": 127
+      }
     }
   }
 ]

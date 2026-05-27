@@ -113,6 +113,14 @@ fn semantic1_undefined_var_returns_diagnostic() {
         .find(|d| d.severity == DiagnosticSeverity::Error)
         .unwrap();
     assert_eq!(first.phase, DiagnosticPhase::Analyzer);
+    // B.D c35: analyzer diagnostics now carry approximate spans
+    // derived from the enclosing block / decl. The undefined-var
+    // is inside `start()`'s body, so the span should land
+    // somewhere in the function source range — concretely, before
+    // the end of the input.
+    let span = first.span.expect("analyzer diagnostic should carry a span");
+    assert!(span.end <= source.len(), "span end within source");
+    assert!(span.start < span.end, "span has positive length");
 }
 
 /// `error_semantic2.sol`: `let x` declared twice in the same scope.

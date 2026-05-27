@@ -140,7 +140,7 @@ impl Codegen {
 
         for node in program {
             match node {
-                Ast::DeclStruct { name, fields } => {
+                Ast::DeclStruct { name, fields, .. } => {
                     let mut sorted_fields: Vec<(String, Type)> = fields
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
@@ -209,7 +209,7 @@ impl Codegen {
                 let offset = self.find_local_offset(&name);
                 insts.push(Inst::LoadLocal(offset));
             }
-            Ast::DeclVar { name, kind, value } => {
+            Ast::DeclVar { name, kind, value, .. } => {
                 if let Some(val_node) = value {
                     self.compile(insts, *val_node);
                     let offset = self.get_or_create_local(&name, kind);
@@ -226,7 +226,7 @@ impl Codegen {
             }
 
             // --- 3. Blocks & Local Statements ---
-            Ast::Block { block, scope: scope_id } => {
+            Ast::Block { block, scope: scope_id, .. } => {
                 if scope_id < self.type_tables.len() {
                     self.active_scopes.push(self.scope_from(scope_id));
                 }
@@ -250,7 +250,7 @@ impl Codegen {
             }
 
             // --- 4. Control Flow ---
-            Ast::StmtIf { condition, body, alt } => {
+            Ast::StmtIf { condition, body, alt, .. } => {
                 self.compile(insts, *condition);
                 let jump_false_idx = insts.len();
                 insts.push(Inst::JumpFalse(0)); 
@@ -273,7 +273,7 @@ impl Codegen {
                 }
             }
 
-            Ast::StmtWhile { condition, body } => {
+            Ast::StmtWhile { condition, body, .. } => {
                 let loop_start = insts.len();
                 self.compile(insts, *condition);
 
@@ -287,7 +287,7 @@ impl Codegen {
                 insts[jump_false_idx] = Inst::JumpFalse(loop_end);
             }
 
-            Ast::StmtFor { elem_name, array, body } => {
+            Ast::StmtFor { elem_name, array, body, .. } => {
                 let saved_next = self.next_slot;
 
                 let array_type = self.infer_type(&array);

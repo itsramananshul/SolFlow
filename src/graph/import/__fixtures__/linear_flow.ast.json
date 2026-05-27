@@ -13,6 +13,10 @@
                 "kind": "Integer",
                 "value": {
                   "ExprInteger": 5
+                },
+                "span": {
+                  "start": 30,
+                  "end": 45
                 }
               }
             },
@@ -22,6 +26,10 @@
                 "kind": "Integer",
                 "value": {
                   "ExprInteger": 10
+                },
+                "span": {
+                  "start": 50,
+                  "end": 66
                 }
               }
             },
@@ -53,10 +61,18 @@
               }
             }
           ],
-          "scope": 18446744073709551615
+          "scope": 18446744073709551615,
+          "span": {
+            "start": 24,
+            "end": 110
+          }
         }
       },
-      "scope": 18446744073709551615
+      "scope": 18446744073709551615,
+      "span": {
+        "start": 0,
+        "end": 110
+      }
     }
   }
 ]

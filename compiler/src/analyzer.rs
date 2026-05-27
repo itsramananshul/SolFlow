@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    diagnostic::{codes, DiagnosticPhase, SolDiagnostic},
+    diagnostic::{codes, DiagnosticPhase, SolDiagnostic, SourceSpan},
     lexer::Token,
     parser::{Ast, Program, Type},
     util::type_eq,
@@ -32,6 +32,13 @@ pub struct Analyzer {
     /// `eprintln! + process::exit(1)` pattern; callers drain this
     /// after `run()` to surface every semantic error in one pass.
     pub diagnostics: Vec<SolDiagnostic>,
+    /// Most-recent enclosing-AST-node span (B.D c35). `check()`
+    /// updates this before recursing so leaf-node diagnostics
+    /// (e.g. `SEMA_UNDEFINED_NAME` on an `ExprVar`) can attach an
+    /// approximate-but-real source location — the enclosing
+    /// block / decl span — when the leaf node itself doesn't
+    /// carry one.
+    current_span: Option<SourceSpan>,
 }
 
 impl Analyzer {
@@ -42,18 +49,24 @@ impl Analyzer {
             can_break: false,
             can_return: false,
             diagnostics: Vec::new(),
+            current_span: None,
         }
     }
 
     /// Push a semantic-phase error diagnostic onto the buffer.
     /// Callers should then `return None` from `check()` so the
     /// outer `?` propagator stops cascading into derived errors.
+    ///
+    /// Span (B.D c35): if a current AST-node span is in context
+    /// from `check()`, attach it; otherwise the diagnostic ships
+    /// without a span (the editor renders the row as non-clickable
+    /// per the existing UX contract).
     fn emit_error(&mut self, code: &'static str, message: impl Into<String>) {
-        self.diagnostics.push(SolDiagnostic::error(
-            DiagnosticPhase::Analyzer,
-            code,
-            message,
-        ));
+        let mut diag = SolDiagnostic::error(DiagnosticPhase::Analyzer, code, message);
+        if let Some(span) = self.current_span {
+            diag = diag.with_span(span);
+        }
+        self.diagnostics.push(diag);
     }
 
     fn new_table(&mut self) -> TypeTableId {
@@ -75,6 +88,26 @@ impl Analyzer {
             self.emit_error(codes::SEMA_REDEFINITION, format!("redefinition of `{name}`"));
         }
     }
+    /// Look up the span of an AST node, if any. Only the 10
+    /// struct variants the parser annotates carry spans (see the
+    /// `Ast` definition); everything else returns None and the
+    /// analyzer's `current_span` fallback takes over.
+    fn node_span(node: &Ast) -> Option<SourceSpan> {
+        match node {
+            Ast::DeclFunc { span, .. }
+            | Ast::DeclExtFunc { span, .. }
+            | Ast::DeclVar { span, .. }
+            | Ast::DeclStruct { span, .. }
+            | Ast::DeclEnum { span, .. }
+            | Ast::Block { span, .. }
+            | Ast::StmtImport { span, .. }
+            | Ast::StmtIf { span, .. }
+            | Ast::StmtWhile { span, .. }
+            | Ast::StmtFor { span, .. } => *span,
+            _ => None,
+        }
+    }
+
     fn get_entry(&mut self, name: &String) -> Option<&Symbol> {
         let tables = self.tts.iter().map(|i| &self.tt_arena[*i]);
         tables.rev().find_map(|table| table.get(name))
@@ -102,7 +135,7 @@ impl Analyzer {
         // Pass 1: Register all top-level function declarations so forward references work
         for decl in program.iter() {
             match decl {
-                Ast::DeclFunc { name, params, ret, .. } | Ast::DeclExtFunc { name, params, ret } => {
+                Ast::DeclFunc { name, params, ret, .. } | Ast::DeclExtFunc { name, params, ret, .. } => {
                     let function_type = Box::new(Type::Function {
                         params: params.iter().map(|(_, ty)| ty.to_owned()).collect(),
                         ret: Box::new(ret.clone()),
@@ -120,11 +153,26 @@ impl Analyzer {
 
     }
     fn check(&mut self, node: &mut Ast) -> Option<Type> {
+        // B.D c35: track the most-recent AST-node span seen so
+        // leaf-node diagnostics (which the parser doesn't span)
+        // get an approximate-but-real source location from their
+        // enclosing block / decl. Save + restore around the
+        // recursion so siblings don't inherit each other's spans.
+        let saved_span = self.current_span;
+        if let Some(s) = Self::node_span(node) {
+            self.current_span = Some(s);
+        }
+        let result = self.check_inner(node);
+        self.current_span = saved_span;
+        result
+    }
+
+    fn check_inner(&mut self, node: &mut Ast) -> Option<Type> {
         match node {
-            Ast::DeclExtFunc { name: _, params: _, ret } => {
+            Ast::DeclExtFunc { name: _, params: _, ret, .. } => {
                 Some(ret.clone())
             }
-            Ast::DeclFunc { name: _, params, ret, body, scope } => {
+            Ast::DeclFunc { name: _, params, ret, body, scope, .. } => {
                 let function_type = Box::new(Type::Function {
                     params: params.iter().map(|(_, ty)| ty.to_owned()).collect(),
                     ret: Box::new(ret.clone()),
@@ -160,15 +208,15 @@ impl Analyzer {
                 self.add_entry(name.to_owned(), Symbol::Variable { kind: Box::new(kind.clone()) });
                 Some(kind.clone())
             }
-            Ast::DeclStruct { name, fields } => {
+            Ast::DeclStruct { name, fields, .. } => {
                 self.add_entry(name.to_owned(), Symbol::Struct { fields: fields.iter().map(|(name, ty)| (name.to_owned(), Box::from(ty.clone()))).collect() });
                 Some(Type::Ident(name.clone()))
             }
-            Ast::DeclEnum { name, variants } => {
+            Ast::DeclEnum { name, variants, .. } => {
                 self.add_entry(name.to_owned(), Symbol::Enum { variants: variants.to_owned() });
                 Some(Type::Ident(name.clone()))
             }
-            Ast::Block { block: stmts, scope } => {
+            Ast::Block { block: stmts, scope, .. } => {
                 if stmts.len() == 0 { return Some(Type::Void); }
                 *scope = self.new_table();
 
@@ -190,7 +238,7 @@ impl Analyzer {
                 }
                 Some(Type::Void)
             }
-            Ast::StmtIf { condition, body, alt } => {
+            Ast::StmtIf { condition, body, alt, .. } => {
                 let cond = self.check(condition)?;
                 if type_eq(cond.clone(), Type::Bool).is_err() {
                     self.emit_error(
@@ -209,7 +257,7 @@ impl Analyzer {
 
                 Some(Type::Void)
             }
-            Ast::StmtWhile { condition, body } => {
+            Ast::StmtWhile { condition, body, .. } => {
                 let cond = self.check(&mut *condition)?;
                 if type_eq(cond.clone(), Type::Bool).is_err() {
                     self.emit_error(
@@ -225,7 +273,7 @@ impl Analyzer {
 
                 Some(Type::Void)
             }
-            Ast::StmtFor { elem_name, array, body } => {
+            Ast::StmtFor { elem_name, array, body, .. } => {
                 let arr_type = self.check(array)?;
                 let Type::Array { inner, .. } = arr_type else {
                     self.emit_error(
