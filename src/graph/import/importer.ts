@@ -334,26 +334,34 @@ function importFunction(
   const body = unwrapBlock(decl.body);
   let prevSpecId = startSpecId;
   let prevRealId = startRealId;
+  // The `start` node continues on its own `next` port. Branch /
+  // while / forEach continue on `after`; importStatement encodes
+  // this in `exitPort`.
+  let prevExitPort: 'next' | 'after' = 'next';
   for (const stmt of body) {
     const result = importStatement(stmt, state);
     if (!result) continue; // statement produced nothing (rare; pure noop)
     state.stmtCount++;
-    // Wire prev → entry of this statement.
+    // Wire prev → entry of this statement using the previous
+    // statement's correct exit port. Using `next` on a branch
+    // would silently drop everything after it from the emit
+    // pipeline (caught by B.8 round-trip snapshot tests).
     state.spec.edges.push({
       from: prevSpecId,
       to: result.entrySpecId,
-      fromPort: 'next',
+      fromPort: prevExitPort,
       toPort: 'prev',
       kind: 'control',
     });
     state.edges.push({
       id: nanoid(8),
-      source: { node: prevRealId, port: 'next' },
+      source: { node: prevRealId, port: prevExitPort },
       target: { node: result.entryRealId, port: 'prev' },
       kind: 'control',
     });
     prevSpecId = result.exitSpecId;
     prevRealId = result.exitRealId;
+    prevExitPort = result.exitPort;
   }
 
   // Layout the spec, copy positions onto the real nodes.
@@ -401,6 +409,14 @@ interface StmtImportResult {
    *  loops this is the JOIN point on `after`. */
   exitSpecId: string;
   exitRealId: string;
+  /**
+   * Which port on the exit node the NEXT statement should wire to.
+   * Simple statements continue on `next`; branch / while / forEach
+   * continue on `after` (the emitter walks `after` last to ensure
+   * correct nesting — wiring on `next` would silently make
+   * subsequent statements vanish from the emit output).
+   */
+  exitPort: 'next' | 'after';
 }
 
 function importStatement(stmt: Ast, state: FuncImportState): StmtImportResult | null {
@@ -533,16 +549,20 @@ function importStatement(stmt: Ast, state: FuncImportState): StmtImportResult | 
       if (!r) continue;
       if (!first) first = r;
       if (prev) {
+        // Wire prev → r using prev's own exitPort (next vs after).
+        // Hard-coding `next` here would silently drop statements
+        // after nested branches/loops inside a block — same class
+        // of bug B.8 round-trip tests caught at the function level.
         state.spec.edges.push({
           from: prev.exitSpecId,
           to: r.entrySpecId,
-          fromPort: 'next',
+          fromPort: prev.exitPort,
           toPort: 'prev',
           kind: 'control',
         });
         state.edges.push({
           id: nanoid(8),
-          source: { node: prev.exitRealId, port: 'next' },
+          source: { node: prev.exitRealId, port: prev.exitPort },
           target: { node: r.entryRealId, port: 'prev' },
           kind: 'control',
         });
@@ -550,11 +570,14 @@ function importStatement(stmt: Ast, state: FuncImportState): StmtImportResult | 
       prev = r;
     }
     if (!first || !prev) return null;
+    // The block's overall exit is the last statement's exit — same
+    // node + same exit port (so nested blocks compose correctly).
     return {
       entrySpecId: first.entrySpecId,
       entryRealId: first.entryRealId,
       exitSpecId: prev.exitSpecId,
       exitRealId: prev.exitRealId,
+      exitPort: prev.exitPort,
     };
   }
 
@@ -625,6 +648,7 @@ function importBranch(
     entryRealId: branchReal.id,
     exitSpecId: branchSpec.id, // continuation hangs off `after`
     exitRealId: branchReal.id,
+    exitPort: 'after',
   };
 }
 
@@ -666,6 +690,7 @@ function importLoop(
     entryRealId: real.id,
     exitSpecId: spec.id,
     exitRealId: real.id,
+    exitPort: 'after',
   };
 }
 
@@ -715,6 +740,7 @@ function importForEach(
     entryRealId: real.id,
     exitSpecId: spec.id,
     exitRealId: real.id,
+    exitPort: 'after',
   };
 }
 
@@ -738,6 +764,7 @@ function pushSimpleStatement(
     entryRealId: node.id,
     exitSpecId: spec.id,
     exitRealId: node.id,
+    exitPort: 'next',
   };
 }
 
@@ -771,6 +798,7 @@ function makeUnsupportedPlaceholder(
     entryRealId: real.id,
     exitSpecId: spec.id,
     exitRealId: real.id,
+    exitPort: 'next', // placeholder is a print, which continues on `next`
   };
 }
 
