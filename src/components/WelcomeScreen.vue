@@ -22,8 +22,43 @@
 import { computed } from 'vue';
 import { SAMPLES, type Sample } from '@/samples';
 import { useGraphStore } from '@/stores/graph.store';
+import { useSolManStore } from '@/stores/sol-man.store';
 
 const graph = useGraphStore();
+const solMan = useSolManStore();
+
+// Pre-baked prompts that land directly in Sol Man's textarea when
+// clicked. Crafted to demonstrate the breadth of patterns Sol Man
+// handles well — threshold gate, scheduled health check,
+// event-driven validation, and a multi-step approval chain. Each
+// produces a clean 4-8 node workflow so the first-run user sees a
+// "this generated something coherent" result without having to
+// think about prompt shape.
+const PROMPT_EXAMPLES = [
+  {
+    label: 'Order approval gate',
+    prompt: 'When an order over $1000 comes in, send it for approval; otherwise auto-approve.',
+  },
+  {
+    label: 'Scheduled health check',
+    prompt: 'Every 5 minutes, check system health and alert the on-call team if unhealthy.',
+  },
+  {
+    label: 'Payment webhook',
+    prompt: 'When a payment webhook is received, validate the payload, update SAP, and notify finance.',
+  },
+  {
+    label: 'New-employee provisioning',
+    prompt: 'When a new employee is created, provision their accounts in Slack, GitHub, and Notion.',
+  },
+];
+
+function onPickPromptExample(text: string) {
+  solMan.prompt = text;
+  dismissForever();
+  emit('open-sol-man');
+  emit('close');
+}
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{
@@ -113,15 +148,32 @@ const orderedSamples = computed<Sample[]>(() => {
              user's eye lands on it first; the blank option stays
              quiet at the end of the row. -->
         <div class="card-row">
-          <button class="card primary-card ai-card" type="button" @click="onSolMan">
-            <div class="card-icon">✨</div>
-            <div class="card-title">Generate with AI</div>
-            <div class="card-desc">
-              Describe a workflow in plain English. Sol Man generates an editable graph
-              you can refine on the canvas.
+          <div class="card primary-card ai-card">
+            <button
+              type="button"
+              class="ai-card-main"
+              @click="onSolMan"
+              aria-label="Open Sol Man with an empty prompt"
+            >
+              <div class="card-icon">✨</div>
+              <div class="card-title">Generate with AI</div>
+              <div class="card-desc">
+                Describe a workflow in plain English. Sol Man generates an editable graph
+                you can refine on the canvas.
+              </div>
+            </button>
+            <div class="card-prompt-row" aria-label="Sample prompts">
+              <span class="card-prompt-label">Try:</span>
+              <button
+                v-for="ex in PROMPT_EXAMPLES"
+                :key="ex.label"
+                type="button"
+                class="card-prompt-chip"
+                :title="ex.prompt"
+                @click="onPickPromptExample(ex.prompt)"
+              >{{ ex.label }}</button>
             </div>
-            <div class="card-cta">Open Sol Man →</div>
-          </button>
+          </div>
 
           <button class="card primary-card samples-card" type="button" @click="onPickSample(orderedSamples[0])">
             <div class="card-icon">⌘</div>
@@ -342,6 +394,72 @@ const orderedSamples = computed<Sample[]>(() => {
 }
 .ai-card:hover .card-cta {
   color: var(--sf-cat-trigger);
+}
+
+/*
+ * The AI card now wraps a primary action button + a row of prompt
+ * chips, so its layout is row-of-button-then-chips instead of the
+ * flat-flex-column the other cards use. The inner main button has
+ * to fill the upper region; the chips sit underneath.
+ */
+.ai-card {
+  padding: 0; /* the inner button + chip row provide their own padding */
+}
+.ai-card-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: 8px;
+  padding: 18px 18px 12px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+.ai-card-main:focus-visible {
+  outline: 2px solid var(--sf-cat-trigger);
+  outline-offset: -4px;
+  border-radius: var(--sf-radius-md);
+}
+.card-prompt-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 18px 14px;
+  border-top: 1px dashed rgba(232, 166, 87, 0.20);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+.card-prompt-label {
+  font-size: 0.625rem;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--sf-text-3);
+  margin-right: 2px;
+}
+.card-prompt-chip {
+  font-size: 0.6875rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(232, 166, 87, 0.10);
+  border: 1px solid rgba(232, 166, 87, 0.25);
+  color: var(--sf-text-1);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.card-prompt-chip:hover {
+  background: rgba(232, 166, 87, 0.20);
+  border-color: rgba(232, 166, 87, 0.55);
+  color: var(--sf-text-0);
 }
 
 /* Samples section */
