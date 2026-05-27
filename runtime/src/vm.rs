@@ -240,11 +240,23 @@ impl VM {
 
             Inst::GetField(idx) => {
                 let struct_ref = self.pop()? as usize;
+                // Two-step lookup: validate heap-shape first, then
+                // bounds-check the field index. Both failure modes
+                // surface as structured RunErrors (B.11 c32: GetField
+                // previously panicked on field-OOB).
                 match self.heap.get(struct_ref) {
-                    Some(HeapObject::Struct(fields)) => self.push(fields[idx]),
-                    Some(_) => return Err(RunError::HeapShapeMismatch {
+                    Some(HeapObject::Struct(fields)) => {
+                        if idx >= fields.len() {
+                            return Err(RunError::IndexOutOfBounds {
+                                index: idx,
+                                length: fields.len(),
+                            });
+                        }
+                        self.push(fields[idx]);
+                    }
+                    Some(other) => return Err(RunError::HeapShapeMismatch {
                         expected: "Struct",
-                        got: heap_kind(&self.heap[struct_ref]),
+                        got: heap_kind(other),
                     }),
                     None => return Err(RunError::HeapShapeMismatch {
                         expected: "Struct",
@@ -257,7 +269,15 @@ impl VM {
                 let struct_ref = self.pop()? as usize;
                 let value = self.pop()?;
                 match self.heap.get_mut(struct_ref) {
-                    Some(HeapObject::Struct(fields)) => fields[idx] = value,
+                    Some(HeapObject::Struct(fields)) => {
+                        if idx >= fields.len() {
+                            return Err(RunError::IndexOutOfBounds {
+                                index: idx,
+                                length: fields.len(),
+                            });
+                        }
+                        fields[idx] = value;
+                    }
                     Some(other) => return Err(RunError::HeapShapeMismatch {
                         expected: "Struct",
                         got: heap_kind(other),

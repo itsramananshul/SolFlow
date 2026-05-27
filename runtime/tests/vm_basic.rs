@@ -143,6 +143,57 @@ fn ext_call_is_blocked_not_panicked() {
     }
 }
 
+/// B.11 c32 regression: GetField on an OOB index used to panic
+/// (uncaught), bringing down the WASM boundary as an ICE. After
+/// the hardening sweep it produces a structured runtime error.
+#[test]
+fn field_index_out_of_bounds_is_structured_error() {
+    use solflow_compiler::bytecode::Inst;
+    use solflow_compiler::parser::Ast;
+    // Hand-crafted bytecode: allocate a 2-field struct, ask for
+    // field 99. Skip codegen entirely so we have direct control.
+    let program = vec![
+        Inst::PushConst(Ast::ExprInteger(10)),  // field 0 value
+        Inst::PushConst(Ast::ExprInteger(20)),  // field 1 value
+        Inst::NewStruct(2),                     // -> struct ref
+        Inst::GetField(99),                     // OOB
+    ];
+    let out = run_program(&program, None);
+    match out.error {
+        Some(RunError::IndexOutOfBounds { index, length }) => {
+            assert_eq!(index, 99);
+            assert_eq!(length, 2);
+        }
+        other => panic!("expected IndexOutOfBounds; got {other:?}"),
+    }
+}
+
+#[test]
+fn set_field_index_out_of_bounds_is_structured_error() {
+    use solflow_compiler::bytecode::Inst;
+    use solflow_compiler::parser::Ast;
+    // SetField pops struct_ref first (top), then value. So the
+    // stack just before SetField must be `[..., value, struct_ref]`:
+    //   push 99               -> [99]                  (value)
+    //   push 10/20 NewStruct  -> [99, refS]            (struct on top)
+    //   SetField(50)          -> idx 50 of 2-field struct = OOB
+    let program = vec![
+        Inst::PushConst(Ast::ExprInteger(99)),  // value to set
+        Inst::PushConst(Ast::ExprInteger(10)),  // field 0 init
+        Inst::PushConst(Ast::ExprInteger(20)),  // field 1 init
+        Inst::NewStruct(2),                     // pops 20, 10; pushes refS
+        Inst::SetField(50),                     // pops refS, then 99
+    ];
+    let out = run_program(&program, None);
+    match out.error {
+        Some(RunError::IndexOutOfBounds { index, length }) => {
+            assert_eq!(index, 50);
+            assert_eq!(length, 2);
+        }
+        other => panic!("expected IndexOutOfBounds; got {other:?}"),
+    }
+}
+
 #[test]
 fn cross_function_call_with_print() {
     let out = run(
