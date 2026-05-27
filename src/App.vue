@@ -20,12 +20,14 @@ import Toast from '@/components/Toast.vue';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useBlocksStore } from '@/stores/blocks.store';
 import { useSolManConfigStore } from '@/stores/sol-man-config.store';
+import { useControllerStore } from '@/stores/controller.store';
 
 const graph = useGraphStore();
 const ui = useUIStore();
 const sim = useSimulationStore();
 const blocks = useBlocksStore();
 const solManConfig = useSolManConfigStore();
+const controller = useControllerStore();
 const runOpen = ref(false);
 const helpOpen = ref(false);
 const controllerSettingsOpen = ref(false);
@@ -147,6 +149,11 @@ onMounted(() => {
   // Welcome screen check runs AFTER bootstrap so the localStorage read
   // and dismissed-flag both have the same lifecycle.
   maybeShowWelcomeOnMount();
+  // Phase C C.2 c62: silently reconnect to a previously-known
+  // controller URL. Fire-and-forget — the modal reflects state via
+  // its store subscription, and a failed reconnect surfaces in the
+  // mode selector ("Connect to enable").
+  controller.tryReconnectOnMount();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey);

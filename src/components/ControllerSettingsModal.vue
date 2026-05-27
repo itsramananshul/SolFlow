@@ -1,38 +1,35 @@
 <script setup lang="ts">
 /**
- * Controller Settings — Phase C.1 STUB.
+ * Controller Settings — Phase C C.2 c62.
  *
- * This modal is intentionally display-only. It establishes the
- * UI surface for the controller connection that C.2 will make
- * real. Until then:
+ * Live connection management for the SolFlow local controller.
+ * Backed by `useControllerStore`; this component is the user-facing
+ * surface for connect / disconnect / retry / mismatch handling.
  *
- *   - The URL field accepts text but goes nowhere
- *   - Connection status is always "not connected"
- *   - The connectors list shows the future shape
+ * State→UX mapping (matches `ConnectionState`):
  *
- * Documented prominently in-modal so users who open it during
- * the C.1 phase understand they're seeing scaffolding, not a
- * broken feature.
- *
- * Wired into the Toolbar's overflow menu (or equivalent
- * surface). Triggered by an explicit user action — no hidden
- * auto-popups.
+ *   idle          → "Connect" button enabled; status dot grey
+ *   connecting    → button disabled with spinner; dot orange
+ *   connected     → "Disconnect" + "Re-check" buttons; dot green;
+ *                   controller version + host-spec major shown
+ *   error.invalid_url → "Connect" disabled until URL fixed; red
+ *                       inline message under the URL field
+ *   error.network → "Retry" + "controller unreachable" hint
+ *   error.timeout → "Retry" + "took too long" hint
+ *   error.http    → status + structured error code
+ *   error.version → prominent banner: controller speaks vN, editor
+ *                   speaks vM — refuses to use it
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted } from 'vue';
+import { useControllerStore } from '@/stores/controller.store';
 import { HOST_SPEC_MAJOR } from '@/runtime-host/types';
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-/** User-entered URL. Persisted in localStorage so the value
- *  survives reloads even though it doesn't yet DO anything. */
-const url = ref<string>('');
-
-const STORAGE_KEY = 'solflow.controller.url';
+const ctrl = useControllerStore();
 
 onMounted(() => {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) url.value = saved;
   document.addEventListener('keydown', onKey);
 });
 
@@ -45,19 +42,97 @@ function onKey(e: KeyboardEvent) {
 }
 
 function onUrlInput(e: Event) {
-  url.value = (e.target as HTMLInputElement).value;
-  localStorage.setItem(STORAGE_KEY, url.value);
+  ctrl.setUrl((e.target as HTMLInputElement).value);
 }
 
 function onBackdrop(e: MouseEvent) {
   if (e.target === e.currentTarget) emit('close');
 }
 
-/** Always 'not-connected' in C.1. In C.2 this becomes
- *  reactive based on the actual /healthz response. */
-const status = computed<'not-connected' | 'connecting' | 'connected'>(
-  () => 'not-connected',
+const stateKind = computed(() => ctrl.connection.kind);
+
+const statusLabel = computed(() => {
+  const c = ctrl.connection;
+  switch (c.kind) {
+    case 'idle':
+      return 'Not connected';
+    case 'connecting':
+      return 'Connecting…';
+    case 'connected':
+      return 'Connected';
+    case 'error': {
+      switch (c.reason.kind) {
+        case 'invalid_url':
+          return 'Invalid URL';
+        case 'network':
+          return 'Unreachable';
+        case 'timeout':
+          return 'Timed out';
+        case 'http':
+          return `Controller error (HTTP ${c.reason.status})`;
+        case 'decode':
+          return 'Bad response shape';
+        case 'version':
+          return 'Version mismatch';
+        case 'unknown':
+          return 'Failed';
+      }
+    }
+  }
+  return '';
+});
+
+const statusDotClass = computed(() => {
+  switch (ctrl.connection.kind) {
+    case 'idle':
+      return 'idle';
+    case 'connecting':
+      return 'connecting';
+    case 'connected':
+      return 'ok';
+    case 'error':
+      return 'err';
+  }
+  return 'idle';
+});
+
+/** Pretty controller version banner — appears only when connected. */
+const connectionDetail = computed(() => {
+  if (ctrl.connection.kind !== 'connected') return null;
+  return {
+    version: ctrl.connection.health.controller_version,
+    hostSpec: ctrl.connection.health.host_spec_major,
+    connectedAtIso: new Date(ctrl.connection.connectedAt).toISOString(),
+  };
+});
+
+/** Inline error message under the URL field when error state. */
+const errorDetail = computed(() => {
+  const c = ctrl.connection;
+  if (c.kind !== 'error') return null;
+  return c.reason;
+});
+
+/** Disabled while URL is empty OR mid-connection. */
+const connectDisabled = computed(
+  () => ctrl.connection.kind === 'connecting' || ctrl.url.trim().length === 0,
 );
+
+function onConnect() {
+  void ctrl.connect();
+}
+
+function onRetry() {
+  void ctrl.retry();
+}
+
+function onDisconnect() {
+  ctrl.disconnect();
+}
+
+function onRecheck() {
+  void ctrl.connect();
+}
 </script>
 
 <template>
@@ -67,77 +142,107 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
         <header class="modal-header">
           <div class="header-left">
             <span class="title">Controller Settings</span>
-            <span class="phase-tag">Phase C.1 scaffold</span>
+            <span class="phase-tag">Phase C.2</span>
           </div>
           <button class="close" @click="emit('close')" aria-label="Close">✕</button>
         </header>
 
         <div class="body">
-          <!-- Honest scaffold disclaimer at the very top -->
-          <div class="scaffold-notice">
-            <strong>This is a UI scaffold for Phase C.</strong>
-            The connection isn't live yet. C.2 (next milestone)
-            ships the real controller binary + makes this modal
-            actually connect. See
-            <a
-              href="https://github.com/itsramananshul/SolFlow/blob/main/docs/dev/PHASE_C_ROADMAP.md"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="link"
-            >Phase C Roadmap →</a>
-            for the timeline.
-          </div>
-
           <section class="settings-section">
             <label class="field">
               <span class="field-label">Controller URL</span>
               <input
                 type="url"
                 class="field-input"
-                placeholder="http://localhost:3939 (C.2+)"
-                :value="url"
+                placeholder="http://127.0.0.1:3939"
+                :value="ctrl.url"
                 @input="onUrlInput"
+                :disabled="stateKind === 'connecting'"
               />
               <span class="field-help">
-                The URL of a running SolFlow controller. Stored
-                locally; never sent anywhere in C.1.
+                The URL of your locally running
+                <code>solflow-controller</code>. Stored in this
+                browser; never sent anywhere except to the
+                controller itself.
               </span>
             </label>
-          </section>
-
-          <section class="settings-section">
-            <h3>Connection status</h3>
-            <div class="status-row" :class="status">
-              <span class="status-dot" :class="status" />
-              <template v-if="status === 'not-connected'">
-                Not connected — controller-mode execution isn't
-                wired up until C.2.
-              </template>
-              <template v-else-if="status === 'connecting'">
-                Connecting…
-              </template>
-              <template v-else>Connected</template>
-            </div>
-            <div class="proto-detail">
-              <span class="subtle">Host-spec major version this editor supports:</span>
-              <code>{{ HOST_SPEC_MAJOR }}</code>
+            <div v-if="errorDetail?.kind === 'invalid_url'" class="inline-error">
+              {{ errorDetail.message }}
             </div>
           </section>
 
           <section class="settings-section">
-            <h3>Connectors (controller-managed)</h3>
-            <div class="connectors-note">
-              When connected, the controller exposes which
-              connectors are configured (HTTP, etc.). Connector
-              credentials NEVER leave the controller process.
+            <h3>Connection</h3>
+            <div class="status-row" :class="statusDotClass">
+              <span class="status-dot" :class="statusDotClass" />
+              <span class="status-label">{{ statusLabel }}</span>
+              <div class="status-actions">
+                <button
+                  v-if="stateKind === 'idle' || (stateKind === 'error' && errorDetail?.kind === 'invalid_url')"
+                  class="primary"
+                  :disabled="connectDisabled"
+                  @click="onConnect"
+                >Connect</button>
+                <button
+                  v-else-if="stateKind === 'connecting'"
+                  class="primary"
+                  disabled
+                >Connecting…</button>
+                <template v-else-if="stateKind === 'connected'">
+                  <button class="ghost" @click="onRecheck">Re-check</button>
+                  <button class="ghost" @click="onDisconnect">Disconnect</button>
+                </template>
+                <template v-else-if="stateKind === 'error'">
+                  <button class="primary" @click="onRetry">Retry</button>
+                </template>
+              </div>
             </div>
-            <ul class="connectors-list">
-              <li class="connector-row placeholder">
-                <span class="conn-name">http</span>
-                <span class="conn-desc">— HTTP/REST reference (lands in C.4)</span>
-                <span class="conn-tag">not yet configured</span>
-              </li>
-            </ul>
+
+            <!-- Version-mismatch banner — controller refused -->
+            <div
+              v-if="errorDetail?.kind === 'version'"
+              class="version-banner"
+            >
+              <strong>Host-spec version mismatch.</strong>
+              The controller speaks host-spec major
+              <code>{{ errorDetail.controllerMajor }}</code>,
+              this editor speaks
+              <code>{{ errorDetail.editorMajor }}</code>.
+              Connection refused. Update either side so the major
+              versions match before retrying.
+            </div>
+
+            <!-- Network / timeout / http error inline detail -->
+            <div
+              v-if="errorDetail && errorDetail.kind !== 'invalid_url' && errorDetail.kind !== 'version'"
+              class="inline-error"
+            >
+              {{ errorDetail.message }}
+              <template v-if="errorDetail.kind === 'network'">
+                <br />
+                <span class="subtle">
+                  Is the controller running? Try
+                  <code>cargo run -p solflow_controller</code>.
+                </span>
+              </template>
+            </div>
+
+            <!-- Connection detail -->
+            <div v-if="connectionDetail" class="connection-detail">
+              <div class="kv">
+                <span class="k">controller version</span>
+                <code class="v">{{ connectionDetail.version }}</code>
+              </div>
+              <div class="kv">
+                <span class="k">host-spec major</span>
+                <code class="v">{{ connectionDetail.hostSpec }}</code>
+                <span class="subtle">(editor: {{ HOST_SPEC_MAJOR }})</span>
+              </div>
+              <div class="kv">
+                <span class="k">connected at</span>
+                <code class="v">{{ connectionDetail.connectedAtIso }}</code>
+              </div>
+            </div>
           </section>
 
           <section class="settings-section">
@@ -149,15 +254,20 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
                   <strong>browser-sim</strong>
                   <span class="subtle">— canonical SOL VM in your browser; ExtCall blocked</span>
                 </div>
-                <span class="mode-tag">Today (Phase B)</span>
+                <span class="mode-tag">Always available</span>
               </div>
-              <div class="mode-row disabled">
-                <span class="mode-dot" />
+              <div
+                class="mode-row"
+                :class="{ active: ctrl.isConnected, disabled: !ctrl.isConnected }"
+              >
+                <span class="mode-dot" :class="{ ok: ctrl.isConnected }" />
                 <div class="mode-text">
                   <strong>controller-local</strong>
                   <span class="subtle">— canonical VM hosted by a controller on this machine</span>
                 </div>
-                <span class="mode-tag">C.2</span>
+                <span class="mode-tag">
+                  {{ ctrl.isConnected ? 'Available' : 'Connect to enable' }}
+                </span>
               </div>
               <div class="mode-row disabled">
                 <span class="mode-dot" />
@@ -173,8 +283,14 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
 
         <footer class="modal-footer">
           <span class="subtle">
-            Editor stays on browser-sim mode for all execution
-            until controller integration lands.
+            <template v-if="ctrl.isConnected">
+              Run modal now shows the mode selector — pick
+              controller-local to execute via the controller.
+            </template>
+            <template v-else>
+              Connect to a controller to unlock controller-local
+              execution mode.
+            </template>
           </span>
           <button class="ghost" @click="emit('close')">Done</button>
         </footer>
@@ -204,7 +320,7 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
   background: var(--sf-bg-0);
   border: 1px solid var(--sf-border);
   border-radius: 6px;
-  width: min(560px, 92vw);
+  width: min(620px, 92vw);
   max-height: 84vh;
   display: flex;
   flex-direction: column;
@@ -226,8 +342,8 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
 .phase-tag {
   font-size: 0.625rem;
   font-family: var(--sf-font-mono);
-  background: rgba(232, 166, 87, 0.16);
-  color: var(--sf-warning);
+  background: rgba(0, 204, 136, 0.16);
+  color: var(--sf-success);
   padding: 2px 8px;
   border-radius: 3px;
 }
@@ -248,19 +364,8 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
-
-.scaffold-notice {
-  background: rgba(232, 166, 87, 0.08);
-  border: 1px solid rgba(232, 166, 87, 0.22);
-  border-radius: 4px;
-  padding: 10px 12px;
-  font-size: 0.6875rem;
-  line-height: 1.5;
-  color: var(--sf-text-1);
-}
-.scaffold-notice strong { color: var(--sf-text-0); }
 
 .settings-section h3 {
   font-size: 0.625rem;
@@ -295,64 +400,104 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
 .field-input:focus {
   outline: 1px solid var(--sf-accent, #5d8acf);
 }
+.field-input:disabled { opacity: 0.6; cursor: not-allowed; }
 .field-help {
   font-size: 0.625rem;
   color: var(--sf-text-3);
   font-style: italic;
 }
+.field-help code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-2);
+  padding: 0 4px;
+  border-radius: 2px;
+  font-style: normal;
+}
+
+.inline-error {
+  margin-top: 6px;
+  font-size: 0.6875rem;
+  color: var(--sf-danger, #e75a5a);
+  background: rgba(231, 90, 90, 0.06);
+  border: 1px solid rgba(231, 90, 90, 0.2);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+.inline-error code {
+  font-family: var(--sf-font-mono);
+  background: rgba(0, 0, 0, 0.12);
+  padding: 0 4px;
+  border-radius: 2px;
+}
 
 .status-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 0.6875rem;
-  padding: 4px 0;
+  padding: 6px 0;
 }
+.status-label { flex: 0 0 auto; min-width: 110px; }
+.status-actions { margin-left: auto; display: flex; gap: 6px; }
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  flex: 0 0 auto;
 }
-.status-dot.not-connected { background: var(--sf-text-3); }
-.status-dot.connecting    { background: var(--sf-warning); }
-.status-dot.connected     { background: var(--sf-success); }
+.status-dot.idle        { background: var(--sf-text-3); }
+.status-dot.connecting  { background: var(--sf-warning); animation: pulse 1.2s ease-in-out infinite; }
+.status-dot.ok          { background: var(--sf-success); }
+.status-dot.err         { background: var(--sf-danger, #e75a5a); }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
 
-.proto-detail {
+.version-banner {
   margin-top: 6px;
   font-size: 0.6875rem;
+  background: rgba(231, 90, 90, 0.08);
+  border: 1px solid rgba(231, 90, 90, 0.32);
+  border-radius: 4px;
+  padding: 8px 12px;
+  line-height: 1.55;
+  color: var(--sf-text-1);
 }
-.proto-detail code {
+.version-banner strong { color: var(--sf-danger, #e75a5a); }
+.version-banner code {
   font-family: var(--sf-font-mono);
-  background: var(--sf-bg-2);
-  padding: 1px 6px;
-  border-radius: 3px;
-  color: var(--sf-text-0);
+  background: rgba(0, 0, 0, 0.14);
+  padding: 0 4px;
+  border-radius: 2px;
 }
 
-.connectors-note {
-  font-size: 0.6875rem;
-  color: var(--sf-text-2);
-  margin-bottom: 6px;
+.connection-detail {
+  margin-top: 8px;
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
-.connectors-list { list-style: none; padding: 0; margin: 0; }
-.connector-row {
+.kv {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 4px 0;
+  gap: 10px;
   font-size: 0.6875rem;
 }
-.connector-row.placeholder { opacity: 0.6; }
-.conn-name {
-  font-family: var(--sf-font-mono);
-  font-weight: 600;
-  color: var(--sf-text-0);
-}
-.conn-desc { color: var(--sf-text-3); flex: 1; }
-.conn-tag {
+.kv .k {
+  flex: 0 0 130px;
   font-size: 0.625rem;
+  color: var(--sf-text-2);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.kv .v {
   font-family: var(--sf-font-mono);
-  color: var(--sf-warning);
+  color: var(--sf-text-0);
 }
 
 .mode-list {
@@ -379,6 +524,7 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
   height: 8px;
   border-radius: 50%;
   background: var(--sf-text-3);
+  flex: 0 0 auto;
 }
 .mode-dot.ok { background: var(--sf-success); }
 .mode-text {
@@ -406,6 +552,18 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
   justify-content: space-between;
   gap: 12px;
 }
+.primary {
+  background: var(--sf-accent, #5d8acf);
+  border: 1px solid var(--sf-accent, #5d8acf);
+  color: white;
+  padding: 5px 14px;
+  border-radius: 4px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.primary:disabled { opacity: 0.55; cursor: not-allowed; }
+.primary:not(:disabled):hover { filter: brightness(1.1); }
 .ghost {
   background: transparent;
   border: 1px solid var(--sf-border);
@@ -417,9 +575,10 @@ const status = computed<'not-connected' | 'connecting' | 'connected'>(
 }
 .ghost:hover { background: var(--sf-bg-2); color: var(--sf-text-0); }
 .subtle { color: var(--sf-text-3); font-size: 0.625rem; }
-.link {
-  color: var(--sf-accent, #5d8acf);
-  text-decoration: none;
+.subtle code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-2);
+  padding: 0 4px;
+  border-radius: 2px;
 }
-.link:hover { color: var(--sf-text-0); text-decoration: underline; }
 </style>
