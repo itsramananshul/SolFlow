@@ -106,6 +106,28 @@ function onBackdrop(e: MouseEvent) {
               <span>Quick Add (Space / {{ modKey }}K) searches blocks + nodes together. Block entries land at the top when the query is empty.</span>
             </div>
           </section>
+          <section>
+            <div class="section-title">Sol Man (AI)</div>
+            <div class="row">
+              <span><strong>What it does:</strong> turns plain-English descriptions into editable workflow graphs. Bring your own API key (Anthropic / OpenAI / Gemini / Grok / OpenRouter / OpenAI-compatible).</span>
+            </div>
+            <div class="row">
+              <span><strong>Open:</strong></span>
+              <kbd>{{ modKey }}</kbd><kbd>J</kbd>
+            </div>
+            <div class="row">
+              <span><strong>Prompt tips:</strong> describe the trigger ("when an order arrives…"), the condition ("if amount &gt; 1000"), and the action ("send for approval"). Sol Man fills in the structure.</span>
+            </div>
+            <div class="row">
+              <span><strong>Apply:</strong> generated graphs run through the same validator as hand-built ones. Missing inputs and unsafe inline expressions cannot be force-applied — fix the prompt and regenerate.</span>
+            </div>
+            <div class="row">
+              <span><strong>Assumptions:</strong> when the prompt is under-specified, Sol Man lists every guess it made in the preview. Read them before applying — they're listed in the order they affected the graph.</span>
+            </div>
+            <div class="row">
+              <span><strong>Repair:</strong> calls to undeclared functions are auto-rewritten as <code>print()</code> placeholders so the workflow still validates. The Inspector then lets you wire a real function later.</span>
+            </div>
+          </section>
         </div>
       </div>
     </div>

@@ -331,7 +331,9 @@ function downloadSol() {
       </template>
       <div class="canvas-region">
         <Canvas />
-        <DiagnosticsDrawer v-if="ui.drawerOpen && !presentationMode" />
+        <Transition name="drawer-slide">
+          <DiagnosticsDrawer v-if="ui.drawerOpen && !presentationMode" />
+        </Transition>
       </div>
       <template v-if="!presentationMode">
         <Splitter
@@ -489,5 +491,23 @@ function downloadSol() {
 body.sf-splitter-drag {
   user-select: none;
   -webkit-user-select: none;
+}
+
+/*
+ * Diagnostics-drawer slide-up. Mounted via <Transition name="drawer-slide">
+ * around DiagnosticsDrawer in the template above. The drawer's own
+ * styles set position:absolute / bottom:0 so we only need to animate
+ * the vertical translate + opacity. Unscoped because the Transition's
+ * machinery applies the class on the drawer's outer element, which
+ * the App.vue scoped scope can't reach.
+ */
+.drawer-slide-enter-active,
+.drawer-slide-leave-active {
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.18s ease;
+}
+.drawer-slide-enter-from,
+.drawer-slide-leave-to {
+  transform: translateY(100%);
+  opacity: 0;
 }
 </style>
