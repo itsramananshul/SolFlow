@@ -57,6 +57,43 @@ export function parse_source_json(source) {
 }
 
 /**
+ * Compile + run a SOL source via the canonical VM.
+ *
+ * Envelope shape (extends the standard parse/analyze envelope):
+ *   {
+ *     ok: boolean,                  // compile-stage clean
+ *     value: { instruction_count }, // present iff compile clean
+ *     diagnostics: SolDiagnostic[], // compile diagnostics
+ *     run: {                        // null iff compile failed
+ *       return_value: i64 | null,
+ *       output: string[],
+ *       steps: number,
+ *       runtime_error: RuntimeErrorView | null,
+ *     } | null,
+ *   }
+ *
+ * `ok` reflects compile-stage success only — `run.runtime_error`
+ * may be non-null even when `ok: true`. The TS side typically
+ * renders both layers (compile + runtime) independently.
+ * @param {string} source
+ * @returns {string}
+ */
+export function run_source_json(source) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.run_source_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Version stamp the JS side can read to detect when it's loaded
  * an older WASM than the one it expected. Pinned to the crate
  * version in Cargo.toml.

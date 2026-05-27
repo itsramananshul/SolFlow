@@ -30,6 +30,7 @@ use solflow_compiler::{
     analyze_source, codes, compile_source, parse_source, AnalyzedProgram, CompiledProgram,
     DiagnosticPhase, DiagnosticSeverity, SolDiagnostic,
 };
+use solflow_runtime::{run_program, RunError};
 use wasm_bindgen::prelude::*;
 
 static PANIC_HOOK_INIT: Once = Once::new();
@@ -166,6 +167,173 @@ pub fn version() -> String {
 }
 
 // =============================================================
+//  B.10 — canonical VM execution
+// =============================================================
+//
+// `run_source_json(source)` is the canonical-simulation entry
+// point. Compiles the source through the standard pipeline; if
+// any compile errors fire, returns them WITHOUT executing.
+// Otherwise runs the bytecode through `solflow_runtime::VM` and
+// returns the captured output + return value + any runtime error.
+//
+// The envelope shape extends the existing parse/analyze/compile
+// envelope with a `run` field carrying the execution result. This
+// way the TS side can branch on `run !== null` to know whether
+// execution was attempted vs. short-circuited by compile errors.
+
+/// Per-run result, mirrored from `solflow_runtime::RunOutcome`
+/// with the runtime error structured for serde.
+#[derive(Serialize)]
+struct RunResultView<'a> {
+    /// Top-of-stack value at termination. The TS side interprets
+    /// per declared return type (raw u64; int = `value as i64`,
+    /// float = `f64::from_bits(value)`, bool = `value != 0`, etc.).
+    /// `null` when execution didn't complete (compile error or
+    /// runtime error before any return).
+    return_value: Option<i64>,
+    /// Captured `print` output lines, in canonical order.
+    output: &'a [String],
+    /// Number of VM steps executed before termination.
+    steps: usize,
+    /// Structured runtime error (div-by-zero, OOB, step limit,
+    /// ExtCall blocked, heap shape mismatch, stack underflow).
+    /// Null on clean termination.
+    runtime_error: Option<RuntimeErrorView>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind")]
+enum RuntimeErrorView {
+    DivByZero,
+    IndexOutOfBounds { index: usize, length: usize },
+    StackUnderflow,
+    StepLimit { limit: usize },
+    ExtCallBlocked { function_name: String, url: String },
+    HeapShapeMismatch { expected: String, got: String },
+}
+
+impl From<&RunError> for RuntimeErrorView {
+    fn from(e: &RunError) -> Self {
+        match e {
+            RunError::DivByZero => RuntimeErrorView::DivByZero,
+            RunError::IndexOutOfBounds { index, length } => {
+                RuntimeErrorView::IndexOutOfBounds { index: *index, length: *length }
+            }
+            RunError::StackUnderflow => RuntimeErrorView::StackUnderflow,
+            RunError::StepLimit { limit } => RuntimeErrorView::StepLimit { limit: *limit },
+            RunError::ExtCallBlocked { function_name, url } => {
+                RuntimeErrorView::ExtCallBlocked {
+                    function_name: function_name.clone(),
+                    url: url.clone(),
+                }
+            }
+            RunError::HeapShapeMismatch { expected, got } => {
+                RuntimeErrorView::HeapShapeMismatch {
+                    expected: (*expected).to_string(),
+                    got: (*got).to_string(),
+                }
+            }
+        }
+    }
+}
+
+/// Compile + run a SOL source via the canonical VM.
+///
+/// Envelope shape (extends the standard parse/analyze envelope):
+///   {
+///     ok: boolean,                  // compile-stage clean
+///     value: { instruction_count }, // present iff compile clean
+///     diagnostics: SolDiagnostic[], // compile diagnostics
+///     run: {                        // null iff compile failed
+///       return_value: i64 | null,
+///       output: string[],
+///       steps: number,
+///       runtime_error: RuntimeErrorView | null,
+///     } | null,
+///   }
+///
+/// `ok` reflects compile-stage success only — `run.runtime_error`
+/// may be non-null even when `ok: true`. The TS side typically
+/// renders both layers (compile + runtime) independently.
+#[wasm_bindgen]
+pub fn run_source_json(source: &str) -> String {
+    safe(|| {
+        let cr = compile_source(source);
+        // Pull diagnostics out first so we can keep referencing them
+        // after we partially-move `cr.value`. `has_errors` is derivable
+        // from the diagnostics directly.
+        let diagnostics = cr.diagnostics;
+        let has_errors = diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Error);
+        let CompiledProgram { program, bytecode, .. } = match cr.value {
+            Some(v) => v,
+            None => {
+                // Compile failed — surface diagnostics, skip
+                // execution. `run` is null so the TS side knows
+                // we never tried.
+                #[derive(Serialize)]
+                struct CompileFailEnvelope<'a> {
+                    ok: bool,
+                    value: Option<()>,
+                    diagnostics: &'a [SolDiagnostic],
+                    run: Option<()>,
+                }
+                let env = CompileFailEnvelope {
+                    ok: false,
+                    value: None,
+                    diagnostics: &diagnostics,
+                    run: None,
+                };
+                return serde_json::to_string(&env).unwrap_or_else(|e| {
+                    ice_envelope(&format!("serialize compile-fail: {e}"))
+                });
+            }
+        };
+
+        // Compile clean — run.
+        let outcome = run_program(&bytecode, None);
+
+        #[derive(Serialize)]
+        struct CompileOkEnvelope<'a> {
+            ok: bool,
+            value: CompiledView,
+            diagnostics: &'a [SolDiagnostic],
+            run: RunResultView<'a>,
+        }
+        #[derive(Serialize)]
+        struct CompiledView {
+            instruction_count: usize,
+        }
+
+        // Avoid dead-code from the `program` field of CompiledProgram
+        // (we only need its bytecode for execution; the AST is not
+        // surfaced here — run_source_json is for executing, callers
+        // use compile_source_json when they want the AST too).
+        let _ = program;
+
+        let runtime_err_view = outcome.error.as_ref().map(RuntimeErrorView::from);
+        let env = CompileOkEnvelope {
+            ok: !has_errors,
+            value: CompiledView { instruction_count: bytecode.len() },
+            diagnostics: &diagnostics,
+            run: RunResultView {
+                return_value: if outcome.error.is_none() {
+                    Some(outcome.return_value as i64)
+                } else {
+                    None
+                },
+                output: &outcome.output,
+                steps: outcome.steps,
+                runtime_error: runtime_err_view,
+            },
+        };
+        serde_json::to_string(&env)
+            .unwrap_or_else(|e| ice_envelope(&format!("serialize run envelope: {e}")))
+    })
+}
+
+// =============================================================
 //  Integration tests
 // =============================================================
 //
@@ -238,6 +406,55 @@ mod tests {
         let v = version();
         assert!(!v.is_empty());
         assert!(v.contains('.'));
+    }
+
+    #[test]
+    fn run_source_emits_canonical_output_for_clean_program() {
+        let json = run_source_json(
+            r#"function start() -> int { print("hi"); print(42); return 7; }"#,
+        );
+        let v = must_parse_envelope(&json);
+        assert_eq!(v["ok"], true, "compile clean: {json}");
+        assert_eq!(v["run"]["return_value"], 7);
+        assert_eq!(v["run"]["output"][0], "hi");
+        assert_eq!(v["run"]["output"][1], "42");
+        assert!(v["run"]["runtime_error"].is_null());
+        let steps = v["run"]["steps"].as_u64().expect("steps present");
+        assert!(steps > 0);
+    }
+
+    #[test]
+    fn run_source_short_circuits_on_compile_error() {
+        // Missing semicolon — parser error, no execution attempted.
+        let json = run_source_json("function start() -> int { return 0 }");
+        let v = must_parse_envelope(&json);
+        assert_eq!(v["ok"], false);
+        // `run` must be null when compile fails — TS side branches
+        // on this to know whether execution was attempted.
+        assert!(v["run"].is_null(), "run should be null when compile fails");
+    }
+
+    #[test]
+    fn run_source_surfaces_div_by_zero_as_structured_error() {
+        let json = run_source_json(
+            "function start() -> int { return 10 / 0; }",
+        );
+        let v = must_parse_envelope(&json);
+        assert_eq!(v["ok"], true, "compile clean (runtime-only failure)");
+        assert!(v["run"]["return_value"].is_null());
+        assert_eq!(v["run"]["runtime_error"]["kind"], "DivByZero");
+    }
+
+    #[test]
+    fn run_source_surfaces_step_limit_for_infinite_loop() {
+        // This relies on the runtime's 1M default; small infinite
+        // loop still hits the limit fast enough for tests.
+        let json = run_source_json(
+            "function start() -> int { while (1 == 1) { } return 0; }",
+        );
+        let v = must_parse_envelope(&json);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["run"]["runtime_error"]["kind"], "StepLimit");
     }
 
     #[test]
