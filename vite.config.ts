@@ -15,6 +15,16 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // B.D c41 — the compiler Web Worker (src/compiler/worker.ts)
+  // imports the same WASM module the main thread uses. Vite's
+  // worker bundler doesn't inherit the main `plugins` array, so
+  // we replay wasm + topLevelAwait inside the worker context too;
+  // without this the worker import fails with the same
+  // "ESM integration proposal" error as the main-thread case.
+  worker: {
+    format: 'es',
+    plugins: () => [wasm(), topLevelAwait()],
+  },
   server: {
     port: 5173,
     strictPort: false,

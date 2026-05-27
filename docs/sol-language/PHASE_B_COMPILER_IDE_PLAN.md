@@ -1,14 +1,15 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
 > **Status:** Phase B **complete + deferred-B bundle landed**
-> (2026-05-27, milestones B.1–B.11 + B.D c35/c37/c39/c36). See
-> `B_RELEASE_NOTES.md` for the full milestone summary including
-> the post-stabilization bundle. SolFlow runs on canonical SOL
-> semantics throughout; AST source spans flow through
-> analyzer diagnostics + importer attachments; codegen owns a
-> per-instruction span sidecar; true e2e round-trip verified
-> via Node-target WASM. **102 tests** across two test runners.
-> `npm run check` runs everything.
+> (2026-05-27, milestones B.1–B.11 + B.D c35/c37/c39/c36/c41).
+> See `B_RELEASE_NOTES.md` for the full milestone summary
+> including the post-stabilization bundle. SolFlow runs on
+> canonical SOL semantics throughout; AST source spans flow
+> through analyzer diagnostics + importer attachments; codegen
+> owns a per-instruction span sidecar; true e2e round-trip
+> verified via Node-target WASM; the hot-path parse/analyze runs
+> in a Web Worker so a slow parse can't freeze the UI. **102
+> tests** across two test runners. `npm run check` runs everything.
 >
 > **What's deliberately deferred beyond Phase B** (cataloged in
 > `B_RELEASE_NOTES.md` under "What's intentionally not in

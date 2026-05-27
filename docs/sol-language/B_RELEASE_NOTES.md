@@ -243,14 +243,17 @@ panel) is a small future commit.
 
 ### Deferred (with reasoning)
 
-**B.D c38 — Web Worker offloading.** Skipped this bundle. The
-hot-path `parseSource` + `analyzeSource` runs in <50ms on typical
-files; the UI-freeze risk a worker would mitigate hasn't
-materialized at current scale. Doing it half-baked would mean
-restructuring lazy-load + envelope marshaling without measurable
-user benefit. Documented as intentional defer; revisit when a
-real perf complaint surfaces (long files, large struct
-declarations, or worker-only features like off-thread cancellation).
+**B.D c41 — Web Worker offloading.** ✅ **Landed 2026-05-27** after
+the initial bundle. `src/compiler/worker.ts` runs the hot-path
+`parseSource` + `analyzeSource` in a dedicated worker; the main
+thread keeps `compileSource` + `runSource` (explicit user actions,
+worker overhead not justified). Vite's `worker.plugins` config
+replays the `wasm` + `topLevelAwait` plugins so the worker can
+load the same `compiler-wasm/pkg/` bundle the main thread uses.
+Build produces a 5.67KB worker chunk + shared 370KB WASM.
+SourcePreview's epoch-based stale-response guard absorbs in-flight
+obsolescence; no separate cancellation logic needed in the
+worker. One worker instance per page, lazy-spawned on first call.
 
 **Per-statement / per-leaf-expression spans.** Spans on tuple
 variants (`ExprInteger`, `ExprVar`, `ExprString`, etc.) would
