@@ -10,41 +10,70 @@
 //! apply via the `RunPolicy` builder.
 
 use crate::executor::{execute_run, now_ms, RunPolicy};
+use crate::scheduler::TokioScheduler;
 use crate::{Controller, ControllerError, ControllerResult, Persistence, SqlitePersistence};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use solflow_host_spec::{
     Health, RunCreated, RunEvent, RunId, RunRecord, RunRequest,
-    RunStatus, ScheduleCreate, ScheduleRecord, WorkflowId,
+    RunStatus, ScheduleCreate, ScheduleId, ScheduleRecord, WorkflowId,
     WorkflowSubmission, WorkflowSubmissionResponse, HOST_SPEC_MAJOR,
 };
 use std::sync::Arc;
 
-/// C.2 controller. Single-process, SQLite-backed.
+/// C.2 + C.3 controller. Single-process, SQLite-backed,
+/// auto-spawns the scheduler on construction.
 #[derive(Clone)]
 pub struct LocalController {
     persistence: Arc<SqlitePersistence>,
     policy: RunPolicy,
+    scheduler: TokioScheduler,
 }
 
 impl LocalController {
     pub fn new(persistence: SqlitePersistence) -> Self {
+        let policy = RunPolicy::default();
+        let scheduler = TokioScheduler::new(persistence.clone(), policy);
+        // Fire the tick loop. Tests construct controllers that
+        // never get an `await` long enough for the loop to do
+        // anything; production binds the binary for the loop's
+        // entire lifetime.
+        let _ = scheduler.start();
         Self {
             persistence: Arc::new(persistence),
-            policy: RunPolicy::default(),
+            policy,
+            scheduler,
         }
     }
 
     pub fn with_policy(mut self, policy: RunPolicy) -> Self {
         self.policy = policy;
+        // Rebuild scheduler with the updated policy. Doesn't
+        // affect the already-spawned loop (it has a clone of the
+        // pre-update scheduler), so re-start the scheduler so
+        // newly-spawned runs use the new policy. The previous
+        // loop is technically still alive; for the local
+        // controller MVP that's acceptable since with_policy is
+        // only called immediately after `new` during binary boot.
+        self.scheduler = TokioScheduler::new(
+            (*self.persistence).clone(),
+            self.policy,
+        );
+        let _ = self.scheduler.start();
         self
     }
 
     /// Expose persistence so the HTTP server (and tests) can
     /// run extra queries that aren't on the trait yet
-    /// (history listing, etc.).
+    /// (history listing, schedule listing, etc.).
     pub fn persistence(&self) -> &SqlitePersistence {
         &self.persistence
+    }
+
+    /// Expose the scheduler for the HTTP layer (webhook ingress
+    /// + schedule registration go through here).
+    pub fn scheduler(&self) -> &TokioScheduler {
+        &self.scheduler
     }
 }
 
@@ -171,12 +200,71 @@ impl Controller for LocalController {
 
     async fn create_schedule(
         &self,
-        _workflow_id: &WorkflowId,
-        _create: ScheduleCreate,
+        workflow_id: &WorkflowId,
+        create: ScheduleCreate,
     ) -> ControllerResult<ScheduleRecord> {
-        Err(ControllerError::NotImplemented {
-            what: "create_schedule lands in C.3",
-        })
+        // Build a fresh ScheduleRecord from the request; the
+        // scheduler fills in id + next_fire_at + created_at.
+        let record = ScheduleRecord {
+            id: String::new(),
+            workflow_id: workflow_id.clone(),
+            trigger: create.trigger,
+            enabled: create.enabled,
+            next_fire_at: None,
+            created_at: 0,
+        };
+        self.scheduler.register(record).await
+    }
+}
+
+// =============================================================
+//  Non-trait schedule helpers exposed to the HTTP layer (C.3)
+// =============================================================
+
+impl LocalController {
+    /// `GET /workflows/:id/schedules`
+    pub async fn list_schedules_for_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> ControllerResult<Vec<ScheduleRecord>> {
+        self.persistence
+            .list_schedules_for_workflow(workflow_id)
+            .await
+    }
+
+    /// `GET /schedules/:id`
+    pub async fn get_schedule(&self, id: &ScheduleId) -> ControllerResult<ScheduleRecord> {
+        self.persistence.get_schedule(id).await
+    }
+
+    /// `DELETE /schedules/:id`. Idempotent.
+    pub async fn cancel_schedule(&self, id: &ScheduleId) -> ControllerResult<()> {
+        self.scheduler.cancel(id).await
+    }
+
+    /// `PATCH /schedules/:id` with `{ enabled }`. Returns the
+    /// updated record so the client can refresh its UI.
+    pub async fn set_schedule_enabled(
+        &self,
+        id: &ScheduleId,
+        enabled: bool,
+    ) -> ControllerResult<ScheduleRecord> {
+        self.persistence.set_schedule_enabled(id, enabled).await?;
+        // If we just enabled a Timer schedule whose next_fire_at
+        // is in the past (the disable-then-enable cycle leaves
+        // the old next_fire_at), the tick loop will fire it
+        // immediately. That matches a user's expectation when
+        // they hit Enable: it'll fire as soon as it can.
+        self.get_schedule(id).await
+    }
+
+    /// `POST /events/*path`. Returns the first created run.
+    pub async fn ingress_event(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> ControllerResult<RunRecord> {
+        self.scheduler.ingress_event(path, body).await
     }
 }
 

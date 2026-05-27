@@ -18,12 +18,13 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use serde::Deserialize;
 use solflow_host_spec::{
     Health, RunCreated, RunRecord, RunRequest, RunStatus,
+    ScheduleCreate, ScheduleRecord,
     WorkflowSubmission, WorkflowSubmissionResponse,
 };
 use std::sync::Arc;
@@ -51,6 +52,16 @@ pub fn router(controller: LocalController) -> Router {
         .route("/runs", post(post_runs))
         .route("/runs/:id", get(get_run))
         .route("/runs/:id", delete(delete_run))
+        // Phase C C.3 — scheduling
+        .route("/workflows/:id/schedules", post(post_schedule))
+        .route("/workflows/:id/schedules", get(get_workflow_schedules))
+        .route("/schedules/:id", get(get_schedule_route))
+        .route("/schedules/:id", delete(delete_schedule_route))
+        .route("/schedules/:id", patch(patch_schedule))
+        // Wildcard `*path` captures anything after /events/ (incl.
+        // slashes), e.g. POST /events/github/webhook → path =
+        // "github/webhook".
+        .route("/events/*path", post(post_event))
         .with_state(state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -103,6 +114,67 @@ async fn delete_run(
 ) -> Result<StatusCode, ApiError> {
     s.controller.cancel_run(&id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================
+//  Phase C C.3 — schedules + event ingress
+// ============================================================
+
+async fn post_schedule(
+    State(s): State<AppState>,
+    Path(workflow_id): Path<String>,
+    Json(create): Json<ScheduleCreate>,
+) -> Result<(StatusCode, Json<ScheduleRecord>), ApiError> {
+    let rec = s.controller.create_schedule(&workflow_id, create).await?;
+    Ok((StatusCode::CREATED, Json(rec)))
+}
+
+async fn get_workflow_schedules(
+    State(s): State<AppState>,
+    Path(workflow_id): Path<String>,
+) -> Result<Json<Vec<ScheduleRecord>>, ApiError> {
+    Ok(Json(s.controller.list_schedules_for_workflow(&workflow_id).await?))
+}
+
+async fn get_schedule_route(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ScheduleRecord>, ApiError> {
+    Ok(Json(s.controller.get_schedule(&id).await?))
+}
+
+async fn delete_schedule_route(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    s.controller.cancel_schedule(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchScheduleBody {
+    enabled: bool,
+}
+
+async fn patch_schedule(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PatchScheduleBody>,
+) -> Result<Json<ScheduleRecord>, ApiError> {
+    Ok(Json(s.controller.set_schedule_enabled(&id, body.enabled).await?))
+}
+
+/// Webhook ingress. The body (any JSON) becomes `inputs` on the
+/// created run. If no enabled Event schedule matches the path,
+/// returns 404.
+async fn post_event(
+    State(s): State<AppState>,
+    Path(path): Path<String>,
+    body: Option<Json<serde_json::Value>>,
+) -> Result<(StatusCode, Json<solflow_host_spec::RunRecord>), ApiError> {
+    let body_val = body.map(|Json(v)| v).unwrap_or(serde_json::Value::Null);
+    let rec = s.controller.ingress_event(&path, body_val).await?;
+    Ok((StatusCode::ACCEPTED, Json(rec)))
 }
 
 fn parse_status(s: &str) -> Option<RunStatus> {
@@ -213,5 +285,225 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // =============================================================
+    //  Phase C C.3 — schedule + event-ingress route tests
+    // =============================================================
+
+    use solflow_compiler::compile_source;
+    use solflow_host_spec::{encode_bytecode, WorkflowSubmission};
+
+    async fn app_with_workflow() -> (Router, String) {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let c = LocalController::new(p);
+        // Submit a clean workflow so schedules can reference it.
+        let cp = compile_source(
+            "function start() -> int { print(\"sched\"); return 0; }",
+        )
+        .value
+        .expect("clean");
+        let bc = encode_bytecode(&cp.bytecode).unwrap();
+        let resp = c
+            .submit_workflow(WorkflowSubmission {
+                name: "sched-test".into(),
+                description: None,
+                bytecode: bc,
+                instruction_spans: serde_json::to_vec::<Vec<()>>(&vec![]).unwrap(),
+                source: None,
+            })
+            .await
+            .unwrap();
+        let wf_id = resp.workflow_id;
+        (router(c), wf_id)
+    }
+
+    fn body_from_json(v: serde_json::Value) -> Body {
+        Body::from(serde_json::to_vec(&v).unwrap())
+    }
+
+    #[tokio::test]
+    async fn post_schedule_creates_timer_schedule() {
+        let (app, wf) = app_with_workflow().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/workflows/{wf}/schedules"))
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({
+                        "trigger": { "kind": "Timer", "schedule_id": "", "cron": "*/5 * * * *" },
+                        "enabled": true
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn post_schedule_with_invalid_cron_rejected() {
+        let (app, wf) = app_with_workflow().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/workflows/{wf}/schedules"))
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({
+                        "trigger": { "kind": "Timer", "schedule_id": "", "cron": "not-cron" },
+                        "enabled": true
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn schedule_lifecycle_create_list_patch_delete() {
+        let (app, wf) = app_with_workflow().await;
+
+        // Create.
+        let create_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/workflows/{wf}/schedules"))
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({
+                        "trigger": { "kind": "Event", "source": "deploy" },
+                        "enabled": true
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_resp.status(), StatusCode::CREATED);
+        let body_bytes = axum::body::to_bytes(create_resp.into_body(), 4096)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+
+        // List for the workflow.
+        let list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/workflows/{wf}/schedules"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let lb = axum::body::to_bytes(list.into_body(), 4096).await.unwrap();
+        let list_val: serde_json::Value = serde_json::from_slice(&lb).unwrap();
+        assert_eq!(list_val.as_array().unwrap().len(), 1);
+
+        // Patch (disable).
+        let patch = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/schedules/{id}"))
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({ "enabled": false })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patch.status(), StatusCode::OK);
+        let pb = axum::body::to_bytes(patch.into_body(), 4096).await.unwrap();
+        let patched: serde_json::Value = serde_json::from_slice(&pb).unwrap();
+        assert_eq!(patched["enabled"], false);
+
+        // Delete.
+        let del = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/schedules/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del.status(), StatusCode::NO_CONTENT);
+
+        // Get-after-delete → 404.
+        let g = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/schedules/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(g.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn post_event_unmatched_returns_404() {
+        let (app, _) = app_with_workflow().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/events/unknown")
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({})))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn post_event_matched_creates_run_with_body_as_inputs() {
+        let (app, wf) = app_with_workflow().await;
+
+        // Register an Event schedule for path "ci/build".
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/workflows/{wf}/schedules"))
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({
+                        "trigger": { "kind": "Event", "source": "ci/build" },
+                        "enabled": true
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/events/ci/build")
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({ "ref": "main" })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let rec: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert_eq!(rec["inputs"]["ref"], "main");
+        assert_eq!(rec["trigger"]["kind"], "Event");
+        assert_eq!(rec["trigger"]["source"], "ci/build");
     }
 }
