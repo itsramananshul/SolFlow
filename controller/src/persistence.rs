@@ -13,10 +13,18 @@ use crate::{ControllerError, ControllerResult, Persistence};
 use async_trait::async_trait;
 use solflow_host_spec::{
     RunEvent, RunOutput, RunRecord, RunStatus, RunTrigger,
-    WorkflowId, RunId,
+    ScheduleId, ScheduleRecord, WorkflowId, RunId,
 };
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 use std::path::Path;
+
+/// Embedded migrations in execution order. Add new files to the
+/// end — never re-order or delete entries (controllers in the
+/// wild rely on each running exactly once per fresh DB).
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_initial", include_str!("../migrations/0001_initial.sql")),
+    ("0002_schedules", include_str!("../migrations/0002_schedules.sql")),
+];
 
 /// Concrete persistence backend wrapping a sqlx connection pool.
 #[derive(Clone)]
@@ -57,17 +65,22 @@ impl SqlitePersistence {
         Ok(p)
     }
 
-    /// Apply embedded migrations.
+    /// Apply embedded migrations in order. Each file is run via
+    /// `execute_many` so multi-statement migrations (CREATE TABLE
+    /// + CREATE INDEX in the same file) work without splitting.
+    ///
+    /// Migrations are idempotent (`CREATE TABLE IF NOT EXISTS`,
+    /// `CREATE INDEX IF NOT EXISTS`), so re-running them on a
+    /// populated DB is safe.
     async fn migrate(&self) -> ControllerResult<()> {
-        // C.2 ships a single migration. As more land we'll wire
-        // sqlx's `migrate!` macro; for now this is plain SQL so
-        // the migration is visible + reviewable.
-        sqlx::query(include_str!("../migrations/0001_initial.sql"))
-            .execute(&self.pool)
-            .await
-            .map_err(|e| ControllerError::Persistence {
-                message: format!("migrate: {e}"),
-            })?;
+        for (name, sql) in MIGRATIONS {
+            sqlx::raw_sql(sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| ControllerError::Persistence {
+                    message: format!("migrate {name}: {e}"),
+                })?;
+        }
         Ok(())
     }
 
@@ -223,6 +236,176 @@ impl Persistence for SqlitePersistence {
         // Same — empty list until C.5 lands.
         Ok(Vec::new())
     }
+
+    // ---- Phase C C.3 — schedules ----
+
+    async fn put_schedule(&self, record: &ScheduleRecord) -> ControllerResult<()> {
+        let trigger_json = serde_json::to_string(&record.trigger)
+            .expect("trigger serializes");
+        sqlx::query(
+            "INSERT INTO schedules
+                (id, workflow_id, trigger_json, enabled,
+                 next_fire_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                trigger_json = excluded.trigger_json,
+                enabled      = excluded.enabled,
+                next_fire_at = excluded.next_fire_at",
+        )
+        .bind(&record.id)
+        .bind(&record.workflow_id)
+        .bind(&trigger_json)
+        .bind(if record.enabled { 1_i32 } else { 0 })
+        .bind(record.next_fire_at)
+        .bind(record.created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ControllerError::Persistence {
+            message: format!("put_schedule: {e}"),
+        })?;
+        Ok(())
+    }
+
+    async fn get_schedule(&self, id: &ScheduleId) -> ControllerResult<ScheduleRecord> {
+        let row = sqlx::query(SCHEDULE_SELECT_COLUMNS_BY_ID)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("get_schedule: {e}"),
+            })?
+            .ok_or_else(|| ControllerError::ScheduleNotFound { id: id.clone() })?;
+        row_to_schedule_record(&row)
+    }
+
+    async fn delete_schedule(&self, id: &ScheduleId) -> ControllerResult<()> {
+        sqlx::query("DELETE FROM schedules WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("delete_schedule: {e}"),
+            })?;
+        Ok(())
+    }
+
+    async fn list_schedules_for_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> ControllerResult<Vec<ScheduleRecord>> {
+        let rows = sqlx::query(SCHEDULE_SELECT_COLUMNS_BY_WORKFLOW)
+            .bind(workflow_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("list_schedules_for_workflow: {e}"),
+            })?;
+        rows.iter().map(row_to_schedule_record).collect()
+    }
+
+    async fn list_due_timer_schedules(
+        &self,
+        now_ms: i64,
+    ) -> ControllerResult<Vec<ScheduleRecord>> {
+        let rows = sqlx::query(SCHEDULE_SELECT_DUE_TIMERS)
+            .bind(now_ms)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("list_due_timer_schedules: {e}"),
+            })?;
+        rows.iter().map(row_to_schedule_record).collect()
+    }
+
+    async fn list_enabled_event_schedules(&self)
+        -> ControllerResult<Vec<ScheduleRecord>>
+    {
+        let rows = sqlx::query(SCHEDULE_SELECT_ENABLED_EVENTS)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("list_enabled_event_schedules: {e}"),
+            })?;
+        rows.iter().map(row_to_schedule_record).collect()
+    }
+
+    async fn update_schedule_next_fire(
+        &self,
+        id: &ScheduleId,
+        next_fire_at: Option<i64>,
+    ) -> ControllerResult<()> {
+        sqlx::query("UPDATE schedules SET next_fire_at = ? WHERE id = ?")
+            .bind(next_fire_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("update_schedule_next_fire: {e}"),
+            })?;
+        Ok(())
+    }
+
+    async fn set_schedule_enabled(
+        &self,
+        id: &ScheduleId,
+        enabled: bool,
+    ) -> ControllerResult<()> {
+        sqlx::query("UPDATE schedules SET enabled = ? WHERE id = ?")
+            .bind(if enabled { 1_i32 } else { 0 })
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("set_schedule_enabled: {e}"),
+            })?;
+        Ok(())
+    }
+}
+
+// =============================================================
+//  Schedule SQL constants + row mapper (C.3)
+// =============================================================
+
+const SCHEDULE_SELECT_COLUMNS_BY_ID: &str =
+    "SELECT id, workflow_id, trigger_json, enabled, next_fire_at, created_at
+     FROM schedules WHERE id = ?";
+
+const SCHEDULE_SELECT_COLUMNS_BY_WORKFLOW: &str =
+    "SELECT id, workflow_id, trigger_json, enabled, next_fire_at, created_at
+     FROM schedules
+     WHERE workflow_id = ?
+     ORDER BY created_at ASC";
+
+const SCHEDULE_SELECT_DUE_TIMERS: &str =
+    "SELECT id, workflow_id, trigger_json, enabled, next_fire_at, created_at
+     FROM schedules
+     WHERE enabled = 1
+       AND next_fire_at IS NOT NULL
+       AND next_fire_at <= ?
+     ORDER BY next_fire_at ASC";
+
+const SCHEDULE_SELECT_ENABLED_EVENTS: &str =
+    "SELECT id, workflow_id, trigger_json, enabled, next_fire_at, created_at
+     FROM schedules
+     WHERE enabled = 1 AND next_fire_at IS NULL";
+
+fn row_to_schedule_record(
+    row: &sqlx::sqlite::SqliteRow,
+) -> ControllerResult<ScheduleRecord> {
+    let trigger_s: String = row.get("trigger_json");
+    let enabled_i: i64 = row.get("enabled");
+    Ok(ScheduleRecord {
+        id: row.get("id"),
+        workflow_id: row.get("workflow_id"),
+        trigger: serde_json::from_str::<RunTrigger>(&trigger_s).map_err(|e| {
+            ControllerError::Persistence {
+                message: format!("decode schedule trigger: {e}"),
+            }
+        })?,
+        enabled: enabled_i != 0,
+        next_fire_at: row.get("next_fire_at"),
+        created_at: row.get("created_at"),
+    })
 }
 
 // =============================================================
@@ -448,6 +631,150 @@ mod tests {
         let got = p.get_run(&"run_t3_1".into()).await.unwrap();
         assert_eq!(got.status, RunStatus::Succeeded);
         assert_eq!(got.output.unwrap().return_value, Some(7));
+    }
+
+    // =============================================================
+    //  Phase C C.3 — schedule round-trip tests
+    // =============================================================
+
+    fn timer_schedule(id: &str, workflow_id: &str, next: i64) -> ScheduleRecord {
+        ScheduleRecord {
+            id: id.into(),
+            workflow_id: workflow_id.into(),
+            trigger: RunTrigger::Timer {
+                schedule_id: id.into(),
+                cron: "*/5 * * * *".into(),
+            },
+            enabled: true,
+            next_fire_at: Some(next),
+            created_at: 1_700_000_000_000,
+        }
+    }
+
+    fn event_schedule(id: &str, workflow_id: &str, path: &str) -> ScheduleRecord {
+        ScheduleRecord {
+            id: id.into(),
+            workflow_id: workflow_id.into(),
+            trigger: RunTrigger::Event { source: path.into() },
+            enabled: true,
+            next_fire_at: None,
+            created_at: 1_700_000_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn put_get_schedule_round_trips() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_s1".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        let s = timer_schedule("sch_s1_a", "wf_s1", 1_700_000_001_000);
+        p.put_schedule(&s).await.unwrap();
+        let got = p.get_schedule(&"sch_s1_a".to_string()).await.unwrap();
+        assert_eq!(got.workflow_id, "wf_s1");
+        assert_eq!(got.next_fire_at, Some(1_700_000_001_000));
+        match got.trigger {
+            RunTrigger::Timer { cron, .. } => assert_eq!(cron, "*/5 * * * *"),
+            _ => panic!("expected Timer trigger"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_missing_schedule_returns_not_found() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let err = p.get_schedule(&"sch_nope".to_string()).await.expect_err("missing");
+        assert!(matches!(err, ControllerError::ScheduleNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn list_due_timer_schedules_filters_by_now_and_enabled() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_s2".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        // Three timers: one past-due, one future, one disabled.
+        let past = timer_schedule("sch_past", "wf_s2", 1_700_000_000_500);
+        let future = timer_schedule("sch_future", "wf_s2", 1_700_000_100_000);
+        let mut disabled = timer_schedule("sch_disabled", "wf_s2", 1_700_000_000_500);
+        disabled.enabled = false;
+        let event = event_schedule("sch_event", "wf_s2", "webhook/x");
+        p.put_schedule(&past).await.unwrap();
+        p.put_schedule(&future).await.unwrap();
+        p.put_schedule(&disabled).await.unwrap();
+        p.put_schedule(&event).await.unwrap();
+
+        let due = p.list_due_timer_schedules(1_700_000_001_000).await.unwrap();
+        let ids: Vec<_> = due.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["sch_past"]);
+    }
+
+    #[tokio::test]
+    async fn list_enabled_event_schedules_excludes_timers_and_disabled() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_s3".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        let event = event_schedule("sch_e1", "wf_s3", "deploy");
+        let mut event_disabled = event_schedule("sch_e2", "wf_s3", "rollback");
+        event_disabled.enabled = false;
+        let timer = timer_schedule("sch_t1", "wf_s3", 1_700_000_100_000);
+        p.put_schedule(&event).await.unwrap();
+        p.put_schedule(&event_disabled).await.unwrap();
+        p.put_schedule(&timer).await.unwrap();
+
+        let got = p.list_enabled_event_schedules().await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, "sch_e1");
+    }
+
+    #[tokio::test]
+    async fn update_schedule_next_fire_advances_then_lists_due_again() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_s4".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        let s = timer_schedule("sch_adv", "wf_s4", 1_700_000_000_500);
+        p.put_schedule(&s).await.unwrap();
+        // Advance past now → no longer due at the same tick.
+        p.update_schedule_next_fire(&"sch_adv".to_string(), Some(1_700_000_100_000))
+            .await
+            .unwrap();
+        let due = p.list_due_timer_schedules(1_700_000_001_000).await.unwrap();
+        assert!(due.is_empty(), "advanced schedule should not be due");
+        let got = p.get_schedule(&"sch_adv".to_string()).await.unwrap();
+        assert_eq!(got.next_fire_at, Some(1_700_000_100_000));
+    }
+
+    #[tokio::test]
+    async fn set_schedule_enabled_pauses_and_resumes() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_s5".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        let s = timer_schedule("sch_pause", "wf_s5", 1_700_000_000_500);
+        p.put_schedule(&s).await.unwrap();
+        p.set_schedule_enabled(&"sch_pause".to_string(), false).await.unwrap();
+        let due = p.list_due_timer_schedules(1_700_000_001_000).await.unwrap();
+        assert!(due.is_empty());
+        p.set_schedule_enabled(&"sch_pause".to_string(), true).await.unwrap();
+        let due = p.list_due_timer_schedules(1_700_000_001_000).await.unwrap();
+        assert_eq!(due.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_schedule_removes_row() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_s6".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        p.put_schedule(&timer_schedule("sch_del", "wf_s6", 1_700_000_000_500))
+            .await
+            .unwrap();
+        p.delete_schedule(&"sch_del".to_string()).await.unwrap();
+        let err = p.get_schedule(&"sch_del".to_string()).await.expect_err("gone");
+        assert!(matches!(err, ControllerError::ScheduleNotFound { .. }));
+        // Delete is no-op-safe on missing IDs.
+        p.delete_schedule(&"sch_del".to_string()).await.unwrap();
     }
 
     #[tokio::test]

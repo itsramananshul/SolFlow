@@ -183,6 +183,59 @@ pub trait Persistence: Send + Sync {
         run_id: &RunId,
         after_seq: u64,
     ) -> ControllerResult<Vec<RunEvent>>;
+
+    // ---- Phase C C.3 — schedules ----
+
+    /// Insert a new schedule. Upserts on `id` so the scheduler's
+    /// "advance next_fire_at" path can re-use this rather than
+    /// having a separate method.
+    async fn put_schedule(&self, record: &ScheduleRecord) -> ControllerResult<()>;
+
+    /// Fetch a single schedule. Returns `ScheduleNotFound` if absent.
+    async fn get_schedule(&self, id: &ScheduleId) -> ControllerResult<ScheduleRecord>;
+
+    /// Hard-delete a schedule. No-op if the id doesn't exist.
+    async fn delete_schedule(&self, id: &ScheduleId) -> ControllerResult<()>;
+
+    /// All schedules registered against `workflow_id`. Empty when
+    /// the workflow has none.
+    async fn list_schedules_for_workflow(
+        &self,
+        workflow_id: &WorkflowId,
+    ) -> ControllerResult<Vec<ScheduleRecord>>;
+
+    /// Timer-trigger schedules whose `next_fire_at <= now_ms` and
+    /// are enabled. Used by the scheduler tick to pick up due
+    /// triggers. Excludes Event triggers (those fire via webhook
+    /// ingress, never the timer loop).
+    async fn list_due_timer_schedules(
+        &self,
+        now_ms: i64,
+    ) -> ControllerResult<Vec<ScheduleRecord>>;
+
+    /// All enabled Event-trigger schedules. The webhook handler
+    /// filters this list in-memory by `RunTrigger::Event { source }`
+    /// matching the request path — paths are rare enough that we
+    /// don't bother with a path-indexed query yet.
+    async fn list_enabled_event_schedules(&self)
+        -> ControllerResult<Vec<ScheduleRecord>>;
+
+    /// Update an existing schedule's `next_fire_at` after the
+    /// scheduler advances it past a tick. `None` clears it
+    /// (used when an Event-trigger schedule is registered, since
+    /// those don't carry a next-fire time).
+    async fn update_schedule_next_fire(
+        &self,
+        id: &ScheduleId,
+        next_fire_at: Option<i64>,
+    ) -> ControllerResult<()>;
+
+    /// Toggle the enabled bit. Editor "pause schedule" affordance.
+    async fn set_schedule_enabled(
+        &self,
+        id: &ScheduleId,
+        enabled: bool,
+    ) -> ControllerResult<()>;
 }
 
 // =============================================================
