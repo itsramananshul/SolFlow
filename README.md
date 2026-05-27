@@ -117,23 +117,26 @@ SolFlow/
 
 ## Documentation
 
-| File | Read this when... |
+Start with the **[Docs index →](./docs/README.md)** which routes to
+three tracks: **User**, **SOL Language**, **Developer**.
+
+Quick links:
+
+| For | Start here |
 |---|---|
-| [`docs/sol-language/`](docs/sol-language/README.md) | learning SOL or its compiler |
-| [`docs/sol-language/PHASE_B_COMPILER_IDE_PLAN.md`](docs/sol-language/PHASE_B_COMPILER_IDE_PLAN.md) | catching up on what shipped in Phase B |
-| [`docs/sol-language/B_RELEASE_NOTES.md`](docs/sol-language/B_RELEASE_NOTES.md) | reading the Phase B summary |
-| [`docs/sol-language/IMPORT_COMPATIBILITY.md`](docs/sol-language/IMPORT_COMPATIBILITY.md) | understanding what AST→graph import does + doesn't preserve |
-| [`docs/sol-language/CANONICALIZATION.md`](docs/sol-language/CANONICALIZATION.md) | understanding the canonical export rules |
-| [`docs/sol-language/SYNC_MODEL.md`](docs/sol-language/SYNC_MODEL.md) | understanding why source↔graph sync is explicit-action |
-| [`docs/sol-language/SIMULATOR_PARITY.md`](docs/sol-language/SIMULATOR_PARITY.md) | historical record of JS-sim drift (resolved by canonical-VM-in-WASM) |
-| [`compiler/REMAINING_PANICS.md`](compiler/REMAINING_PANICS.md) | catalogued intentional panic/exit sites |
-| [`compiler/UPSTREAM.md`](compiler/UPSTREAM.md) + [`runtime/UPSTREAM.md`](runtime/UPSTREAM.md) | crate provenance + surgical-edit catalogs |
+| **Using SolFlow** | [Quickstart →](./docs/user/QUICKSTART.md) · [Install →](./docs/user/INSTALL.md) · [Editor Guide →](./docs/user/EDITOR_GUIDE.md) · [FAQ →](./docs/user/FAQ.md) |
+| **Learning SOL** | [SOL language overview →](./docs/sol-language/01-overview.md) · [Grammar →](./docs/sol-language/GRAMMAR.md) · [Errors →](./docs/sol-language/ERROR_REFERENCE.md) |
+| **Contributing** | [Architecture →](./docs/dev/ARCHITECTURE.md) · [`CONTRIBUTING.md`](./CONTRIBUTING.md) · [Release notes →](./docs/sol-language/B_RELEASE_NOTES.md) |
 
 ## Phase status
 
 - **Phase A** — visual editor with TS-only graph + temporary emitter. ✅ Shipped, foundation for Phase B.
 - **Phase B** — canonical Rust compiler + VM compiled to WASM, AST→graph importer, source spans, rich diagnostics, round-trip stability, canonical-VM execution. ✅ Shipped (B.1–B.11).
+- **Deferred-B** — per-instruction span sidecar, importer expansion (fieldSet / indexSet / top-level let), Node-target WASM e2e, Web Worker for parse/analyze, execution trace + click-to-source/node navigation. ✅ Shipped.
+- **Productization (v0.2.0)** — user docs, in-app docs discoverability, sample CI gates, modal Escape consistency, LICENSE + CONTRIBUTING, CHANGELOG. ✅ Shipped.
 - **Phase C** — deployment, controller integration, multi-user, real external calls. Not started.
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for the per-release record.
 
 ## Contributing
 
