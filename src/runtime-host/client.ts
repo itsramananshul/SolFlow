@@ -36,6 +36,9 @@ import type {
   RunRecord,
   RunRequest,
   RunStatus,
+  ScheduleCreate,
+  ScheduleId,
+  ScheduleRecord,
   WorkflowId,
   WorkflowSubmission,
   WorkflowSubmissionResponse,
@@ -161,6 +164,46 @@ export interface ControllerClient {
   pollRun(
     runId: string,
     pollOpts?: PollRunOptions,
+  ): Promise<RunRecord>;
+
+  // ---- Phase C C.3 — schedules + webhook ingress ----
+
+  /** `POST /workflows/:id/schedules` */
+  createSchedule(
+    workflowId: WorkflowId,
+    body: ScheduleCreate,
+    opts?: RequestOpts,
+  ): Promise<ScheduleRecord>;
+
+  /** `GET /workflows/:id/schedules` */
+  listSchedules(
+    workflowId: WorkflowId,
+    opts?: RequestOpts,
+  ): Promise<ScheduleRecord[]>;
+
+  /** `GET /schedules/:id` */
+  getSchedule(scheduleId: ScheduleId, opts?: RequestOpts): Promise<ScheduleRecord>;
+
+  /** `PATCH /schedules/:id` with `{ enabled }`. */
+  setScheduleEnabled(
+    scheduleId: ScheduleId,
+    enabled: boolean,
+    opts?: RequestOpts,
+  ): Promise<ScheduleRecord>;
+
+  /** `DELETE /schedules/:id`. */
+  cancelSchedule(scheduleId: ScheduleId, opts?: RequestOpts): Promise<void>;
+
+  /**
+   * `POST /events/:path` — manually trigger any registered Event
+   * schedules listening on `path` with the supplied body as
+   * `inputs`. Editor uses this for a "test webhook" affordance.
+   * Throws `http` 404 when no schedule matches.
+   */
+  triggerEvent(
+    path: string,
+    body: unknown,
+    opts?: RequestOpts,
   ): Promise<RunRecord>;
 }
 
@@ -379,6 +422,58 @@ export function controllerClient(
       );
     },
     pollRun,
+
+    // ---- C.3 — schedules + webhook ingress ----
+
+    createSchedule: (workflowId, body, opts) =>
+      request<ScheduleRecord>(
+        'POST',
+        `/workflows/${encodeURIComponent(workflowId)}/schedules`,
+        body,
+        opts,
+      ),
+    listSchedules: (workflowId, opts) =>
+      request<ScheduleRecord[]>(
+        'GET',
+        `/workflows/${encodeURIComponent(workflowId)}/schedules`,
+        undefined,
+        opts,
+      ),
+    getSchedule: (scheduleId, opts) =>
+      request<ScheduleRecord>(
+        'GET',
+        `/schedules/${encodeURIComponent(scheduleId)}`,
+        undefined,
+        opts,
+      ),
+    setScheduleEnabled: (scheduleId, enabled, opts) =>
+      request<ScheduleRecord>(
+        'PATCH',
+        `/schedules/${encodeURIComponent(scheduleId)}`,
+        { enabled },
+        opts,
+      ),
+    cancelSchedule: async (scheduleId, opts) => {
+      await request<void>(
+        'DELETE',
+        `/schedules/${encodeURIComponent(scheduleId)}`,
+        undefined,
+        opts,
+      );
+    },
+    triggerEvent: (path, body, opts) => {
+      // `path` may contain slashes (matching the controller's
+      // `/events/*path` wildcard). encodeURIComponent would
+      // escape them and break the route, so we pass the path
+      // verbatim — callers are trusted in editor context.
+      const safePath = path.replace(/^\/+/, '');
+      return request<RunRecord>(
+        'POST',
+        `/events/${safePath}`,
+        body,
+        opts,
+      );
+    },
   };
 }
 

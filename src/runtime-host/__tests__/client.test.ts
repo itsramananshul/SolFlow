@@ -314,3 +314,108 @@ function buildRun(status: RunRecord['status']): RunRecord {
     created_at: 0,
   };
 }
+
+// ----- C.3 — schedules + event ingress -----
+
+describe('controllerClient — schedules (C.3)', () => {
+  const sampleSchedule = {
+    id: 'sch_abc',
+    workflow_id: 'wf_a',
+    trigger: { kind: 'Timer', schedule_id: 'sch_abc', cron: '*/5 * * * *' },
+    enabled: true,
+    next_fire_at: 1_700_000_001_000,
+    created_at: 1_700_000_000_000,
+  };
+
+  it('createSchedule POSTs the body to the workflow-scoped endpoint', async () => {
+    let url = '';
+    let method = '';
+    let body = '';
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch((u, init) => {
+        url = String(u);
+        method = init?.method ?? '';
+        body = String(init?.body ?? '');
+        return jsonResponse(sampleSchedule, 201);
+      }),
+    });
+    const got = await c.createSchedule('wf_a', {
+      trigger: { kind: 'Timer', schedule_id: '', cron: '*/5 * * * *' },
+      enabled: true,
+    });
+    expect(method).toBe('POST');
+    expect(url).toBe('http://x.example/workflows/wf_a/schedules');
+    expect(JSON.parse(body).trigger.cron).toBe('*/5 * * * *');
+    expect(got.id).toBe('sch_abc');
+  });
+
+  it('listSchedules GETs the workflow-scoped endpoint', async () => {
+    let url = '';
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch((u) => {
+        url = String(u);
+        return jsonResponse([sampleSchedule]);
+      }),
+    });
+    const got = await c.listSchedules('wf_a');
+    expect(url).toBe('http://x.example/workflows/wf_a/schedules');
+    expect(got).toHaveLength(1);
+  });
+
+  it('setScheduleEnabled PATCHes the schedule-scoped endpoint', async () => {
+    let method = '';
+    let body = '';
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch((_u, init) => {
+        method = init?.method ?? '';
+        body = String(init?.body ?? '');
+        return jsonResponse({ ...sampleSchedule, enabled: false });
+      }),
+    });
+    const got = await c.setScheduleEnabled('sch_abc', false);
+    expect(method).toBe('PATCH');
+    expect(JSON.parse(body).enabled).toBe(false);
+    expect(got.enabled).toBe(false);
+  });
+
+  it('cancelSchedule DELETEs and returns void', async () => {
+    let url = '';
+    let method = '';
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch((u, init) => {
+        url = String(u);
+        method = init?.method ?? '';
+        return new Response(null, { status: 204 });
+      }),
+    });
+    await c.cancelSchedule('sch_abc');
+    expect(method).toBe('DELETE');
+    expect(url).toBe('http://x.example/schedules/sch_abc');
+  });
+
+  it('triggerEvent POSTs to /events/:path verbatim (preserves slashes)', async () => {
+    let url = '';
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch((u) => {
+        url = String(u);
+        return jsonResponse(buildRun('Queued'));
+      }),
+    });
+    await c.triggerEvent('ci/build', { ref: 'main' });
+    expect(url).toBe('http://x.example/events/ci/build');
+  });
+
+  it('triggerEvent surfaces 404 as kind=http when no schedule matches', async () => {
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch(() =>
+        jsonResponse(
+          { error: { code: 'schedule_not_found', message: 'no match' } },
+          404,
+        ),
+      ),
+    });
+    await expect(c.triggerEvent('nowhere', {})).rejects.toMatchObject({
+      payload: { kind: 'http', status: 404 },
+    });
+  });
+});
