@@ -1,4 +1,4 @@
-use crate::diagnostic::{codes, DiagnosticPhase, SolDiagnostic};
+use crate::diagnostic::{codes, DiagnosticPhase, SolDiagnostic, SourceSpan};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -192,6 +192,12 @@ pub struct Lexer {
     /// the bad character and continues so callers see all lex
     /// errors at once.
     pub diagnostics: Vec<SolDiagnostic>,
+    /// Per-token source spans, indexed in lockstep with `tokens()`.
+    /// `spans[i]` covers `tokens()[i]`. Populated by `tokens()` /
+    /// `next_token()`; trailing diagnostics-only paths don't push
+    /// here. The parser walks this alongside the token stream to
+    /// attach spans on its own diagnostics.
+    pub spans: Vec<SourceSpan>,
 }
 
 impl Lexer {
@@ -208,6 +214,7 @@ impl Lexer {
             source,
             index: 0usize,
             diagnostics: Vec::new(),
+            spans: Vec::new(),
         }
     }
 
@@ -220,26 +227,36 @@ impl Lexer {
             source: source.chars().collect(),
             index: 0usize,
             diagnostics: Vec::new(),
+            spans: Vec::new(),
         }
     }
 
     pub fn tokens(&mut self) -> Vec<Token> {
         std::iter::from_fn(|| self.next_token()).collect()
     }
+    /// Record the span of a token that just finished consuming
+    /// `[start, self.index)` of the source.
+    fn finalize(&mut self, start: usize, token: Token) -> Option<Token> {
+        self.spans.push(SourceSpan::new(start, self.index));
+        Some(token)
+    }
+
     fn next_token(&mut self) -> Option<Token> {
         self.skip_trivia();
         if self.index >= self.source.len() {
             return None;
         }
+        let start = self.index;
 
         if self.source[self.index].is_alphabetic() {
-            return Some(self.identifier());
+            let t = self.identifier();
+            return self.finalize(start, t);
         }
         if self.source[self.index] == '\'' {
             self.index += 1;
             let c = self.source[self.index];
             self.index += 2;
-            return Some(Token::Char(c));
+            return self.finalize(start, Token::Char(c));
         }
         if self.source[self.index] == '\"' {
             self.index += 1;
@@ -249,10 +266,11 @@ impl Lexer {
                 self.index += 1;
             }
             self.index += 1;
-            return Some(Token::String(buf));
+            return self.finalize(start, Token::String(buf));
         }
         if self.source[self.index].is_numeric() {
-            return Some(self.number());
+            let t = self.number();
+            return self.finalize(start, t);
         }
 
         let token = match self.source[self.index] {
@@ -318,17 +336,21 @@ impl Lexer {
                 // Lexer error — push diagnostic, skip the bad
                 // character, continue. Callers receive every lex
                 // error at once via `Lexer.diagnostics`.
-                self.diagnostics.push(SolDiagnostic::error(
-                    DiagnosticPhase::Lexer,
-                    codes::PARSE_LEX_BAD_CHAR,
-                    format!("unrecognized character: '{c}'"),
-                ));
+                let bad_at = self.index;
+                self.diagnostics.push(
+                    SolDiagnostic::error(
+                        DiagnosticPhase::Lexer,
+                        codes::PARSE_LEX_BAD_CHAR,
+                        format!("unrecognized character: '{c}'"),
+                    )
+                    .with_span(SourceSpan::new(bad_at, bad_at + 1)),
+                );
                 self.index += 1;
                 return self.next_token();
             }
         };
         self.index += 1;
-        Some(token)
+        self.finalize(start, token)
     }
     fn skip_trivia(&mut self) {
         loop {

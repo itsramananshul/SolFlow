@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     analyzer::TypeTableId,
-    diagnostic::{codes, DiagnosticPhase, SolDiagnostic},
+    diagnostic::{codes, DiagnosticPhase, SolDiagnostic, SourceSpan},
     lexer::{Token, TokenKind},
 };
 
@@ -133,6 +133,12 @@ pub enum Ast {
 
 pub struct Parser {
     tokens: Vec<Token>,
+    /// Source span of each token in `tokens`, populated by the
+    /// lexer. Indexed in lockstep with `tokens`. Empty when the
+    /// parser was constructed via the legacy `Parser::from(tokens)`
+    /// path (which silently uses default spans). The current
+    /// `parse_source` API always provides real spans.
+    spans: Vec<SourceSpan>,
     index: usize,
     can_struct: bool,
     /// Collected diagnostics. The api layer drains this after
@@ -153,9 +159,14 @@ macro_rules! noob {
 }
 
 impl Parser {
+    /// Backwards-compatible constructor without spans. Diagnostics
+    /// emitted by this parser instance will lack source spans.
+    /// Prefer `Parser::from_with_spans` (and the `parse_source`
+    /// API which uses it) for editor / IDE consumers.
     pub fn from(tokens: Vec<Token>) -> Self {
         Self {
             tokens,
+            spans: Vec::new(),
             index: 0,
             can_struct: true,
             diagnostics: Vec::new(),
@@ -163,13 +174,55 @@ impl Parser {
         }
     }
 
+    /// Construct a parser with per-token source spans. Diagnostics
+    /// emitted via `emit_error()` will carry the span of the
+    /// current token (or a synthesized end-of-input span when past
+    /// the last token).
+    pub fn from_with_spans(tokens: Vec<Token>, spans: Vec<SourceSpan>) -> Self {
+        debug_assert!(
+            spans.is_empty() || spans.len() == tokens.len(),
+            "spans must be parallel to tokens",
+        );
+        Self {
+            tokens,
+            spans,
+            index: 0,
+            can_struct: true,
+            diagnostics: Vec::new(),
+            had_fatal_error: false,
+        }
+    }
+
+    /// Span of the token currently at `self.index`, or a one-byte
+    /// synthesized span just past the last token's end if `index`
+    /// is at / past end of input. Returns `None` when spans aren't
+    /// available (legacy `Parser::from` path).
+    fn current_span(&self) -> Option<SourceSpan> {
+        if self.spans.is_empty() { return None; }
+        if self.index < self.spans.len() {
+            return Some(self.spans[self.index]);
+        }
+        // Past end of input — point at the very last byte the lexer
+        // consumed so the editor can still highlight something
+        // meaningful (typically the last `}` or `;`).
+        let last = self.spans.last()?;
+        Some(SourceSpan::new(last.end, last.end))
+    }
+
     /// Push a structured diagnostic + set the fatal-error flag.
     /// Replaces the upstream `eprintln! + process::exit(1)` pattern.
     /// The `run()` recovery loop reads the flag, syncs forward, and
     /// resets it before trying the next declaration.
+    ///
+    /// Diagnostic span = span of the current token (or end-of-input
+    /// synthesized span). All parser emit sites flow through this
+    /// single helper so adding the span here covers every site.
     fn emit_error(&mut self, code: &'static str, message: impl Into<String>) {
-        self.diagnostics
-            .push(SolDiagnostic::error(DiagnosticPhase::Parser, code, message));
+        let mut d = SolDiagnostic::error(DiagnosticPhase::Parser, code, message);
+        if let Some(span) = self.current_span() {
+            d = d.with_span(span);
+        }
+        self.diagnostics.push(d);
         self.had_fatal_error = true;
     }
 

@@ -39,6 +39,32 @@ fn parse1_empty_initializer_returns_diagnostic() {
         .expect("at least one error");
     assert_eq!(first_error.phase, DiagnosticPhase::Parser);
     assert_eq!(first_error.code, codes::PARSE_NOT_EXPRESSION);
+    // c23: parser-stage diagnostics must carry a source span.
+    let span = first_error.span.expect("parser diagnostic should have a span");
+    assert!(span.start < source.len(), "span start within source");
+    assert!(span.end <= source.len(), "span end within source");
+    // Sanity: the empty-initializer `;` is on line 2 — derive
+    // line/col from the span and assert it's pointing somewhere
+    // on that line (the parser emits at the offending token).
+    let (line, _col) = span.to_line_col(&source);
+    assert_eq!(line, 2, "span should point at line 2 (the `let x: int = ;` line)");
+}
+
+/// Lexer-stage spans: an unrecognized character produces a
+/// diagnostic whose span points at exactly that character.
+#[test]
+fn lexer_bad_char_diagnostic_carries_span() {
+    let source = "function start() -> int { return @; }";
+    let result = parse_source(source);
+    assert!(result.has_errors(), "expected lexer/parser errors");
+    let lex_diag = result
+        .diagnostics
+        .iter()
+        .find(|d| d.phase == DiagnosticPhase::Lexer)
+        .expect("should produce a lexer diagnostic for `@`");
+    let span = lex_diag.span.expect("lexer diagnostic should carry a span");
+    let slice = span.slice(source).expect("span in bounds");
+    assert_eq!(slice, "@", "span should cover exactly the bad character");
 }
 
 /// `error_parse2.sol`: `let x: int = 5` missing semicolon. The

@@ -106,9 +106,10 @@ pub fn lex_source(source: &str) -> CompileResult<Vec<Token>> {
 pub fn parse_source(source: &str) -> CompileResult<Program> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
+    let spans = std::mem::take(&mut lexer.spans);
     let mut diagnostics = std::mem::take(&mut lexer.diagnostics);
 
-    let mut parser = Parser::from(tokens);
+    let mut parser = Parser::from_with_spans(tokens, spans);
     let program = parser.run();
     diagnostics.append(&mut parser.diagnostics);
 
@@ -130,9 +131,10 @@ pub fn parse_source(source: &str) -> CompileResult<Program> {
 pub fn analyze_source(source: &str) -> CompileResult<AnalyzedProgram> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
+    let spans = std::mem::take(&mut lexer.spans);
     let mut diagnostics = std::mem::take(&mut lexer.diagnostics);
 
-    let mut parser = Parser::from(tokens);
+    let mut parser = Parser::from_with_spans(tokens, spans);
     let mut program = parser.run();
     diagnostics.append(&mut parser.diagnostics);
 
@@ -177,9 +179,10 @@ pub fn analyze_source(source: &str) -> CompileResult<AnalyzedProgram> {
 pub fn compile_source(source: &str) -> CompileResult<CompiledProgram> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
+    let spans = std::mem::take(&mut lexer.spans);
     let mut diagnostics = std::mem::take(&mut lexer.diagnostics);
 
-    let mut parser = Parser::from(tokens);
+    let mut parser = Parser::from_with_spans(tokens, spans);
     let mut program = parser.run();
     diagnostics.append(&mut parser.diagnostics);
 
