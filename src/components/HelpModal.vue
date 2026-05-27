@@ -38,6 +38,38 @@ function onBackdrop(e: MouseEvent) {
         </header>
         <div class="body">
           <section>
+            <div class="section-title">Docs</div>
+            <div class="row">
+              <span>New to SolFlow? Read the user docs:</span>
+            </div>
+            <div class="row doc-links">
+              <a
+                class="doc-link"
+                href="https://github.com/itsramananshul/SolFlow/blob/main/docs/user/QUICKSTART.md"
+                target="_blank"
+                rel="noopener noreferrer"
+              >Quickstart →</a>
+              <a
+                class="doc-link"
+                href="https://github.com/itsramananshul/SolFlow/blob/main/docs/user/EDITOR_GUIDE.md"
+                target="_blank"
+                rel="noopener noreferrer"
+              >Editor Guide →</a>
+              <a
+                class="doc-link"
+                href="https://github.com/itsramananshul/SolFlow/blob/main/docs/user/FAQ.md"
+                target="_blank"
+                rel="noopener noreferrer"
+              >FAQ →</a>
+              <a
+                class="doc-link"
+                href="https://github.com/itsramananshul/SolFlow/tree/main/docs/sol-language"
+                target="_blank"
+                rel="noopener noreferrer"
+              >SOL Language →</a>
+            </div>
+          </section>
+          <section>
             <div class="section-title">Editor</div>
             <div class="row"><span>Save workflow JSON</span><kbd>{{ modKey }}</kbd><kbd>S</kbd></div>
             <div class="row"><span>Export .sol</span><kbd>{{ modKey }}</kbd><kbd>E</kbd></div>
@@ -224,5 +256,22 @@ kbd {
   border-radius: 3px;
   color: var(--sf-text-0);
   margin-left: 4px;
+}
+/* Prod c49 — docs link row */
+.doc-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 6px 0 10px;
+}
+.doc-link {
+  font-size: 0.75rem;
+  color: var(--sf-accent, #5d8acf);
+  text-decoration: none;
+  font-family: var(--sf-font-mono);
+}
+.doc-link:hover {
+  color: var(--sf-text-0);
+  text-decoration: underline;
 }
 </style>
