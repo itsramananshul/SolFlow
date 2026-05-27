@@ -66,8 +66,9 @@ cargo run --bin sol -- tests/fixtures/retest.sol
 | B.10 — Canonical SOL VM in WASM | ✅ MVP (see `../runtime/`) — canonical-VM execution in browser |
 | B.11 — Final stabilization | ✅ DONE (VM hardening + `npm run check` + docs pass) |
 | B.D — Deferred-Phase-B bundle | ✅ MVP (AST spans, importer expansion, e2e round-trip, instruction-span sidecar) |
+| B.D execution-mapping sweep (c42–c46) | ✅ VM trace + runtime-error spans + node-level attachment + Trace tab UI |
 
-**Phase B is complete + deferred bundle landed.** See [`../docs/sol-language/B_RELEASE_NOTES.md`](../docs/sol-language/B_RELEASE_NOTES.md) for the milestone-by-milestone summary including B.D.
+**Phase B + deferred bundles complete.** See [`../docs/sol-language/B_RELEASE_NOTES.md`](../docs/sol-language/B_RELEASE_NOTES.md) for the milestone-by-milestone summary. Ready for productization.
 
 Notes:
 - [REMAINING_PANICS.md](REMAINING_PANICS.md) — intentional

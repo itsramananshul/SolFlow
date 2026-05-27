@@ -264,6 +264,96 @@ struct variants — a bigger shape change than this bundle's
 budget. Block-level span attribution covers the most common
 diagnostic UX cases.
 
+## Deferred-B execution-mapping bundle (c42–c46, 2026-05-27)
+
+Second deferred-B sweep, closing the per-node bytecode/execution
+mapping that the original bundle stubbed but didn't finish.
+Headline: the canonical SOL VM's execution now maps back to
+source ranges AND graph nodes, with click-to-jump UX in the
+RunModal.
+
+**B.D c42 — VM execution trace + runtime-error spans.**
+- Runtime: opt-in `with_trace()` records inst_ptrs per step;
+  default off (zero overhead). Bounded by `trace_limit` (10k
+  default); `trace_truncated` flips when cap hit. `error_inst_ptr`
+  captured on the `RunError` path.
+- Bridge: `run_source_json` enables tracing on every run, then
+  maps trace inst_ptrs → source spans via the c36
+  `instruction_spans` sidecar with adjacent-equal collapse
+  (a 1000-step inner loop produces ONE trace entry, not 1000).
+- Envelope extended (additive): `runtime_error_source_span`,
+  `trace`, `trace_truncated`.
+- `CompiledProgram` surfaces `instruction_spans` so consumers
+  don't need a fresh Codegen instance.
+- 4 new runtime tests, 2 new bridge tests.
+
+**B.D c43 — Per-node source attachment.**
+- `GraphNode.meta.sourceSpan?` added to the schema.
+- Importer's `importStatement` shell attaches the AST span to
+  the entry node after delegation; `astStatementSpan()` mirrors
+  the Rust `Analyzer::node_span` helper.
+- New `src/graph/nodeLookup.ts::findNodeForSpan(workflow, span)`
+  scans every function's nodes for ones whose `meta.sourceSpan`
+  contains the query and returns the smallest-containing match
+  (most specific). Returns null for "no enclosing node found" —
+  honest non-match, no synthesis.
+- 3 new vitest tests.
+
+**B.D c44 — RunModal Trace tab + click-to-source/node nav.**
+- New "Trace" tab between Output and Generated SOL; step count
+  badge.
+- Each row: step index + line:col + snippet + optional canvas link
+- "line N:C" clicks → switch to Generated SOL tab + scroll to
+  that line (data-sol-line attributes on the SOL preview rows).
+- "→ canvas" link (when graph mapping exists) → setActiveFunction
+  + ui.requestFocus + close modal.
+- Runtime errors get the same source + canvas links when
+  `runtime_error_source_span` is populated.
+- "(no graph mapping)" inline label for honest non-match cases.
+- "truncated at cap" tag when `trace_truncated` is true.
+
+**B.D c45 — Node-WASM e2e tests for execution paths.**
+- Test file extended with 7 new cases covering: compile+run,
+  control flow, invalid source short-circuit, div-by-zero +
+  source span, trace de-duplication, ExtCall blocking,
+  round-trip-then-execute semantic stability.
+
+**B.D c46 — This commit.** Docs sync.
+
+### Test scoreboard at second-bundle close
+
+```
+$ npm run check
+  typecheck    ✓
+  vitest       ✓ 69 / 69    (was 59; +3 c43 + +7 c45)
+    expressions    15
+    importer       14   (+3 source-attachment)
+    round-trip     24
+    e2e-round-trip 16   (+7 execution-path)
+  cargo workspace
+    compiler smoke      2 /  2
+    compiler diagnostics 12 / 12
+    compiler serde       5 /  5
+    compiler-wasm       12 / 12   (+2 trace + error-span tests)
+    runtime             18 / 18   (+4 trace tests)
+                       ─────────
+                       49 / 49
+  ──────────────────────────────────
+  total: 118 tests ✓
+```
+
+### Bundle close
+
+The deferred-B agenda is now complete enough to move into
+productization. The remaining items are explicit non-goals
+already cataloged elsewhere:
+- Per-leaf-expression spans (would require tuple→struct variant
+  conversion; deferred indefinitely)
+- Real external-call execution (Phase C product surface)
+- Multi-user / deployment / scheduling (Phase C)
+
+## Architectural commitments that survived Phase B
+
 ### Test scoreboard at B.D close
 
 ```
