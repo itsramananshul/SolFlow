@@ -1,0 +1,12 @@
+{
+  "name": "solflow_compiler_wasm",
+  "description": "wasm-bindgen bridge that exposes solflow_compiler to the SolFlow browser editor.",
+  "version": "0.1.0",
+  "files": [
+    "solflow_compiler_wasm_bg.wasm",
+    "solflow_compiler_wasm.js",
+    "solflow_compiler_wasm.d.ts"
+  ],
+  "main": "solflow_compiler_wasm.js",
+  "types": "solflow_compiler_wasm.d.ts"
+}

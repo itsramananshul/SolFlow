@@ -1,0 +1,4 @@
+# Override wasm-pack's `*` default. We commit the Node-target
+# WASM artifacts so vitest can run e2e tests without a Rust
+# toolchain. Rebuild with `npm run build:wasm:node`.
+!*
