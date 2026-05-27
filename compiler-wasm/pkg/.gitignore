@@ -1,0 +1,4 @@
+# Override wasm-pack's `*` default. We commit the generated WASM
+# bundle so editor devs don't need a Rust toolchain to run `npm dev`.
+# Rebuild with `npm run build:wasm` (or `compiler-wasm/build.sh`).
+!*

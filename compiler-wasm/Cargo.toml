@@ -1,0 +1,37 @@
+[package]
+name = "solflow_compiler_wasm"
+version = "0.1.0"
+edition = "2024"
+description = "wasm-bindgen bridge that exposes solflow_compiler to the SolFlow browser editor."
+publish = false
+
+# `cdylib` is what wasm-pack consumes. `rlib` lets the Rust test
+# binary link the same compiled code, so we can integration-test the
+# JSON wrappers without spinning up a browser.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Compiler crate is the source of truth — serde feature on so the
+# JSON wrappers can round-trip the AST + diagnostics.
+solflow_compiler = { path = "../compiler", features = ["serde"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "0.2"
+
+# Better-than-nothing browser console output if Rust panics inside
+# the WASM instance. Without this, panics surface as unhelpful
+# "RuntimeError: unreachable" entries.
+console_error_panic_hook = "0.1"
+
+# Workspace defaults that don't apply here:
+# - no `tokio` / async — the compiler is synchronous
+# - no `wee_alloc` — modern wasm-pack defaults are fine for our size
+
+[profile.release]
+# Aggressive size optimization for the wasm binary. Acceptable
+# tradeoff vs. analyze speed for a compiler this size.
+opt-level = "z"
+lto = true
+codegen-units = 1

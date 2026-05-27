@@ -26,5 +26,10 @@ Thumbs.db
 
 # Rust / WASM artifacts (Phase 2+)
 target/
+# Note: `compiler-wasm/pkg/` IS committed (so editor devs don't need
+# Rust toolchain). Generic `pkg/` rule still ignores other crates'
+# wasm-pack output if they appear later.
 pkg/
+!compiler-wasm/pkg/
+!compiler-wasm/pkg/**
 **/*.rs.bk
