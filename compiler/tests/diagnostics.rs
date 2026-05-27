@@ -190,6 +190,85 @@ fn codegen_missing_ext_endpoint_returns_diagnostic() {
     assert_eq!(first.code, codes::CODEGEN_MISSING_EXT_ENDPOINT);
 }
 
+/// Table-driven sweep: for each (fixture, expected_code), verify
+/// `analyze_source` returns an error diagnostic with that code.
+///
+/// Covers the E1xxx semantic-error codes not exercised by the
+/// dedicated tests above. Each fixture is intentionally tiny so
+/// that a single root cause produces a single diagnostic code.
+#[test]
+fn semantic_code_coverage_sweep() {
+    let cases: &[(&str, &str)] = &[
+        ("error_sema_cond",           codes::SEMA_WRONG_CONDITION_TYPE),
+        ("error_sema_forin",          codes::SEMA_FOR_IN_NOT_ARRAY),
+        ("error_sema_arith_mismatch", codes::SEMA_ARITH_TYPE_MISMATCH),
+        ("error_sema_arith_bad_type", codes::SEMA_ARITH_BAD_TYPE),
+        ("error_sema_compare",        codes::SEMA_COMPARE_TYPE_MISMATCH),
+        ("error_sema_logic",          codes::SEMA_LOGIC_NEEDS_BOOL),
+        ("error_sema_bitwise",        codes::SEMA_BITWISE_NEEDS_INT),
+        ("error_sema_negate",         codes::SEMA_NEGATE_NEEDS_NUMBER),
+        ("error_sema_bang",           codes::SEMA_BANG_BAD_TYPE),
+        ("error_sema_tilde",          codes::SEMA_TILDE_NEEDS_INT),
+        ("error_sema_assign",         codes::SEMA_ASSIGN_TYPE_MISMATCH),
+        ("error_sema_call_undef",     codes::SEMA_CALL_UNDEFINED),
+        ("error_sema_call_arity",     codes::SEMA_CALL_WRONG_ARITY),
+        ("error_sema_call_argtype",   codes::SEMA_CALL_WRONG_ARG_TYPE),
+    ];
+    for (fixture, expected) in cases {
+        let source = read_fixture(fixture);
+        let result = analyze_source(&source);
+        assert!(
+            result.has_errors(),
+            "{fixture}: expected analyzer error; got no errors. diagnostics: {:#?}",
+            result.diagnostics,
+        );
+        let codes_seen: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagnosticSeverity::Error)
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes_seen.contains(expected),
+            "{fixture}: expected {expected}; got {codes_seen:?}",
+        );
+    }
+}
+
+/// Mixed-error recovery: three top-level functions, each containing
+/// one independent semantic error. The analyzer should report all
+/// three E1001 diagnostics, not just the first.
+///
+/// This is the key check that analyzer recovery works at the
+/// `run()` level — without it, an editor surfacing diagnostics
+/// would only ever show the first error in a file.
+#[test]
+fn mixed_errors_yield_multiple_diagnostics() {
+    let source = read_fixture("error_sema_mixed");
+    let result = analyze_source(&source);
+
+    assert!(result.has_errors(), "expected analyzer errors");
+    let error_count = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Error)
+        .count();
+    assert!(
+        error_count >= 3,
+        "expected at least 3 diagnostics; got {error_count}: {:#?}",
+        result.diagnostics,
+    );
+    // All three should be the same code (undefined-name).
+    for d in result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == DiagnosticSeverity::Error)
+    {
+        assert_eq!(d.code, codes::SEMA_UNDEFINED_NAME);
+        assert_eq!(d.phase, DiagnosticPhase::Analyzer);
+    }
+}
+
 /// Smoke: analyze_source on every positive fixture stays clean.
 /// Verifies c4's emit+return None conversion didn't accidentally
 /// inject diagnostics into well-formed programs.
