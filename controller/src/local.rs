@@ -9,9 +9,10 @@
 //! Limits documented in the architecture (architecture §10.2)
 //! apply via the `RunPolicy` builder.
 
+use crate::connector::{http::HttpConnector, ConnectorMeta, ConnectorRegistry};
 use crate::executor::{execute_run, now_ms, RunPolicy};
 use crate::scheduler::TokioScheduler;
-use crate::{Controller, ControllerError, ControllerResult, Persistence, SqlitePersistence};
+use crate::{Connector, Controller, ControllerError, ControllerResult, Persistence, SqlitePersistence};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use solflow_host_spec::{
@@ -21,13 +22,20 @@ use solflow_host_spec::{
 };
 use std::sync::Arc;
 
-/// C.2 + C.3 controller. Single-process, SQLite-backed,
+/// C.2 + C.3 + C.4 controller. Single-process, SQLite-backed,
 /// auto-spawns the scheduler on construction.
+///
+/// The connector registry is part of the controller's identity:
+/// every run + every scheduler-triggered run dispatches ExtCall
+/// through this registry. `LocalController::new()` registers the
+/// HTTP reference connector by default; add more via
+/// `with_connector(...)`.
 #[derive(Clone)]
 pub struct LocalController {
     persistence: Arc<SqlitePersistence>,
     policy: RunPolicy,
     scheduler: TokioScheduler,
+    connectors: ConnectorRegistry,
 }
 
 impl LocalController {
@@ -35,13 +43,20 @@ impl LocalController {
     /// the scheduler tick loop isn't running yet. Production
     /// (the binary) chains `.with_policy(...)` then
     /// `.start_scheduler()` so timer triggers fire.
+    ///
+    /// HTTP connector is registered by default; replace with
+    /// `with_connector_registry()` if you need a custom set
+    /// (e.g. tests using an allowlist-restricted HttpConnector).
     pub fn new(persistence: SqlitePersistence) -> Self {
         let policy = RunPolicy::default();
-        let scheduler = TokioScheduler::new(persistence.clone(), policy);
+        let connectors = default_connector_registry();
+        let scheduler = TokioScheduler::new(persistence.clone(), policy)
+            .with_connectors(connectors.clone());
         Self {
             persistence: Arc::new(persistence),
             policy,
             scheduler,
+            connectors,
         }
     }
 
@@ -55,8 +70,37 @@ impl LocalController {
         self.scheduler = TokioScheduler::new(
             (*self.persistence).clone(),
             self.policy,
-        );
+        )
+        .with_connectors(self.connectors.clone());
         self
+    }
+
+    /// Replace the connector registry. Useful for tests (register
+    /// a mock connector) and for production deployments that want
+    /// a non-default HTTP connector (e.g. with an allowlist).
+    pub fn with_connector_registry(mut self, connectors: ConnectorRegistry) -> Self {
+        self.connectors = connectors.clone();
+        // Rebuild scheduler so its handler sees the new registry.
+        self.scheduler =
+            TokioScheduler::new((*self.persistence).clone(), self.policy)
+                .with_connectors(connectors);
+        self
+    }
+
+    /// Add a connector to the registry. Convenience: rebuilds
+    /// the registry with the existing connectors plus the new one.
+    pub fn with_connector(self, connector: Arc<dyn Connector>) -> Self {
+        let mut builder = ConnectorRegistry::builder();
+        for meta in self.connectors.list_meta() {
+            // Re-register existing connectors via lookup
+            // (registry stores Arc<dyn Connector>, list_meta only
+            // exposes meta — but lookup gives the Arc).
+            if let Ok(c) = self.connectors.lookup(&meta.name) {
+                builder = builder.register(c);
+            }
+        }
+        builder = builder.register(connector);
+        self.with_connector_registry(builder.build())
     }
 
     /// Spawn the scheduler tick loop. Idempotent — calling
@@ -80,6 +124,23 @@ impl LocalController {
     pub fn scheduler(&self) -> &TokioScheduler {
         &self.scheduler
     }
+
+    /// Expose the connector registry — the HTTP layer's
+    /// `GET /connectors` returns `list_meta()` from here.
+    pub fn connectors(&self) -> &ConnectorRegistry {
+        &self.connectors
+    }
+
+    /// List registered-connector metadata.
+    pub fn list_connectors(&self) -> Vec<ConnectorMeta> {
+        self.connectors.list_meta()
+    }
+}
+
+fn default_connector_registry() -> ConnectorRegistry {
+    ConnectorRegistry::builder()
+        .register(Arc::new(HttpConnector::default()) as Arc<dyn Connector>)
+        .build()
 }
 
 #[async_trait]
@@ -160,8 +221,9 @@ impl Controller for LocalController {
         let p = (*self.persistence).clone();
         let r = record.clone();
         let policy = self.policy;
+        let connectors = self.connectors.clone();
         tokio::spawn(async move {
-            execute_run(p, r, policy, None).await;
+            execute_run(p, r, policy, Some(connectors)).await;
         });
 
         Ok(RunCreated {
@@ -394,5 +456,135 @@ mod tests {
             .await
             .expect_err("not found");
         assert!(matches!(err, ControllerError::WorkflowNotFound { .. }));
+    }
+
+    // =============================================================
+    //  Phase C C.4 c77 — end-to-end ExtCall through HTTP connector
+    // =============================================================
+
+    /// Build a tiny program that performs `ExtCall` against
+    /// `connector://http?url=<server>&method=POST` with one int
+    /// arg and returns the server's int response. Bypasses the
+    /// SOL parser (the parser doesn't accept `at "url"` syntax —
+    /// endpoint mappings come from outside the language, see
+    /// the architecture doc). Hand-crafted bytecode is the
+    /// expedient way to exercise the full controller path
+    /// without first wiring an ext-endpoints registry.
+    fn make_ext_call_bytecode(url: &str) -> Vec<u8> {
+        use solflow_compiler::bytecode::Inst;
+        use solflow_compiler::parser::{Ast, Type};
+        let program = vec![
+            // arg0: 21
+            Inst::PushConst(Ast::ExprInteger(21)),
+            // function_name + url for the VM to pop
+            Inst::PushConst(Ast::ExprString("scale".into())),
+            Inst::PushConst(Ast::ExprString(url.into())),
+            // ExtCall with one int arg, returning int
+            Inst::ExtCall(vec![Type::Integer], Box::new(Type::Integer)),
+            Inst::Ret,
+        ];
+        solflow_host_spec::encode_bytecode(&program).expect("encode")
+    }
+
+    #[tokio::test]
+    async fn ext_call_runs_through_http_connector_end_to_end() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/scale"))
+            // Echo the input arg's value multiplied by 2; the
+            // request body will be [21] (positional args array).
+            .respond_with(ResponseTemplate::new(200).set_body_json(42_i64))
+            .mount(&server)
+            .await;
+
+        let persistence = SqlitePersistence::open_in_memory().await.unwrap();
+        let controller = LocalController::new(persistence);
+        // Submit the hand-crafted bytecode.
+        let url = format!(
+            "connector://http?url={}/scale&method=POST",
+            urlencoding(&server.uri()),
+        );
+        let bytecode = make_ext_call_bytecode(&url);
+        let submission = WorkflowSubmission {
+            name: "extcall-e2e".into(),
+            description: None,
+            bytecode,
+            instruction_spans: serde_json::to_vec::<Vec<()>>(&vec![]).unwrap(),
+            source: None,
+        };
+        let resp = controller.submit_workflow(submission).await.unwrap();
+        let created = controller
+            .create_run(RunRequest {
+                workflow_id: resp.workflow_id,
+                trigger: RunTrigger::Manual,
+                inputs: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+
+        // Poll until terminal.
+        for _ in 0..200 {
+            sleep(Duration::from_millis(20)).await;
+            let r = controller.get_run(&created.run_id).await.unwrap();
+            if r.status == RunStatus::Succeeded || r.status == RunStatus::Failed {
+                assert_eq!(
+                    r.status,
+                    RunStatus::Succeeded,
+                    "expected Succeeded; got record={r:?}",
+                );
+                let out = r.output.unwrap();
+                assert_eq!(
+                    out.return_value,
+                    Some(42),
+                    "controller-side ExtCall round-trip returned wrong value",
+                );
+                return;
+            }
+        }
+        panic!("end-to-end ExtCall run didn't complete in time");
+    }
+
+    #[tokio::test]
+    async fn ext_call_unknown_connector_fails_with_extcall_failed() {
+        let persistence = SqlitePersistence::open_in_memory().await.unwrap();
+        let controller = LocalController::new(persistence);
+        let bytecode = make_ext_call_bytecode("connector://nope?url=irrelevant");
+        let submission = WorkflowSubmission {
+            name: "extcall-unknown".into(),
+            description: None,
+            bytecode,
+            instruction_spans: serde_json::to_vec::<Vec<()>>(&vec![]).unwrap(),
+            source: None,
+        };
+        let resp = controller.submit_workflow(submission).await.unwrap();
+        let created = controller
+            .create_run(RunRequest {
+                workflow_id: resp.workflow_id,
+                trigger: RunTrigger::Manual,
+                inputs: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            sleep(Duration::from_millis(20)).await;
+            let r = controller.get_run(&created.run_id).await.unwrap();
+            if r.status == RunStatus::Failed {
+                return; // The reason line goes into output for C.4
+            }
+            if r.status == RunStatus::Succeeded {
+                panic!("expected failure for unknown connector, got success");
+            }
+        }
+        panic!("run didn't fail in time for unknown connector");
+    }
+
+    /// Minimal URL-encoder — wiremock URIs use only safe chars
+    /// but `://` and `:` are reserved in the inner query value,
+    /// so we percent-encode the colon + slash subset.
+    fn urlencoding(s: &str) -> String {
+        s.replace(":", "%3A").replace("/", "%2F")
     }
 }

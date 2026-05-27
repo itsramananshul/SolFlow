@@ -34,6 +34,7 @@
 //!   `next_fire_at` is cleared so it stops triggering until the
 //!   user fixes it.
 
+use crate::connector::ConnectorRegistry;
 use crate::executor::{execute_run, now_ms, RunPolicy};
 use crate::{ControllerError, ControllerResult, Persistence, SqlitePersistence};
 use chrono::{TimeZone, Utc};
@@ -61,6 +62,11 @@ pub struct TokioScheduler {
     /// Token set when `start()` has been called so subsequent
     /// calls don't spawn duplicate loops.
     started: Arc<std::sync::atomic::AtomicBool>,
+    /// Optional connector registry. When `Some`, runs spawned by
+    /// the scheduler (Timer + Event triggers) dispatch ExtCall
+    /// through this registry — matching what `LocalController`
+    /// does for Manual runs.
+    connectors: Option<ConnectorRegistry>,
 }
 
 impl TokioScheduler {
@@ -70,6 +76,7 @@ impl TokioScheduler {
             policy,
             tick_interval: DEFAULT_TICK_INTERVAL,
             started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            connectors: None,
         }
     }
 
@@ -77,6 +84,13 @@ impl TokioScheduler {
     /// ticks per second; production sticks with the default).
     pub fn with_tick_interval(mut self, tick: Duration) -> Self {
         self.tick_interval = tick;
+        self
+    }
+
+    /// Plug a connector registry in so scheduler-spawned runs
+    /// also dispatch ExtCall through it (Phase C C.4 c77).
+    pub fn with_connectors(mut self, connectors: ConnectorRegistry) -> Self {
+        self.connectors = Some(connectors);
         self
     }
 
@@ -220,8 +234,9 @@ impl TokioScheduler {
         let p = self.persistence.clone();
         let r = record.clone();
         let policy = self.policy;
+        let connectors = self.connectors.clone();
         tokio::spawn(async move {
-            execute_run(p, r, policy, None).await;
+            execute_run(p, r, policy, connectors).await;
         });
         Ok(record)
     }

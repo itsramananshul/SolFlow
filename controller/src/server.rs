@@ -22,6 +22,7 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
+use crate::connector::ConnectorMeta;
 use solflow_host_spec::{
     Health, RunCreated, RunRecord, RunRequest, RunStatus,
     ScheduleCreate, ScheduleRecord,
@@ -62,6 +63,8 @@ pub fn router(controller: LocalController) -> Router {
         // slashes), e.g. POST /events/github/webhook → path =
         // "github/webhook".
         .route("/events/*path", post(post_event))
+        // Phase C C.4 — connectors
+        .route("/connectors", get(get_connectors))
         .with_state(state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -175,6 +178,15 @@ async fn post_event(
     let body_val = body.map(|Json(v)| v).unwrap_or(serde_json::Value::Null);
     let rec = s.controller.ingress_event(&path, body_val).await?;
     Ok((StatusCode::ACCEPTED, Json(rec)))
+}
+
+/// `GET /connectors` — list registered connector metadata.
+/// Editor's connector help/UX reads this to render available
+/// connectors + their default policies.
+async fn get_connectors(
+    State(s): State<AppState>,
+) -> Result<Json<Vec<ConnectorMeta>>, ApiError> {
+    Ok(Json(s.controller.list_connectors()))
 }
 
 fn parse_status(s: &str) -> Option<RunStatus> {
@@ -465,6 +477,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_connectors_lists_http_by_default() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/connectors")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        let arr = list.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "http");
+        // default_policy serializes the conservative defaults.
+        assert_eq!(arr[0]["default_policy"]["timeout_ms"], 10_000);
     }
 
     #[tokio::test]
