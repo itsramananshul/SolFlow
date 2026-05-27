@@ -59,6 +59,18 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # chrono which we already pull in. Standard 5/6/7-field cron.
 cron = "0.16"
 
+# Phase C C.4 — connector framework.
+# `url` for parsing `connector://name?...` invocations; `reqwest`
+# for the HTTP reference connector. rustls-tls keeps the TLS impl
+# uniform with sqlx; no system OpenSSL dep.
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "charset",
+    "http2",
+] }
+
 # HTTP server (C.2 c61).
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
@@ -70,3 +82,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 # In-memory SQLite for tests; production uses on-disk.
 tempfile = "3"
+# Mock HTTP server for HTTP-connector tests (C.4). Pure-Rust,
+# wraps hyper; no external service required.
+wiremock = "0.6"

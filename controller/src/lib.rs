@@ -29,6 +29,7 @@
                               // async_trait wrapper lands when
                               // reference impls do.
 
+pub mod connector;
 pub mod executor;
 pub mod local;
 pub mod persistence;
@@ -129,29 +130,19 @@ pub trait Controller: Send + Sync {
 }
 
 // =============================================================
-//  Connector trait — how ExtCall reaches the outside world
+//  Connector framework
 // =============================================================
+//
+// The C.1 stub trait that lived here is replaced by the richer
+// surface in `crate::connector`. ExtCall lookup, structured
+// errors, the URL parser, and the registry all live in that
+// module; reference connectors (HTTP, etc.) live as submodules.
 
-/// A controller-side dispatcher for `Inst::ExtCall`. Reference
-/// impl `HttpConnector` lands in C.4.
-///
-/// Credentials live inside connector configuration on the
-/// controller; they are NEVER transmitted to the editor.
-#[async_trait]
-pub trait Connector: Send + Sync {
-    /// Stable connector name. Maps to the URL prefix
-    /// `connector://<name>?...` in bytecode-emitted ExtCall URLs.
-    fn name(&self) -> &str;
-
-    /// Invoke the named function with serialized args. Result is
-    /// serialized back to a JSON value the VM marshals to its
-    /// declared return type.
-    async fn call(
-        &self,
-        fn_name: &str,
-        args: serde_json::Value,
-    ) -> ControllerResult<serde_json::Value>;
-}
+pub use connector::{
+    Connector, ConnectorError, ConnectorInvocation, ConnectorMeta,
+    ConnectorOutcome, ConnectorRegistry, InvocationPolicy,
+    ParsedConnectorRef,
+};
 
 // =============================================================
 //  Persistence trait — storage backend abstraction
