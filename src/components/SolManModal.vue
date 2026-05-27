@@ -593,11 +593,26 @@ function onBackdrop(e: MouseEvent) {
             <span v-if="frameCount > 0" class="stat">{{ frameCount }} {{ frameCount === 1 ? 'section' : 'sections' }}</span>
             <span v-if="noteCount > 0" class="stat-sep">·</span>
             <span v-if="noteCount > 0" class="stat">{{ noteCount }} {{ noteCount === 1 ? 'note' : 'notes' }}</span>
+            <span class="stat-sep">·</span>
+            <span
+              class="stat assumption-stat"
+              :class="{ 'has-many': assumptions.length >= 3 }"
+              :title="assumptions.length === 0
+                ? 'Sol Man had enough detail to skip every assumption'
+                : `Sol Man made ${assumptions.length} ${assumptions.length === 1 ? 'assumption' : 'assumptions'} — read them below before applying`"
+            >{{ assumptions.length }} {{ assumptions.length === 1 ? 'assumption' : 'assumptions' }}</span>
           </div>
           <div class="preview-shape">{{ nodeSummaryLine() }}</div>
 
           <div v-if="assumptions.length > 0" class="section">
-            <div class="section-head amber">Assumptions Sol Man made</div>
+            <div class="section-head amber">
+              Assumptions Sol Man made
+              <span
+                v-if="assumptions.length >= 3"
+                class="assumption-count-badge"
+                :title="`${assumptions.length} assumptions — review carefully before applying`"
+              >{{ assumptions.length }}</span>
+            </div>
             <div class="assumption-cards">
               <div
                 v-for="(a, i) in assumptions"
@@ -608,6 +623,12 @@ function onBackdrop(e: MouseEvent) {
                 <div class="assumption-body">{{ a }}</div>
               </div>
             </div>
+          </div>
+          <div v-else class="section assumption-empty">
+            <span class="empty-glyph" aria-hidden="true">✓</span>
+            <span class="empty-text">
+              Sol Man had enough detail — no assumptions needed.
+            </span>
           </div>
 
           <!-- Diagnostics gate. We translated the generated spec into a
@@ -1200,6 +1221,57 @@ function onBackdrop(e: MouseEvent) {
   line-height: 1.55;
   flex: 1;
   word-wrap: break-word;
+}
+
+/* Assumption-count chip in the stats line. Amber when many were
+   made — visual signal "you should review these before applying"
+   without taking up a separate row. */
+.assumption-stat {
+  color: var(--sf-text-2);
+}
+.assumption-stat.has-many {
+  color: var(--sf-cat-trigger);
+  font-weight: 500;
+}
+
+/* Small pill that sits next to the "Assumptions Sol Man made"
+   section header when the count is meaningful (≥ 3). Reinforces
+   the count without forcing the user to scan the list. */
+.assumption-count-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  background: rgba(255, 184, 0, 0.18);
+  color: var(--sf-cat-trigger);
+  border-radius: 999px;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Affirming empty state — replaces the previously-hidden section
+   when assumptions.length === 0. Quieter visual treatment than
+   the cards (no rail, no panel) so it reads as a check, not as a
+   warning. */
+.assumption-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  align-self: flex-start;
+  border-radius: var(--sf-radius-sm);
+  background: rgba(0, 204, 136, 0.05);
+  border: 1px solid rgba(0, 204, 136, 0.18);
+}
+.assumption-empty .empty-glyph {
+  font-size: 0.6875rem;
+  color: var(--sf-success);
+  font-weight: 700;
+}
+.assumption-empty .empty-text {
+  font-size: 0.6875rem;
+  color: var(--sf-text-1);
 }
 .apply-row {
   display: flex;
