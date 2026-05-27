@@ -31,14 +31,13 @@ pub struct LocalController {
 }
 
 impl LocalController {
+    /// Construct a controller. Tests use this in isolation —
+    /// the scheduler tick loop isn't running yet. Production
+    /// (the binary) chains `.with_policy(...)` then
+    /// `.start_scheduler()` so timer triggers fire.
     pub fn new(persistence: SqlitePersistence) -> Self {
         let policy = RunPolicy::default();
         let scheduler = TokioScheduler::new(persistence.clone(), policy);
-        // Fire the tick loop. Tests construct controllers that
-        // never get an `await` long enough for the loop to do
-        // anything; production binds the binary for the loop's
-        // entire lifetime.
-        let _ = scheduler.start();
         Self {
             persistence: Arc::new(persistence),
             policy,
@@ -46,21 +45,27 @@ impl LocalController {
         }
     }
 
+    /// Replace the run policy. Builder-style; safe to chain
+    /// before `start_scheduler()`. After the scheduler has
+    /// started, policy changes don't take effect on the
+    /// already-spawned tick loop — re-create the controller if
+    /// you need that.
     pub fn with_policy(mut self, policy: RunPolicy) -> Self {
         self.policy = policy;
-        // Rebuild scheduler with the updated policy. Doesn't
-        // affect the already-spawned loop (it has a clone of the
-        // pre-update scheduler), so re-start the scheduler so
-        // newly-spawned runs use the new policy. The previous
-        // loop is technically still alive; for the local
-        // controller MVP that's acceptable since with_policy is
-        // only called immediately after `new` during binary boot.
         self.scheduler = TokioScheduler::new(
             (*self.persistence).clone(),
             self.policy,
         );
-        let _ = self.scheduler.start();
         self
+    }
+
+    /// Spawn the scheduler tick loop. Idempotent — calling
+    /// twice on the same scheduler is a no-op (the second call
+    /// returns a do-nothing JoinHandle). The binary calls this
+    /// after wiring policy; tests skip it so they don't race
+    /// against a background tick.
+    pub fn start_scheduler(&self) -> tokio::task::JoinHandle<()> {
+        self.scheduler.start()
     }
 
     /// Expose persistence so the HTTP server (and tests) can

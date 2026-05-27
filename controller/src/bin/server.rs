@@ -45,6 +45,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let persistence = SqlitePersistence::open(&db_path).await?;
     let controller = LocalController::new(persistence).with_policy(policy);
+    // Start the scheduler tick loop AFTER policy is wired so the
+    // loop reads the right step-limit / wall-clock cap. Without
+    // this call the controller still works for Manual runs;
+    // Timer triggers wouldn't fire.
+    let _scheduler_handle = controller.start_scheduler();
     let app = server::router(controller);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;

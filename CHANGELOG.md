@@ -38,7 +38,7 @@ SolFlow uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `cron = "0.16"` added as a controller dep.
 - ControllerClient gains 6 schedule methods + structured-error
   handling for all of them.
-- +14 Rust tests, +6 vitest. Totals: 91 rust + 124 vitest.
+- +21 Rust tests, +6 vitest. Totals: 98 rust + 124 vitest.
 
 ### Added — Phase C C.2 (controller MVP, local)
 
