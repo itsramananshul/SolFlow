@@ -1,10 +1,11 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
-> **Status:** B.1, B.2, B.3 groundwork, and **B.4 + early B.5
-> complete** (2026-05-27). The standalone Rust compiler now runs
-> in the browser via wasm-bindgen; the SolFlow source editor shows
-> live, canonical compiler diagnostics while you type. AST → graph
-> import is the next major milestone.
+> **Status:** B.1–B.5 complete, **B.7 AST→graph importer + early
+> B.9 sync model complete** (2026-05-27). SolFlow now does both
+> directions: graph→source via the live emit pipeline, and
+> source→graph via an explicit "Import to graph" action backed by
+> the WASM compiler. Sync remains explicit-action (B.9 philosophy);
+> live bidirectional binding is intentionally not implemented.
 >
 > **Branch:** `feat/solflow-phase-a` (Phase B work continues here
 > until a `feat/solflow-phase-b` branch is cut).
@@ -800,7 +801,18 @@ plumbing.
 - No auto-completion (Phase C)
 - No graph generation from source (B.7)
 
-### B.7 — AST → graph importer MVP
+### B.7 — AST → graph importer MVP ✅ **DONE**
+
+> **Landed 2026-05-27.** `src/graph/import/` walks a parsed
+> `Program` and produces a `SolWorkflow` + `ImportReport`. The
+> editor's SourcePreview gains an Import-to-graph button (in edit
+> mode) that opens an `ImportReportModal` showing per-function
+> classification (full / partial / source-only / unsupported).
+> Statement coverage: let/assign/print/call/return/if/while/for +
+> structs/enums/imports/ext-fn-as-source-only. Unsupported
+> constructs survive as placeholder nodes carrying the original
+> SOL inline + a notice (never silently dropped). Tests: 23/23 in
+> vitest. See `IMPORT_COMPATIBILITY.md` for the full matrix.
 
 **Goal:** turn a parsed AST into a SolFlow graph. Cover the
 Phase A node-kind set; unsupported syntax surfaces as source-
@@ -922,7 +934,22 @@ sync between modes is still manual.
 - No simulator parity (B.10)
 - No formatter customization options (Phase C)
 
-### B.9 — Source ↔ graph synchronization strategy
+### B.9 — Source ↔ graph synchronization strategy 🟡 **Philosophy locked**
+
+> **Landed 2026-05-27 (architectural model only).** See
+> `SYNC_MODEL.md` for the canonical philosophy. Summary: sync is
+> always an explicit user action (Import / Reset / Edit). No
+> live two-way binding, no AST-diff merge, no watcher-based
+> "auto-update graph from buffer." Detached-edit state is rendered
+> honestly with an amber banner. The Import-to-graph action is a
+> destructive replace by design; the import report tells the user
+> exactly what was lost.
+>
+> No code work pending for B.9 beyond the sync model itself —
+> future improvements (source-spans, click-to-source, etc.) refine
+> the existing actions without changing the model.
+
+### B.9 — Source ↔ graph synchronization strategy (original plan below)
 
 **Goal:** decide how the editor handles concurrent edits to
 source and graph. Implement the **chosen** model; do not try to

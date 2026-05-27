@@ -59,7 +59,9 @@ cargo run --bin sol -- tests/fixtures/retest.sol
 | B.3 — AST serde derives | ✅ groundwork (feature-gated) |
 | B.4 — WASM bridge | ✅ MVP (see `../compiler-wasm/`) |
 | B.5 — Parse SOL in browser | ✅ MVP (live diagnostics in SourcePreview) |
-| B.7 — AST → graph importer | pending |
+| B.7 — AST → graph importer | ✅ MVP (`src/graph/import/`) |
+| B.9 — Source ↔ graph sync model | 🟡 Philosophy (`docs/sol-language/SYNC_MODEL.md`) |
+| B.8 — Graph→source canonicalization | pending |
 
 Notes:
 - [REMAINING_PANICS.md](REMAINING_PANICS.md) — intentional

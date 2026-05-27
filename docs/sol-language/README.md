@@ -66,6 +66,8 @@ behavior is flagged as a tool-side mismatch.
 | [`GRAMMAR.md`](./GRAMMAR.md) | EBNF-style grammar derived from the parser; lexical rules, declarations, statements, expressions, precedence table |
 | [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md) | Every diagnostic the compiler emits, with cause, fix, fixture link, plain-English explanation |
 | [`EXAMPLES.md`](./EXAMPLES.md) | Long-form example catalogue (companion to chapter 16) |
+| [`IMPORT_COMPATIBILITY.md`](./IMPORT_COMPATIBILITY.md) | What the AST→graph importer can / cannot represent visually; per-construct classification + round-trip caveats |
+| [`SYNC_MODEL.md`](./SYNC_MODEL.md) | The explicit-action sync philosophy between source pane and visual graph (B.9 architectural model) |
 
 ### Internal
 
