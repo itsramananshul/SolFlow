@@ -21,7 +21,8 @@ a canonical Rust compiler + VM compiled to WebAssembly.
 - **[Install](./user/INSTALL.md)** — toolchain prerequisites + setup
 - **[FAQ](./user/FAQ.md)** — common questions answered concisely
 - **[Editor Guide](./user/EDITOR_GUIDE.md)** — how to use the visual editor
-- **[Demo walkthrough](./DEMO.md)** — show SolFlow in 5 minutes
+- **[Demo walkthrough](./DEMO.md)** — show SolFlow in 5 minutes (with screenshot slots)
+- **[Screenshots](./screenshots/README.md)** — what to capture + how
 - **[CHANGELOG](../CHANGELOG.md)** — what shipped when
 - **[Contributing](../CONTRIBUTING.md)** — repo layout + how to contribute
 
