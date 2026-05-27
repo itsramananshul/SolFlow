@@ -3,8 +3,8 @@
     "DeclStruct": {
       "name": "Point",
       "fields": {
-        "y": "Integer",
-        "x": "Integer"
+        "x": "Integer",
+        "y": "Integer"
       }
     }
   },

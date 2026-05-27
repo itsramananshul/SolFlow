@@ -15,8 +15,11 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:rust": "cargo test --workspace",
     "typecheck": "vue-tsc --noEmit",
-    "lint": "eslint . --ext .ts,.vue"
+    "lint": "eslint . --ext .ts,.vue",
+    "check": "npm run typecheck && npm run test && npm run test:rust",
+    "regen:fixtures": "bash scripts/regenerate-ast-fixtures.sh"
   },
   "dependencies": {
     "@codemirror/commands": "^6.6.0",
