@@ -544,7 +544,53 @@ interface StmtImportResult {
   exitPort: 'next' | 'after';
 }
 
+/**
+ * Public entry: dispatches to {@link importStatementInner}, then
+ * attaches the AST node's source span (B.D c43) to the resulting
+ * entry node so the editor can map execution-trace spans back to
+ * graph nodes.
+ *
+ * Only struct-variant Ast nodes carry spans (`DeclVar`, `StmtIf`,
+ * `StmtWhile`, `StmtFor`, `DeclFunc`, etc.); the importer
+ * gracefully skips attachment for the leaf-expression cases that
+ * don't have one. The editor consumer treats absence as
+ * "no graph mapping for this span."
+ */
 function importStatement(stmt: Ast, state: FuncImportState): StmtImportResult | null {
+  const result = importStatementInner(stmt, state);
+  if (result) {
+    const span = astStatementSpan(stmt);
+    if (span) {
+      const entryNode = state.nodes.find((n) => n.id === result.entryRealId);
+      if (entryNode) {
+        entryNode.meta = {
+          ...(entryNode.meta ?? {}),
+          sourceSpan: { start: span.start, end: span.end },
+        };
+      }
+    }
+  }
+  return result;
+}
+
+/** Read a span field from any AST struct variant that carries one.
+ *  Mirrors the Rust `Analyzer::node_span` helper added in c35. */
+function astStatementSpan(stmt: Ast): { start: number; end: number } | undefined {
+  if (typeof stmt === 'string') return undefined;
+  if ('DeclFunc' in stmt) return stmt.DeclFunc.span;
+  if ('DeclExtFunc' in stmt) return stmt.DeclExtFunc.span;
+  if ('DeclVar' in stmt) return stmt.DeclVar.span;
+  if ('DeclStruct' in stmt) return stmt.DeclStruct.span;
+  if ('DeclEnum' in stmt) return stmt.DeclEnum.span;
+  if ('Block' in stmt) return stmt.Block.span;
+  if ('StmtImport' in stmt) return stmt.StmtImport.span;
+  if ('StmtIf' in stmt) return stmt.StmtIf.span;
+  if ('StmtWhile' in stmt) return stmt.StmtWhile.span;
+  if ('StmtFor' in stmt) return stmt.StmtFor.span;
+  return undefined;
+}
+
+function importStatementInner(stmt: Ast, state: FuncImportState): StmtImportResult | null {
   if (typeof stmt === 'string') {
     return makeUnsupportedPlaceholder(state, `bare unit AST "${stmt}"`);
   }

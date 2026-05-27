@@ -224,6 +224,58 @@ describe('importProgram — B.D c37 field/index set + top-level let', () => {
   });
 });
 
+describe('importProgram — B.D c43 node-level source attachment', () => {
+  it('attaches meta.sourceSpan to nodes whose AST carried a span', () => {
+    const program = loadFixture('linear_flow');
+    const { workflow } = importProgram(program, { name: 't' });
+    const start = workflow.functions.find((f) => f.name === 'start')!;
+    // `let` nodes come from DeclVar (which has a span). At least
+    // one should have meta.sourceSpan populated.
+    const lets = start.nodes.filter((n) => n.data.kind === 'let');
+    const withSpan = lets.filter((n) => n.meta?.sourceSpan);
+    expect(withSpan.length).toBeGreaterThan(0);
+    for (const n of withSpan) {
+      const span = n.meta!.sourceSpan!;
+      expect(span.start).toBeGreaterThanOrEqual(0);
+      expect(span.end).toBeGreaterThan(span.start);
+    }
+  });
+
+  it('findNodeForSpan returns smallest-containing node', async () => {
+    const { findNodeForSpan } = await import('@/graph/nodeLookup');
+    const program = loadFixture('branch_and_loop');
+    const { workflow } = importProgram(program, { name: 't' });
+    // Find any node with a span; query its span — should return
+    // itself (smallest-containing match).
+    const allWithSpan: { fnName: string; nodeId: string; span: { start: number; end: number } }[]
+      = [];
+    for (const fn of workflow.functions) {
+      for (const node of fn.nodes) {
+        if (node.meta?.sourceSpan) {
+          allWithSpan.push({
+            fnName: fn.name,
+            nodeId: node.id,
+            span: node.meta.sourceSpan,
+          });
+        }
+      }
+    }
+    expect(allWithSpan.length).toBeGreaterThan(0);
+    const target = allWithSpan[0]!;
+    const match = findNodeForSpan(workflow, target.span);
+    expect(match).not.toBeNull();
+    expect(match!.node.id).toBe(target.nodeId);
+  });
+
+  it('findNodeForSpan returns null for spans outside any node', async () => {
+    const { findNodeForSpan } = await import('@/graph/nodeLookup');
+    const program = loadFixture('linear_flow');
+    const { workflow } = importProgram(program, { name: 't' });
+    const match = findNodeForSpan(workflow, { start: 99999, end: 100000 });
+    expect(match).toBeNull();
+  });
+});
+
 describe('importProgram — empty / degenerate', () => {
   it('empty program yields empty workflow + no notices', () => {
     const { workflow, report } = importProgram([]);

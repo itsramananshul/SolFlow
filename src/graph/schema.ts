@@ -221,6 +221,20 @@ export interface GraphNode {
   position: { x: number; y: number };
   ports: NodePorts;
   /**
+   * Optional source-attachment metadata. Populated by the AST→graph
+   * importer (B.D c43) for nodes whose source AST carried a span.
+   * The editor uses this to map an execution trace span back to
+   * a graph node ("click trace step → focus this node on canvas").
+   *
+   * Phase-A hand-built workflows leave `sourceSpan` undefined.
+   * Re-importing later overwrites with fresh values.
+   */
+  meta?: {
+    /** Byte range in the source the node came from (0-indexed,
+     *  exclusive end). Mirrors Rust's `SourceSpan`. */
+    sourceSpan?: { start: number; end: number };
+  };
+  /**
    * Inline SOL expression text keyed by input port id. Non-empty values
    * take precedence over wired data edges during emit. This is the
    * Phase A escape hatch for fast workflow authoring — users can type
