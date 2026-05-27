@@ -1,0 +1,24 @@
+[package]
+name = "solflow_runtime"
+version = "0.1.0"
+edition = "2024"
+description = "Canonical SOL bytecode VM, browser-safe. Vendored from upstream with surgical edits — see UPSTREAM.md."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Compiler crate owns the Inst / Ast / Type definitions the VM
+# consumes. No editor-side TS shapes leak here — runtime stays a
+# pure SOL evaluator.
+solflow_compiler = { path = "../compiler" }
+
+# RPC instructions (SerializeRequest, DeserializeRequestArgs, etc.)
+# build + parse JSON payloads. Kept even in the no-network browser
+# build because the JSON serialization itself is canonical SOL
+# semantics — only the HTTP transport (ExtCall) is blocked.
+serde_json = "1"
+
+[dev-dependencies]
+solflow_compiler = { path = "../compiler" }

@@ -129,6 +129,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "solflow_runtime"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "solflow_compiler",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
