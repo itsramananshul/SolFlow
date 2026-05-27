@@ -35,6 +35,7 @@ type Envelope<T> = {
 | `parse_source_json(source)` | `Envelope<Program>` |
 | `analyze_source_json(source)` | `Envelope<{ program: Program }>` |
 | `compile_source_json(source)` | `Envelope<{ program: Program; instruction_count: number }>` |
+| `run_source_json(source)` | Extended envelope with `run: { return_value, output, steps, runtime_error }` (B.10) |
 | `version()` | crate-version string |
 
 `tt_arena` (the analyzer's type-table arena) and the full `Inst`

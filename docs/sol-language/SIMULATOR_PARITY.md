@@ -1,8 +1,25 @@
 # Simulator ↔ Compiler Parity Audit
 
-Status as of B.10 c27 (2026-05-27). **Audit only — no code changes
-in this phase.** The simulator stays as-is; this document is the
-drift report that informs future B.10 rewrite work.
+> **B.10 update — 2026-05-27.** The audit below was originally
+> written as a drift catalog motivating future work. **That work
+> shipped in c28–c30.** SolFlow now executes user workflows via
+> the canonical SOL VM compiled to WASM (`runtime/` crate +
+> `compiler-wasm::run_source_json` export + `runSource()` in the
+> TS API + RunModal integration).
+>
+> The drift list below is now history — every "Simulator" column
+> entry is what the **legacy JS interpreter** (`src/runtime/interpret.ts`)
+> does. The canonical column is what SolFlow shows users.
+> `interpret.ts` is kept ONLY as an animation driver for canvas
+> playback (per-node highlighting); its output is no longer
+> displayed anywhere as canonical execution.
+>
+> **One intentional drift remains:** `ExtCallBlocked`. The
+> browser refuses external network calls and surfaces a
+> structured runtime error instead of silently faking success.
+> This is by design — see Part 4 of the original B.10 brief.
+
+Status as of B.10 c27 (2026-05-27 — audit) + c28–c30 (resolution).
 
 ## Layout
 
@@ -133,24 +150,35 @@ The validator already catches most divergent expressions through
 diagnostics gives high confidence the sim and canonical execution
 will agree.
 
-## Recommendations for B.10
+## Resolution (B.10 c28–c30)
 
-Not promises — just the path that follows from this audit:
+Recommendation 4 — "ship the canonical VM as a second WASM
+target and have the sim invoke it" — was the chosen path.
+Recommendations 1–3 became unnecessary; the legacy JS sim is no
+longer the source of truth, so its quirks no longer matter.
 
-1. **Replace `evalInline` with a SOL mini-interpreter** that
-   respects compiler-semantic int division, bitwise i128, and
-   bool-only `!`. Eliminates the `new Function` security surface
-   AND the operator-semantic drift in one move.
-2. **Reject coerced types at sim boundary** rather than masking
-   them with `num()`/`toBool()`. Better to surface the same
-   errors the compiler will surface.
-3. **Replace enum string normalization with int-by-position** so
-   the sim catches T9002-class collisions too.
-4. **Or:** ship the canonical VM as a second WASM target (`vm.rs`
-   from upstream) and have the sim invoke it. Largest scope but
-   removes all of this drift at once.
+What shipped:
 
-For SolFlow's current phase, the live compiler diagnostics from
-B.5 already surface most of these mismatches at edit time. The
-sim is increasingly a convenience layer rather than a source of
-truth — which is the correct trajectory.
+- **`runtime/` sibling Rust crate** — vendored the upstream VM
+  with four surgical edits: `println!` → output-buffer capture,
+  `Inst::ExtCall` → structured `ExtCallBlocked` error (browser
+  can't do raw TCP), step limit (default 1M), common runtime
+  errors (DivByZero / IndexOOB / StackUnderflow / HeapShapeMismatch)
+  returned as `RunError` values instead of panics.
+- **`compiler-wasm::run_source_json`** — new export that compiles
+  via the canonical compiler + runs via the canonical VM, all
+  in one WASM bundle (357KB optimized).
+- **`runSource()`** in `src/compiler/api.ts` — typed TS wrapper.
+- **RunModal** — output panel now displays canonical-VM output;
+  legacy JS interpreter kept only for canvas playback animation
+  (per-node highlighting), with an honest label.
+
+The audit table below is preserved as historical context — every
+"Simulator" entry IS what the legacy JS interpreter does, and IS
+the divergence the user used to see. Those entries no longer
+describe what SolFlow displays; the canonical column is now
+authoritative.
+
+`interpret.ts` carries an explicit `NOT AUTHORITATIVE` banner +
+a `DO NOT extend` note. Future work that needs richer simulation
+semantics should land in `runtime/`, not the JS interpreter.

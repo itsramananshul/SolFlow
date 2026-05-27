@@ -1,15 +1,21 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
-> **Status:** B.1–B.5 + B.7 complete; **B.6 rich diagnostics UX,
-> B.8 graph→source canonicalization MVP, and B.10 simulator
-> parity audit complete** (2026-05-27). The IDE now feels
-> coherent: lexer/parser diagnostics carry source spans, the
-> editor's diagnostic panel groups by phase with click-to-source,
-> the import report links per-function entries back to source
-> lines, the emit pipeline is provably deterministic + round-trip
-> stable (caught a real `exitPort` wiring bug in the process),
-> and the simulator/compiler semantic drift is documented in
-> `SIMULATOR_PARITY.md`.
+> **Status:** B.1–B.10 complete (2026-05-27). SolFlow now runs
+> on **canonical SOL semantics throughout** — the lexer, parser,
+> analyzer, codegen, AND the VM are all the canonical Rust
+> implementations, compiled to WASM. The legacy JS interpreter
+> is reduced to a canvas-animation driver only. The Run modal's
+> output panel displays whatever the canonical SOL VM produces;
+> external network calls are honestly blocked with a structured
+> diagnostic rather than faked.
+>
+> **What's open in Phase B**: per-node bytecode mapping (would
+> let the canvas highlight semantically-accurate node execution
+> instead of approximate JS-trace), AST-level source spans
+> (would unlock analyzer-row click-to-source + statement-level
+> import attachment), and B.11 stabilization passes. None of
+> these block the "SolFlow is a real compiler-backed IDE"
+> claim — the foundation is in place.
 >
 > **Branch:** `feat/solflow-phase-a` (Phase B work continues here
 > until a `feat/solflow-phase-b` branch is cut).
@@ -1009,22 +1015,33 @@ sync to Phase C.
 - No silent data loss; the user is always told when their
   in-flight edits are about to be regenerated
 
-### B.10 — Simulator / compiler parity plan 🟡 **Audit complete**
+### B.10 — Canonical SOL VM in WASM ✅ **DONE** (c28–c31)
 
-> **Audit landed 2026-05-27.** See
-> `docs/sol-language/SIMULATOR_PARITY.md` for the drift report —
-> categorized list of every observable divergence between the
-> in-browser simulator and the canonical SOL compiler/VM.
-> Headline drifts: numeric/bool coercion in `applyBinaryOp`,
-> JS-style `+` string concat (T9023 hazard), JS-style integer
-> division (`/` is float in sim), `toBool` on strings,
-> `!`-on-string acceptance, enum equality via string
-> normalization vs canonical first-char-hash (T9002 hazard),
-> `new Function`-based inline expression evaluation. No code
-> changes in this phase; B.10 rewrite (two paths recommended:
-> sim-tightening OR ship-canonical-VM-as-WASM) is its own
-> milestone. Live B.5 compiler diagnostics already surface most
-> of these mismatches at edit time.
+> **Landed 2026-05-27.** User decision: Option 2 — vendor the
+> canonical SOL VM and run it in the browser. Resolution:
+>
+> - **`runtime/` new sibling crate** vendoring upstream `vm.rs`
+>   with four surgical edits (output capture, ExtCall blocked,
+>   step limit, common errors as values not panics). 12/12
+>   native tests cover arithmetic, control flow, function call,
+>   div-by-zero, infinite-loop step limit, ExtCallBlocked.
+> - **`compiler-wasm::run_source_json`** export — single bundle
+>   (357KB optimized, up from 280KB pre-VM). 10/10 native tests
+>   covering the JSON envelope shape, compile-failure short-
+>   circuit, runtime-error surfacing.
+> - **`runSource()`** in TS API + RunModal wired through. Output
+>   panel shows canonical-VM output (return value, print lines,
+>   structured runtime errors). Legacy JS interpreter
+>   (`interpret.ts`) demoted to canvas-animation driver only with
+>   a `NOT AUTHORITATIVE` / `DO NOT extend` banner.
+> - **External calls intentionally blocked** with
+>   `RunError::ExtCallBlocked { function_name, url }` — honest
+>   per user's ask. Modal renders the function name + URL clearly
+>   so users know what to deploy if they want it to actually run.
+>
+> The simulator/compiler drift documented in `SIMULATOR_PARITY.md`
+> is now resolved. The drift catalog stays in place as historical
+> context but is no longer load-bearing.
 
 ### B.10 — original plan below
 
