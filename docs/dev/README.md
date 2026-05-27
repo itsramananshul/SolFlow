@@ -5,8 +5,13 @@ compiler, or runtime.
 
 ## Start here
 
-- **[Architecture overview](./ARCHITECTURE.md)** — how the
-  pieces fit together
+- **[Architecture overview](./ARCHITECTURE.md)** — Phase B
+  architecture: how the editor + compiler + VM fit together
+- **[Phase C Architecture](./PHASE_C_ARCHITECTURE.md)** —
+  in-progress orchestration / runtime platform design (the
+  canonical Phase C contract)
+- **[Phase C Roadmap](./PHASE_C_ROADMAP.md)** — C.1 → C.8
+  milestone delivery plan
 - **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — code style + test discipline
 
 ## Deep dives

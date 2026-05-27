@@ -1,9 +1,13 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
-> **Status:** Phase B **complete + deferred-B bundles fully
-> landed** (2026-05-27, milestones B.1–B.11 + B.D c35/c37/c39/
-> c36/c41/c42/c43/c44/c45/c46). See `B_RELEASE_NOTES.md` for
-> the full milestone summary including both deferred-B sweeps.
+> **Status:** Phase B **complete + Productization (v0.2.0)
+> shipped + Phase C started** (2026-05-27). Phase B milestones
+> B.1–B.11 + deferred-B sweeps (c35–c46) closed; Productization
+> v0.2.0 release closed; Phase C architecture pass (C.1) in
+> progress — see **[`docs/dev/PHASE_C_ROADMAP.md`](../dev/PHASE_C_ROADMAP.md)**.
+>
+> This document is historical; new work tracks against the
+> Phase C roadmap.
 >
 > SolFlow runs on canonical SOL semantics throughout; AST source
 > spans flow through analyzer diagnostics + importer attachments;

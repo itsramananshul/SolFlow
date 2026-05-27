@@ -134,7 +134,7 @@ Quick links:
 - **Phase B** — canonical Rust compiler + VM compiled to WASM, AST→graph importer, source spans, rich diagnostics, round-trip stability, canonical-VM execution. ✅ Shipped (B.1–B.11).
 - **Deferred-B** — per-instruction span sidecar, importer expansion (fieldSet / indexSet / top-level let), Node-target WASM e2e, Web Worker for parse/analyze, execution trace + click-to-source/node navigation. ✅ Shipped.
 - **Productization (v0.2.0)** — user docs, in-app docs discoverability, sample CI gates, modal Escape consistency, LICENSE + CONTRIBUTING, CHANGELOG. ✅ Shipped.
-- **Phase C** — deployment, controller integration, multi-user, real external calls. Not started.
+- **Phase C** — real orchestration / runtime platform: controller integration, persistence, scheduling, connectors, observability. 🟡 In progress (C.1 architecture + scaffolding). See [`docs/dev/PHASE_C_ARCHITECTURE.md`](./docs/dev/PHASE_C_ARCHITECTURE.md) + [`docs/dev/PHASE_C_ROADMAP.md`](./docs/dev/PHASE_C_ROADMAP.md).
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the per-release record.
 
