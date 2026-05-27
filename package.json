@@ -12,6 +12,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "build:nocheck": "vite build",
     "build:wasm": "cd compiler-wasm && wasm-pack build --release --target bundler --out-dir pkg",
+    "build:wasm:node": "cd compiler-wasm && wasm-pack build --release --target nodejs --out-dir pkg-node",
+    "build:wasm:all": "npm run build:wasm && npm run build:wasm:node",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
