@@ -1,8 +1,11 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
-> **Status:** Discovery + architecture plan (2026-05-26). No code
-> changes in this document. The first implementation milestone (B.1)
-> begins **only after explicit approval**.
+> **Status:** B.1 + B.2 **complete** (2026-05-26). The standalone
+> Rust compiler now lives in `compiler/` with a `solflow_compiler`
+> library + `sol` CLI; every compile-time error returns a
+> `SolDiagnostic` value rather than aborting the process. Next:
+> B.3 (serde derives on the AST) is the prerequisite for the WASM
+> bridge in B.4.
 >
 > **Branch:** `feat/solflow-phase-a` (Phase B work continues here
 > until a `feat/solflow-phase-b` branch is cut).
@@ -426,7 +429,15 @@ G13 codegen spans  ───────→  optional (B.10); deferable past Pha
 Eleven milestones. Each is sized to be a coherent commit batch
 (small days, not weeks). Each gates the next.
 
-### B.1 — Rust crate cleanup for WASM readiness
+### B.1 — Rust crate cleanup for WASM readiness ✅ **DONE**
+
+> **Landed 2026-05-26** as part of the B.1+B.2 foundation bundle
+> (commits 934d64d → 9175268 → 92ecbc1 → c0dc875). The standalone
+> compiler now lives in `compiler/`, separate from the SolFlow
+> editor sources, and is consumed as a library through
+> `solflow_compiler::{lex_source, parse_source, analyze_source,
+> compile_source}`. The `sol` CLI is a thin wrapper. See
+> `compiler/README.md` and `compiler/UPSTREAM.md`.
 
 **Goal:** convert the binary-only Rust crate into a library with
 a clean public surface that WASM and Rust callers alike can use.
@@ -472,7 +483,24 @@ to the binary — useless in a browser.
 - No WASM bridge yet (B.4)
 - No source-span work (deferred to B.2 alongside errors-as-values)
 
-### B.2 — Diagnostics-as-values
+### B.2 — Diagnostics-as-values ✅ **DONE** (spans deferred)
+
+> **Landed 2026-05-26.** Lexer, parser, analyzer, and codegen all
+> return `SolDiagnostic` values; no library code calls
+> `process::exit` or `panic!` on an error path. The CLI now renders
+> diagnostics in cargo-style format. Tests: 10/10 green (2 smoke,
+> 8 negative-fixture diagnostic-code assertions).
+>
+> **Deferred from B.2:** source-span attachment on every diagnostic.
+> The `SourceSpan` type and pipeline plumbing exist
+> (`compiler/src/diagnostic.rs`); spans are not yet attached at
+> every emission site. Adding spans through the lexer + parser is
+> a future commit batch (sized as its own milestone since it
+> touches every emit site) — gated only when the editor actually
+> needs underline ranges, i.e. when B.4 lands.
+>
+> Catalog of remaining intentional panic / abort sites:
+> `compiler/REMAINING_PANICS.md`.
 
 **Goal:** replace every `eprintln! + exit(1)` with a structured
 `Diagnostic` value returned through a `Result` chain. Add source

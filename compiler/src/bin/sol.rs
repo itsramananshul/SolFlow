@@ -1,19 +1,22 @@
 //! Minimal CLI consuming solflow_compiler as a library.
 //!
-//! Phase B.1 — proves the library API links and exercises the
-//! pipeline end-to-end against a fixture. Phase B.6 wires this up
-//! to print structured diagnostics; for now it just runs the
-//! existing pipeline (which still process-exits on errors).
+//! Reads a `.sol` file, runs the full compile pipeline, and prints
+//! any diagnostics in cargo-style format. Exits non-zero if any
+//! error-severity diagnostic is produced.
 //!
 //! Usage:
 //!   cargo run --bin sol -- <path-to-.sol-file>
 //!   cargo run --bin sol -- --debug-tokens <path>
 //!   cargo run --bin sol -- --debug-ast    <path>
 
-use solflow_compiler::lexer::Lexer;
-use solflow_compiler::parser::Parser;
-use solflow_compiler::analyzer::Analyzer;
-use solflow_compiler::bytecode::Codegen;
+use solflow_compiler::{
+    analyze_source, compile_source, format_diagnostic, lex_source, parse_source,
+};
+
+fn usage_and_exit() -> ! {
+    eprintln!("usage: sol [--debug-tokens] [--debug-ast] <file.sol>");
+    std::process::exit(2);
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -23,38 +26,66 @@ fn main() {
     for a in args.iter().skip(1) {
         match a.as_str() {
             "--debug-tokens" => debug_tokens = true,
-            "--debug-ast"    => debug_ast = true,
+            "--debug-ast" => debug_ast = true,
             other => {
                 if path.is_some() {
-                    eprintln!("usage: sol [--debug-tokens] [--debug-ast] <file.sol>");
-                    std::process::exit(2);
+                    usage_and_exit();
                 }
                 path = Some(other.to_string());
             }
         }
     }
-    let Some(file) = path else {
-        eprintln!("usage: sol [--debug-tokens] [--debug-ast] <file.sol>");
-        std::process::exit(2);
+    let Some(file) = path else { usage_and_exit() };
+
+    let source = match std::fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: could not read {file}: {e}");
+            std::process::exit(2);
+        }
     };
 
-    let mut lexer = Lexer::from(&file);
-    let tokens = lexer.tokens();
     if debug_tokens {
-        eprintln!("{tokens:#?}");
+        let lex = lex_source(&source);
+        eprintln!("{:#?}", lex.value.as_ref().unwrap_or(&Vec::new()));
+        print_diagnostics(&lex.diagnostics, &source, &file);
+        if lex.has_errors() {
+            std::process::exit(1);
+        }
     }
 
-    let mut parser = Parser::from(tokens);
-    let mut program = parser.run();
     if debug_ast {
-        eprintln!("{program:#?}");
+        let parse = parse_source(&source);
+        eprintln!("{:#?}", parse.value);
+        print_diagnostics(&parse.diagnostics, &source, &file);
+        if parse.has_errors() {
+            std::process::exit(1);
+        }
     }
 
-    let mut analyzer = Analyzer::new();
-    analyzer.run(&mut program);
+    // Analyze first so semantic errors print under the analyzer
+    // banner even when codegen would also flag something downstream.
+    let analyze = analyze_source(&source);
+    print_diagnostics(&analyze.diagnostics, &source, &file);
+    if analyze.has_errors() {
+        std::process::exit(1);
+    }
 
-    let mut codegen = Codegen::from(analyzer.tt_arena);
-    let _bytecode = codegen.gen_bcode(&program);
+    let compile = compile_source(&source);
+    print_diagnostics(&compile.diagnostics, &source, &file);
+    if compile.has_errors() {
+        std::process::exit(1);
+    }
 
     println!("OK: parsed + analyzed + compiled {file}");
+}
+
+fn print_diagnostics(
+    diags: &[solflow_compiler::SolDiagnostic],
+    source: &str,
+    file: &str,
+) {
+    for d in diags {
+        eprintln!("{}", format_diagnostic(d, Some(source), Some(file)));
+    }
 }
