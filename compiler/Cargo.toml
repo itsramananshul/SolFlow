@@ -1,0 +1,15 @@
+[package]
+name = "solflow_compiler"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone SOL language compiler — lexer + parser + analyzer + bytecode emitter. Embeddable library for SolFlow."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "sol"
+path = "src/bin/sol.rs"
+
+[dependencies]
