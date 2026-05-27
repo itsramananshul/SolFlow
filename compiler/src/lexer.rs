@@ -1,4 +1,4 @@
-use std::process::exit;
+use crate::diagnostic::{codes, DiagnosticPhase, SolDiagnostic};
 
 #[derive(Debug, Clone)]
 pub enum Token {
@@ -185,6 +185,11 @@ impl Token {
 pub struct Lexer {
     source: Vec<char>,
     index: usize,
+    /// Errors collected during lexing. Replaces the upstream
+    /// `eprintln! + process::exit(1)` pattern; the lexer now skips
+    /// the bad character and continues so callers see all lex
+    /// errors at once.
+    pub diagnostics: Vec<SolDiagnostic>,
 }
 
 impl Lexer {
@@ -200,6 +205,7 @@ impl Lexer {
         Self {
             source,
             index: 0usize,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -211,6 +217,7 @@ impl Lexer {
         Self {
             source: source.chars().collect(),
             index: 0usize,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -306,8 +313,16 @@ impl Lexer {
             '~' => Token::Tilde,
 
             c => {
-                eprintln!("unrecognized character: '{c}'");
-                exit(1);
+                // Lexer error — push diagnostic, skip the bad
+                // character, continue. Callers receive every lex
+                // error at once via `Lexer.diagnostics`.
+                self.diagnostics.push(SolDiagnostic::error(
+                    DiagnosticPhase::Lexer,
+                    codes::PARSE_LEX_BAD_CHAR,
+                    format!("unrecognized character: '{c}'"),
+                ));
+                self.index += 1;
+                return self.next_token();
             }
         };
         self.index += 1;

@@ -82,71 +82,118 @@ pub struct CompiledProgram {
 //  Lex
 // =============================================================
 
-/// Tokenize a SOL source string. **B.2 baseline** wraps the
-/// verbatim `Lexer::from_str` (added below); the only failure mode
-/// is the unrecognized-character `process::exit(1)` site at
-/// `lexer.rs:298`. That conversion lands in c3.
+/// Tokenize a SOL source string. Lex errors (e.g. unrecognized
+/// characters) are returned as diagnostics; the lexer skips bad
+/// characters and continues so callers see every lex error in one
+/// pass.
 pub fn lex_source(source: &str) -> CompileResult<Vec<Token>> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
-    CompileResult::ok(tokens)
+    let diags = std::mem::take(&mut lexer.diagnostics);
+    if diags.is_empty() {
+        CompileResult::ok(tokens)
+    } else {
+        CompileResult::partial(tokens, diags)
+    }
 }
 
 // =============================================================
 //  Parse
 // =============================================================
 
-/// Parse a SOL source string into a `Program` (AST). **B.2
-/// baseline** wraps the verbatim `Parser::run`; the parser still
-/// `process::exit(1)`s on the first error. Converted in c3.
+/// Parse a SOL source string into a `Program` (AST). Lex and
+/// parse errors are returned as diagnostics; the parser uses
+/// panic-mode recovery (sync to next top-level keyword) so a
+/// single error doesn't hide the rest of the file's structure.
 pub fn parse_source(source: &str) -> CompileResult<Program> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
+    let mut diagnostics = std::mem::take(&mut lexer.diagnostics);
+
     let mut parser = Parser::from(tokens);
     let program = parser.run();
-    CompileResult::ok(program)
+    diagnostics.append(&mut parser.diagnostics);
+
+    if diagnostics.is_empty() {
+        CompileResult::ok(program)
+    } else {
+        CompileResult::partial(program, diagnostics)
+    }
 }
 
 // =============================================================
 //  Analyze
 // =============================================================
 
-/// Parse + analyze. **B.2 baseline** wraps the verbatim
-/// `Analyzer::run`; the analyzer still `process::exit(1)`s on the
-/// first error. Converted in c4.
+/// Parse + analyze. Lex / parse diagnostics propagate. **B.2
+/// baseline** wraps the verbatim `Analyzer::run`; the analyzer
+/// still `process::exit(1)`s on the first error. Converted in c4.
 pub fn analyze_source(source: &str) -> CompileResult<AnalyzedProgram> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
+    let mut diagnostics = std::mem::take(&mut lexer.diagnostics);
+
     let mut parser = Parser::from(tokens);
     let mut program = parser.run();
+    diagnostics.append(&mut parser.diagnostics);
+
+    // If parse errors fired, stop here — running the analyzer on a
+    // partially-recovered AST is more likely to cascade than help.
+    if diagnostics
+        .iter()
+        .any(|d| d.severity == crate::diagnostic::DiagnosticSeverity::Error)
+    {
+        return CompileResult::err(diagnostics);
+    }
+
     let mut analyzer = Analyzer::new();
     analyzer.run(&mut program);
-    CompileResult::ok(AnalyzedProgram {
+    let result = AnalyzedProgram {
         program,
         tt_arena: analyzer.tt_arena,
-    })
+    };
+    if diagnostics.is_empty() {
+        CompileResult::ok(result)
+    } else {
+        CompileResult::partial(result, diagnostics)
+    }
 }
 
 // =============================================================
 //  Compile (full pipeline)
 // =============================================================
 
-/// Parse + analyze + code-generate. **B.2 baseline** wraps the
-/// verbatim pipeline; the codegen still `process::exit(1)`s on
-/// the two `bytecode.rs` error sites. Converted in c5.
+/// Parse + analyze + code-generate. Same diagnostic semantics as
+/// `analyze_source`; codegen errors land in commits c4–c5.
 pub fn compile_source(source: &str) -> CompileResult<CompiledProgram> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
+    let mut diagnostics = std::mem::take(&mut lexer.diagnostics);
+
     let mut parser = Parser::from(tokens);
     let mut program = parser.run();
+    diagnostics.append(&mut parser.diagnostics);
+
+    if diagnostics
+        .iter()
+        .any(|d| d.severity == crate::diagnostic::DiagnosticSeverity::Error)
+    {
+        return CompileResult::err(diagnostics);
+    }
+
     let mut analyzer = Analyzer::new();
     analyzer.run(&mut program);
     let tt_arena_for_codegen = analyzer.tt_arena.clone();
     let mut codegen = Codegen::from(analyzer.tt_arena);
     let bytecode = codegen.gen_bcode(&program);
-    CompileResult::ok(CompiledProgram {
+    let result = CompiledProgram {
         program,
         tt_arena: tt_arena_for_codegen,
         bytecode,
-    })
+    };
+    if diagnostics.is_empty() {
+        CompileResult::ok(result)
+    } else {
+        CompileResult::partial(result, diagnostics)
+    }
 }

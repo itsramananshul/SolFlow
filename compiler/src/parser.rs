@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
-use crate::{analyzer::TypeTableId, lexer::{Token, TokenKind}};
+use crate::{
+    analyzer::TypeTableId,
+    diagnostic::{codes, DiagnosticPhase, SolDiagnostic},
+    lexer::{Token, TokenKind},
+};
 
 #[derive(Debug, Clone)]
 pub enum Type {
@@ -129,6 +133,15 @@ pub struct Parser {
     tokens: Vec<Token>,
     index: usize,
     can_struct: bool,
+    /// Collected diagnostics. The api layer drains this after
+    /// `run()` completes.
+    pub diagnostics: Vec<SolDiagnostic>,
+    /// Set when a fatal-style error fires (something the upstream
+    /// pre-B.2 code would have `process::exit(1)`ed for). The
+    /// `run()` recovery loop synchronizes to the next top-level
+    /// keyword and clears the flag, then keeps parsing so the user
+    /// sees every error at once.
+    had_fatal_error: bool,
 }
 
 macro_rules! noob {
@@ -143,15 +156,34 @@ impl Parser {
             tokens,
             index: 0,
             can_struct: true,
+            diagnostics: Vec::new(),
+            had_fatal_error: false,
         }
     }
 
+    /// Push a structured diagnostic + set the fatal-error flag.
+    /// Replaces the upstream `eprintln! + process::exit(1)` pattern.
+    /// The `run()` recovery loop reads the flag, syncs forward, and
+    /// resets it before trying the next declaration.
+    fn emit_error(&mut self, code: &'static str, message: impl Into<String>) {
+        self.diagnostics
+            .push(SolDiagnostic::error(DiagnosticPhase::Parser, code, message));
+        self.had_fatal_error = true;
+    }
+
+    /// Best-effort token-consume. On mismatch: push diagnostic,
+    /// set fatal flag, DO NOT advance. The caller's downstream
+    /// code may produce garbage AST; recovery happens in `run()`.
     fn eat(&mut self, tk: TokenKind, msg: &str) {
+        if self.index >= self.tokens.len() {
+            self.emit_error(codes::PARSE_MISSING_DELIMITER,
+                format!("{msg} (reached end of input)"));
+            return;
+        }
         let tkcurr = self.tokens[self.index].get_kind();
         if tkcurr != tk {
-            eprintln!("{}", msg);
-            self.debtok(4);
-            std::process::exit(1);
+            self.emit_error(codes::PARSE_MISSING_DELIMITER, msg.to_string());
+            return;
         }
         self.index += 1;
     }
@@ -163,19 +195,49 @@ impl Parser {
         self.tokens[self.index-1].clone()
     }
 
-    fn debtok(&self, radius: usize) {
-        let r = radius as isize;
-        for xoff in -r..=r {
-            if self.index as isize + xoff < 0 { continue }
-            eprintln!("{} {:?}", 
-                if xoff == 0 { '>' } else { ' ' },
-                self.tokens[(self.index as isize + xoff) as usize]
-            );
+    /// Skip tokens until we hit a top-level keyword or end of
+    /// input. Used by `run()` after a fatal parse error so the
+    /// next declaration can be tried.
+    fn sync_to_next_top_level(&mut self) {
+        while self.index < self.tokens.len() {
+            match self.tokens[self.index].get_kind() {
+                TokenKind::Func
+                | TokenKind::Ext
+                | TokenKind::Let
+                | TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Import => return,
+                _ => self.index += 1,
+            }
         }
     }
 
     pub fn run(&mut self) -> Program {
-        std::iter::from_fn(|| self.declaration()).collect()
+        let mut program: Program = Vec::new();
+        while self.index < self.tokens.len() {
+            // Snapshot the index before each attempt so we can
+            // detect "no progress was made" cases — without this
+            // a stuck recovery state could spin forever.
+            let before = self.index;
+            if let Some(decl) = self.declaration() {
+                program.push(decl);
+            }
+            if self.had_fatal_error {
+                self.sync_to_next_top_level();
+                self.had_fatal_error = false;
+                // If sync didn't move past the bad token, force a
+                // single-token skip so we always make progress.
+                if self.index == before && self.index < self.tokens.len() {
+                    self.index += 1;
+                }
+            } else if self.index == before {
+                // Defensive: if declaration() returned None without
+                // advancing and no error fired, bail out so we don't
+                // loop forever on an unrecognized state.
+                break;
+            }
+        }
+        program
     }
     fn declaration(&mut self) -> Option<Ast> {
         if self.index >= self.tokens.len() { return None; }
@@ -187,8 +249,11 @@ impl Parser {
             Token::Enum => self.enum_decl(),
             Token::Import => self.import_stmt(),
             x => {
-                self.debtok(4);
-                panic!("unknown declaration: {x:?}")
+                self.emit_error(
+                    codes::PARSE_UNKNOWN_DECLARATION,
+                    format!("unknown top-level construct: {x:?}"),
+                );
+                None
             }
         }
     }
@@ -212,8 +277,11 @@ impl Parser {
 
                 let size = if self.tokens[self.index].get_kind() != TokenKind::RSquare {
                     let Token::Integer(s) = self.tokens[self.index].clone() else {
-                        eprintln!("only integers can be used to specify an array size");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::PARSE_BAD_ARRAY_SIZE,
+                            "only integers can be used to specify an array size",
+                        );
+                        return None;
                     };
                     self.index += 1;
                     Some(s)
@@ -241,8 +309,11 @@ impl Parser {
                 Some(Type::Tuple(types))
             }
             x => {
-                self.debtok(4);
-                panic!("`{:?}` is not valid in a type specifier", x);
+                self.emit_error(
+                    codes::PARSE_INVALID_TYPE,
+                    format!("`{x:?}` is not valid in a type specifier"),
+                );
+                None
             }
         }
     }
@@ -251,8 +322,11 @@ impl Parser {
         self.index += 1;
         self.eat(TokenKind::Func, "expected `function` keyword after `ext`");
         let Token::Ident(name) = self.tokens[self.index].clone() else {
-            eprintln!("name expected after ext function keyword");
-            std::process::exit(1);
+            self.emit_error(
+                codes::PARSE_BAD_NAME,
+                "name expected after ext function keyword",
+            );
+            return None;
         };
         self.index += 1;
         self.eat(TokenKind::LParen, "expected left parenthesis after function name");
@@ -260,9 +334,8 @@ impl Parser {
         let mut params = Vec::new();
         while noob!(self) && !matches!(self.tokens[self.index], Token::RParen) {
             let Token::Ident(pname) = self.tokens[self.index].clone() else {
-                self.debtok(4);
-                eprintln!("expected parameter name");
-                std::process::exit(1);
+                self.emit_error(codes::PARSE_BAD_PARAM, "expected parameter name");
+                return None;
             };
             self.index += 1;
             self.eat(TokenKind::Colon, "expected colon after parameter name");
@@ -289,8 +362,8 @@ impl Parser {
     fn func_decl(&mut self) -> Option<Ast> {
         self.index += 1;
         let Token::Ident(name) = self.tokens[self.index].clone() else {
-            eprintln!("name expected after function keyword");
-            std::process::exit(1);
+            self.emit_error(codes::PARSE_BAD_NAME, "name expected after `function` keyword");
+            return None;
         };
         self.index += 1;
         self.eat(TokenKind::LParen, "expected left parenthesis after function name");
@@ -298,9 +371,8 @@ impl Parser {
         let mut params = Vec::new();
         while noob!(self) && !matches!(self.tokens[self.index], Token::RParen) {
             let Token::Ident(pname) = self.tokens[self.index].clone() else {
-                self.debtok(4);
-                eprintln!("expected parameter name");
-                std::process::exit(1);
+                self.emit_error(codes::PARSE_BAD_PARAM, "expected parameter name");
+                return None;
             };
             self.index += 1;
             self.eat(TokenKind::Colon, "expected colon after parameter name");
@@ -327,8 +399,8 @@ impl Parser {
         self.index += 1;
 
         let Token::Ident(name) = self.advance().clone() else {
-            eprintln!("name expected after function keyword");
-            std::process::exit(1);
+            self.emit_error(codes::PARSE_BAD_NAME, "name expected in variable declaration");
+            return None;
         };
 
         self.eat(TokenKind::Colon, "expected colon after variable name in a declaration");
@@ -373,9 +445,11 @@ impl Parser {
                     self.eat(TokenKind::Semi, "expected semicolon to follow exprstmt");
                     expr
                 } else {
-                    self.debtok(4);
-                    eprintln!("identifier `{:?}` is not the start of any known statement", x);
-                    std::process::exit(1);
+                    self.emit_error(
+                        codes::PARSE_BAD_STATEMENT,
+                        format!("`{x:?}` is not the start of any known statement"),
+                    );
+                    None
                 }
             }
         }
@@ -384,8 +458,8 @@ impl Parser {
         self.index += 1;
 
         let Token::Ident(elem_name) = self.tokens[self.index].clone() else {
-            eprintln!("variable name expected after `for` keyword");
-            std::process::exit(1);
+            self.emit_error(codes::PARSE_BAD_NAME, "variable name expected after `for` keyword");
+            return None;
         };
         self.index += 1;
 
@@ -443,8 +517,8 @@ impl Parser {
         let mut path = Vec::new();
         {
             let Token::Ident(root) = self.tokens[self.index].clone() else {
-                eprintln!("expected an identifier in an import path");
-                std::process::exit(1);
+                self.emit_error(codes::PARSE_BAD_IMPORT, "expected an identifier in an import path");
+                return None;
             };
             self.index += 1;
             path.push(root);
@@ -452,8 +526,8 @@ impl Parser {
         while noob!(self) && self.tokens[self.index].get_kind() == TokenKind::Dot {
             self.index += 1;
             let Token::Ident(section) = self.tokens[self.index].clone() else {
-                eprintln!("expected an identifier in an import path");
-                std::process::exit(1);
+                self.emit_error(codes::PARSE_BAD_IMPORT, "expected an identifier in an import path");
+                return None;
             };
             self.index += 1;
             path.push(section);
@@ -462,8 +536,8 @@ impl Parser {
         let alias = if self.tokens[self.index].get_kind() == TokenKind::As {
             self.index += 1;
             let Token::Ident(section) = self.tokens[self.index].clone() else {
-                eprintln!("expected an identifier for import to alias as");
-                std::process::exit(1);
+                self.emit_error(codes::PARSE_BAD_IMPORT, "expected an identifier for import to alias as");
+                return None;
             };
             self.index += 1;
             Some(section)
@@ -488,18 +562,18 @@ impl Parser {
         self.index += 1;
 
         let Token::Ident(name) = self.tokens[self.index].clone() else {
-            eprintln!("expected a name after keyword `struct`");
-            std::process::exit(1);
+            self.emit_error(codes::PARSE_BAD_NAME, "expected a name after keyword `struct`");
+            return None;
         };
         self.index += 1;
 
-        self.eat(TokenKind::LCurly, "expected `{` after enum declaration");
+        self.eat(TokenKind::LCurly, "expected `{` after struct declaration");
 
         let mut fields = HashMap::new();
         while noob!(self) && self.tokens[self.index].get_kind() != TokenKind::RCurly {
             let Token::Ident(fname) = self.tokens[self.index].clone() else {
-                eprintln!("expected identifier for a field name in struct declaration");
-                std::process::exit(1);
+                self.emit_error(codes::PARSE_BAD_FIELD, "expected identifier for a field name in struct declaration");
+                return None;
             };
             self.index += 1;
 
@@ -519,8 +593,8 @@ impl Parser {
         self.index += 1;
 
         let Token::Ident(name) = self.tokens[self.index].clone() else {
-            eprintln!("expected a name after keyword `enum`");
-            std::process::exit(1);
+            self.emit_error(codes::PARSE_BAD_NAME, "expected a name after keyword `enum`");
+            return None;
         };
         self.index += 1;
 
@@ -530,16 +604,16 @@ impl Parser {
         let mut iota = 0;
         while noob!(self) && self.tokens[self.index].get_kind() != TokenKind::RCurly {
             let Token::Ident(vname) = self.tokens[self.index].clone() else {
-                eprintln!("expected identifier for a member name in enum declaration");
-                std::process::exit(1);
+                self.emit_error(codes::PARSE_BAD_FIELD, "expected identifier for a member name in enum declaration");
+                return None;
             };
             self.index += 1;
 
             if self.tokens[self.index].get_kind() == TokenKind::Eq {
                 self.index += 1;
                 let Token::Integer(viota) = self.tokens[self.index].clone() else {
-                    eprintln!("expected an integer after equals sign in enum declaration");
-                    std::process::exit(1);
+                    self.emit_error(codes::PARSE_BAD_ENUM_VALUE, "expected an integer after equals sign in enum declaration");
+                    return None;
                 };
                 self.index += 1;
 
@@ -609,9 +683,13 @@ impl Parser {
             match ck {
                 TokenKind::Dot => {
                     self.advance();
-                    let Token::Ident(rhs) = self.advance() else {
-                        eprintln!("`{:?}` is not a valid member", self.tokens[self.index-1]);
-                        std::process::exit(1);
+                    let tok = self.advance();
+                    let Token::Ident(rhs) = tok.clone() else {
+                        self.emit_error(
+                            codes::PARSE_BAD_MEMBER,
+                            format!("`{tok:?}` is not a valid member"),
+                        );
+                        return None;
                     };
                     lhs = Ast::ExprMemAcc { lhs: Box::new(lhs), member: rhs };
                 }
@@ -700,8 +778,11 @@ impl Parser {
                     self.advance();
                     let t = self.advance();
                     let var = if let Token::Ident(n) = t { n } else {
-                        eprintln!("{t:?} is not a valid enum variant");
-                        std::process::exit(1);
+                        self.emit_error(
+                            codes::PARSE_BAD_FIELD,
+                            format!("{t:?} is not a valid enum variant"),
+                        );
+                        return None;
                     };
                     Some(Ast::ExprEnumVar { name, var })
                 } else {
@@ -738,14 +819,17 @@ impl Parser {
                 Some(Ast::ExprArrayInit { values: exprs })
             }
             x => {
-                eprintln!("not an expressionable token: {x:?}");
-                self.debtok(8);
+                self.emit_error(
+                    codes::PARSE_NOT_EXPRESSION,
+                    format!("`{x:?}` is not a valid expression start"),
+                );
                 None
             }
         };
-        if res.is_none() {
-            eprintln!("could not parse expression!");
-            std::process::exit(1);
+        // Don't double-emit if the inner arm already pushed a
+        // diagnostic; `had_fatal_error` is the marker.
+        if res.is_none() && !self.had_fatal_error {
+            self.emit_error(codes::PARSE_NOT_EXPRESSION, "could not parse expression");
         }
         res
     }
