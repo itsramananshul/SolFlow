@@ -164,6 +164,53 @@ fn semantic3_function_redefinition_returns_diagnostic() {
     );
 }
 
+/// B.D c36 — codegen emits a per-instruction span sidecar that's
+/// always exactly the same length as the bytecode. Verifies the
+/// invariant.
+#[test]
+fn codegen_instruction_spans_match_bytecode_length() {
+    use solflow_compiler::analyzer::Analyzer;
+    use solflow_compiler::bytecode::Codegen;
+    use solflow_compiler::lexer::Lexer;
+    use solflow_compiler::parser::Parser;
+    let source = r#"
+        function add(a: int, b: int) -> int {
+            return a + b;
+        }
+        function start() -> int {
+            let x: int = add(2, 3);
+            return x;
+        }
+    "#;
+    let mut lexer = Lexer::from_str(source);
+    let tokens = lexer.tokens();
+    let spans = std::mem::take(&mut lexer.spans);
+    let mut parser = Parser::from_with_spans(tokens, spans);
+    let mut program = parser.run();
+    let mut analyzer = Analyzer::new();
+    analyzer.run(&mut program);
+    let mut codegen = Codegen::from(analyzer.tt_arena);
+    let bytecode = codegen.gen_bcode(&program);
+
+    assert_eq!(
+        codegen.instruction_spans.len(),
+        bytecode.len(),
+        "instruction_spans must be parallel to bytecode",
+    );
+    // At least SOME instructions should have spans (the function
+    // bodies have them attached via DeclFunc/Block).
+    let spanned = codegen
+        .instruction_spans
+        .iter()
+        .filter(|s| s.is_some())
+        .count();
+    assert!(
+        spanned > 0,
+        "at least one instruction should have a span; got 0 out of {}",
+        bytecode.len(),
+    );
+}
+
 /// Smoke: parse_source on every positive fixture still returns no
 /// errors. Earlier B.2 conversions shouldn't have introduced any
 /// new false positives.

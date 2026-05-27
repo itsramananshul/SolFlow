@@ -1,6 +1,6 @@
 use crate::{
     analyzer::{Symbol, TypeTable},
-    diagnostic::{codes, DiagnosticPhase, SolDiagnostic},
+    diagnostic::{codes, DiagnosticPhase, SolDiagnostic, SourceSpan},
     lexer::{Token, TokenKind},
     parser::{Ast, Program, Type},
 };
@@ -80,6 +80,19 @@ pub struct Codegen {
     /// `eprintln + process::exit(1)` and bare `panic!` sites.
     /// Callers drain this after `gen_bcode()`.
     pub diagnostics: Vec<SolDiagnostic>,
+    /// Per-instruction source-span sidecar (B.D c36). Parallel to
+    /// the `Vec<Inst>` returned by `gen_bcode`. Index N gives the
+    /// approximate source span for instruction N (the span of the
+    /// most-recent enclosing AST node that carried one). The
+    /// runtime VM exposes its current `inst_ptr`, so consumers
+    /// can map a step → source range via `instruction_spans[ip]`.
+    /// Entries are `None` for instructions whose surrounding AST
+    /// didn't have a span (top-level synthesized calls, etc.).
+    pub instruction_spans: Vec<Option<SourceSpan>>,
+    /// Most-recent enclosing AST-node span seen during `compile()`.
+    /// Save+restored on each recursive call so siblings don't
+    /// inherit each other's spans.
+    current_span: Option<SourceSpan>,
 }
 
 impl Codegen {
@@ -97,6 +110,28 @@ impl Codegen {
             ext_functions: HashSet::new(),
             ext_endpoints: HashMap::new(),
             diagnostics: Vec::new(),
+            instruction_spans: Vec::new(),
+            current_span: None,
+        }
+    }
+
+    /// B.D c36 — extract a span from any AST variant that carries
+    /// one. Used by `compile()` to update `current_span` before
+    /// pushing instructions, so each instruction inherits an
+    /// approximate-but-real source location.
+    fn ast_span(node: &Ast) -> Option<SourceSpan> {
+        match node {
+            Ast::DeclFunc { span, .. }
+            | Ast::DeclExtFunc { span, .. }
+            | Ast::DeclVar { span, .. }
+            | Ast::DeclStruct { span, .. }
+            | Ast::DeclEnum { span, .. }
+            | Ast::Block { span, .. }
+            | Ast::StmtImport { span, .. }
+            | Ast::StmtIf { span, .. }
+            | Ast::StmtWhile { span, .. }
+            | Ast::StmtFor { span, .. } => *span,
+            _ => None,
         }
     }
 
@@ -177,7 +212,15 @@ impl Codegen {
         if let Some(&start_addr) = self.functions.get("start") {
             insts.push(Inst::Call(start_addr, 0));
         }
-        
+
+        // B.D c36 — final size-match. The trailing synthetic
+        // `Call(start)` (and any other emits outside the per-decl
+        // compile path) gets a `None` span: it doesn't correspond
+        // to any source location.
+        while self.instruction_spans.len() < insts.len() {
+            self.instruction_spans.push(None);
+        }
+
         insts
     }
 
@@ -195,6 +238,32 @@ impl Codegen {
     }
 
     fn compile(&mut self, insts: &mut Vec<Inst>, node: Ast) {
+        // B.D c36 — span attribution shell. Tracks the most-recent
+        // enclosing AST-node span via save+restore; backfills
+        // `instruction_spans` for any instructions emitted by the
+        // inner body. The "innermost compile call with a span" wins
+        // because deeper recursion fills the sidecar first and
+        // outer fills are no-ops (length already matches).
+        let saved_span = self.current_span;
+        if let Some(s) = Self::ast_span(&node) {
+            self.current_span = Some(s);
+        }
+        let before = insts.len();
+        self.compile_inner(insts, node);
+        let after = insts.len();
+        let span_for_range = self.current_span;
+        while self.instruction_spans.len() < before {
+            // Catch up gaps from earlier emits (shouldn't happen in
+            // well-formed compile flow but is defensive).
+            self.instruction_spans.push(None);
+        }
+        while self.instruction_spans.len() < after {
+            self.instruction_spans.push(span_for_range);
+        }
+        self.current_span = saved_span;
+    }
+
+    fn compile_inner(&mut self, insts: &mut Vec<Inst>, node: Ast) {
         match node {
             // --- 1. Primitive Constants ---
             Ast::ExprInteger(v) => insts.push(Inst::PushConst(Ast::ExprInteger(v))),
