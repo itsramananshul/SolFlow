@@ -7,6 +7,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Type {
     Void,
     Integer,
@@ -29,6 +30,7 @@ pub enum Type {
 
 pub type Program = Vec<Ast>;
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Ast {
     DeclFunc {
         name: String,

@@ -12,4 +12,14 @@ path = "src/lib.rs"
 name = "sol"
 path = "src/bin/sol.rs"
 
+[features]
+# Opt-in serde derives on AST, Type, Token, Symbol, and SolDiagnostic.
+# The CLI doesn't need this; the WASM bridge (B.4) will enable it to
+# round-trip ASTs and diagnostics across the worker boundary.
+serde = ["dep:serde"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"

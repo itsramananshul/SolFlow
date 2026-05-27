@@ -54,7 +54,7 @@ fn parse2_missing_semicolon_returns_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| d.severity == DiagnosticSeverity::Error)
-        .map(|d| d.code)
+        .map(|d| d.code.as_str())
         .collect();
     assert!(
         codes_seen.contains(&codes::PARSE_MISSING_DELIMITER),
@@ -74,7 +74,7 @@ fn semantic1_undefined_var_returns_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| d.severity == DiagnosticSeverity::Error)
-        .map(|d| d.code)
+        .map(|d| d.code.as_str())
         .collect();
     assert!(
         codes_seen.contains(&codes::SEMA_UNDEFINED_NAME),
@@ -101,7 +101,7 @@ fn semantic2_redefinition_returns_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| d.severity == DiagnosticSeverity::Error)
-        .map(|d| d.code)
+        .map(|d| d.code.as_str())
         .collect();
     assert!(
         codes_seen.contains(&codes::SEMA_REDEFINITION),
@@ -122,7 +122,7 @@ fn semantic3_function_redefinition_returns_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| d.severity == DiagnosticSeverity::Error)
-        .map(|d| d.code)
+        .map(|d| d.code.as_str())
         .collect();
     assert!(
         codes_seen.contains(&codes::SEMA_REDEFINITION),
@@ -226,7 +226,7 @@ fn semantic_code_coverage_sweep() {
             .diagnostics
             .iter()
             .filter(|d| d.severity == DiagnosticSeverity::Error)
-            .map(|d| d.code)
+            .map(|d| d.code.as_str())
             .collect();
         assert!(
             codes_seen.contains(expected),

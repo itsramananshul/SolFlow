@@ -1,6 +1,7 @@
 use crate::diagnostic::{codes, DiagnosticPhase, SolDiagnostic};
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Token {
     Ident(String),
     Ext,
@@ -61,6 +62,7 @@ pub enum Token {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TokenKind {
     Ident,
     Ext,

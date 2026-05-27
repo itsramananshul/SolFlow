@@ -23,6 +23,7 @@ use std::fmt;
 /// exit-nonzero; the IDE treats it as red underline; everyone
 /// treats `Warning` as amber and `Note` as informational.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DiagnosticSeverity {
     Error,
     Warning,
@@ -50,6 +51,7 @@ impl fmt::Display for DiagnosticSeverity {
 /// user errors so the bug-report-vs-fix-your-code distinction is
 /// visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DiagnosticPhase {
     Lexer,
     Parser,
@@ -76,6 +78,7 @@ impl fmt::Display for DiagnosticPhase {
 /// Stable across line/column derivation (line/column depends on
 /// source content; byte offsets do not).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceSpan {
     pub start: usize,
     pub end: usize,
@@ -116,6 +119,7 @@ impl SourceSpan {
 /// Secondary span pointing at related context — typically a
 /// "previous definition was here" note for a redefinition error.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RelatedSpan {
     pub span: SourceSpan,
     pub message: String,
@@ -127,10 +131,16 @@ pub struct RelatedSpan {
 /// phase, code, message, then optional span + related notes +
 /// help suggestion.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SolDiagnostic {
     pub severity: DiagnosticSeverity,
     pub phase: DiagnosticPhase,
-    pub code: &'static str,
+    /// Stable error code (e.g. `"E1001"`, `"ICE0001"`). Stored as
+    /// `String` rather than `&'static str` so the diagnostic can
+    /// round-trip across serde / WASM boundaries. Constructors take
+    /// `&'static str` for ergonomics and incur a single small
+    /// allocation per diagnostic — negligible cost on an error path.
+    pub code: String,
     pub message: String,
     pub span: Option<SourceSpan>,
     pub related: Vec<RelatedSpan>,
@@ -143,7 +153,7 @@ impl SolDiagnostic {
         Self {
             severity: DiagnosticSeverity::Error,
             phase,
-            code,
+            code: code.to_string(),
             message: message.into(),
             span: None,
             related: Vec::new(),
@@ -156,7 +166,7 @@ impl SolDiagnostic {
         Self {
             severity: DiagnosticSeverity::Warning,
             phase,
-            code,
+            code: code.to_string(),
             message: message.into(),
             span: None,
             related: Vec::new(),
@@ -174,7 +184,7 @@ impl SolDiagnostic {
         Self {
             severity: DiagnosticSeverity::Error,
             phase: DiagnosticPhase::Internal,
-            code,
+            code: code.to_string(),
             message: message.into(),
             span: None,
             related: Vec::new(),
