@@ -4,6 +4,7 @@ import { useGraphStore } from '@/stores/graph.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useUIStore } from '@/stores/ui.store';
 import { useControllerStore } from '@/stores/controller.store';
+import { useControllerRunHistoryStore } from '@/stores/controller-run-history.store';
 import { recordTrace, type Trace } from '@/runtime/simulate';
 import { runSource } from '@/compiler/api';
 import { compileForController } from '@/runtime-host/encode';
@@ -24,6 +25,7 @@ const graph = useGraphStore();
 const sim = useSimulationStore();
 const ui = useUIStore();
 const controller = useControllerStore();
+const runHistory = useControllerRunHistoryStore();
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -205,6 +207,18 @@ async function executeControllerLocal() {
       startedAt: submitStart,
     };
 
+    // c64: record into history as soon as we have a runId, so the
+    // user sees it even if poll fails partway through.
+    runHistory.record({
+      controllerUrl: controller.url,
+      workflowId,
+      runId,
+      workflowName: workflowDisplayName(),
+      status: created.status,
+      durationMs: null,
+      submittedAt: submitStart,
+    });
+
     // 3. Poll until terminal.
     const final = await client.pollRun(runId, {
       intervalMs: 150,
@@ -219,6 +233,11 @@ async function executeControllerLocal() {
       record: final,
       durationMs,
     };
+    // c64: update history with final status + duration.
+    runHistory.update(controller.url, runId, {
+      status: final.status,
+      durationMs,
+    });
   } catch (e) {
     if (e instanceof ControllerClientErr) {
       const phase: 'submit' | 'create' | 'poll' = workflowId
@@ -250,6 +269,68 @@ function workflowDisplayName(): string {
   const fn = graph.workflow.functions.find((f) => f.id === graph.activeFunctionId)
     ?? graph.workflow.functions[0];
   return fn ? `editor:${fn.name}` : 'editor:workflow';
+}
+
+// c64: recent controller runs for the connected URL. Hidden when
+// browser-sim mode or no controller URL set.
+const recentRuns = computed(() => {
+  if (mode.value !== 'controller-local' || !controller.url) return [];
+  return runHistory.listFor(controller.url);
+});
+
+/** Re-fetch a historical run by id and pop it into the displayed
+ *  state — same UX as if it just completed. */
+async function reopenRun(workflowId: string, runId: string) {
+  controllerRun.value = { kind: 'submitting' }; // borrow the spinner
+  isRunning.value = true;
+  try {
+    const client = controller.getClient();
+    const r = await client.getRun(runId, { timeoutMs: 5_000 });
+    controllerRun.value = {
+      kind: 'done',
+      workflowId,
+      runId,
+      record: r,
+      durationMs:
+        r.completed_at !== undefined && r.started_at !== undefined
+          ? r.completed_at - r.started_at
+          : 0,
+    };
+    runHistory.update(controller.url, runId, {
+      status: r.status,
+      durationMs:
+        r.completed_at !== undefined && r.started_at !== undefined
+          ? r.completed_at - r.started_at
+          : null,
+    });
+  } catch (e) {
+    if (e instanceof ControllerClientErr) {
+      controllerRun.value = {
+        kind: 'controller_error',
+        phase: 'poll',
+        error: e.payload,
+        workflowId,
+        runId,
+      };
+    } else {
+      controllerRun.value = {
+        kind: 'controller_error',
+        phase: 'poll',
+        error: { kind: 'network', message: e instanceof Error ? e.message : String(e) },
+      };
+    }
+  } finally {
+    isRunning.value = false;
+  }
+}
+
+function relativeTimestamp(ms: number): string {
+  const now = Date.now();
+  const diff = Math.max(0, now - ms);
+  if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
+  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`;
+  return `${Math.round(diff / 86_400_000)}d ago`;
 }
 
 // ---- Derived display state ----
@@ -726,6 +807,50 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
         <main class="body">
           <!-- Output tab -->
           <section v-if="activeTab === 'output'" class="pane">
+            <!-- Recent controller runs (c64) — collapsed unless any exist -->
+            <details
+              v-if="mode === 'controller-local' && recentRuns.length > 0"
+              class="recent-runs"
+            >
+              <summary>
+                Recent runs on
+                <code class="ctrl-url">{{ controller.url }}</code>
+                <span class="subtle">({{ recentRuns.length }})</span>
+              </summary>
+              <ul class="recent-list">
+                <li
+                  v-for="r in recentRuns"
+                  :key="r.runId"
+                  class="recent-row"
+                  :class="{
+                    'is-current': controllerRun.kind === 'done' && controllerRun.runId === r.runId,
+                  }"
+                >
+                  <span
+                    class="recent-dot"
+                    :class="
+                      r.status === 'Succeeded' ? 'ok'
+                      : r.status === 'Failed' ? 'err'
+                      : r.status === 'Cancelled' ? 'err'
+                      : 'pending'
+                    "
+                  />
+                  <span class="recent-name">{{ r.workflowName }}</span>
+                  <code class="recent-id">{{ r.runId }}</code>
+                  <span class="recent-status">{{ r.status }}</span>
+                  <span class="recent-dur subtle" v-if="r.durationMs != null">
+                    {{ r.durationMs }}ms
+                  </span>
+                  <span class="recent-ago subtle">{{ relativeTimestamp(r.submittedAt) }}</span>
+                  <button
+                    class="recent-reopen ghost"
+                    :disabled="isRunning"
+                    @click="reopenRun(r.workflowId, r.runId)"
+                    title="Re-fetch this run from the controller"
+                  >Reopen</button>
+                </li>
+              </ul>
+            </details>
             <div v-if="isRunning && !controllerPhaseLabel" class="empty">Running…</div>
             <!-- Controller mode: show in-flight phase + meta -->
             <div v-if="controllerPhaseLabel && controllerRun.kind !== 'done'" class="ctrl-status">
@@ -1146,6 +1271,85 @@ function formatReturn(v: unknown): string {
   background: var(--sf-bg-0);
   padding: 0 6px;
   border-radius: 2px;
+}
+
+/* Recent controller runs (c64) */
+.recent-runs {
+  margin-bottom: 12px;
+  background: var(--sf-bg-2);
+  border: 1px solid var(--sf-border);
+  border-radius: 4px;
+}
+.recent-runs summary {
+  list-style: none;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.6875rem;
+  color: var(--sf-text-1);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.recent-runs summary::-webkit-details-marker { display: none; }
+.recent-runs summary::before {
+  content: '▸';
+  color: var(--sf-text-3);
+  transition: transform 0.12s ease;
+}
+.recent-runs[open] summary::before { transform: rotate(90deg); }
+.ctrl-url {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-0);
+  padding: 0 6px;
+  border-radius: 2px;
+  color: var(--sf-text-0);
+}
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.6875rem;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.recent-row:last-child { border-bottom: none; }
+.recent-row.is-current { background: rgba(0,204,136,0.06); border-radius: 3px; padding: 4px 6px; }
+.recent-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.recent-dot.ok { background: var(--sf-success); }
+.recent-dot.err { background: var(--sf-error); }
+.recent-dot.pending { background: var(--sf-warning); }
+.recent-name { color: var(--sf-text-1); }
+.recent-id {
+  font-family: var(--sf-font-mono);
+  color: var(--sf-text-2);
+  font-size: 0.625rem;
+}
+.recent-status {
+  color: var(--sf-text-0);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-size: 0.5625rem;
+}
+.recent-dur, .recent-ago { font-style: italic; }
+.recent-reopen {
+  margin-left: auto;
+  font-size: 0.625rem;
+  padding: 2px 8px;
 }
 
 .body {
