@@ -1,16 +1,19 @@
 //! `solflow_controller` — orchestration runtime.
 //!
-//! **Phase C C.1 scaffolding.** This crate currently ships only
-//! the trait shapes that subsequent milestones will implement
-//! against. There is no binary target, no transport, no
-//! persistence, and no connector impls yet.
+//! **Phase C C.2 — local controller MVP.** Ships:
+//!   - the trait surface from C.1
+//!   - `SqlitePersistence` (real SQLite-backed `Persistence` impl)
+//!   - `LocalController` (real `Controller` using SQLite +
+//!     `solflow_runtime`)
+//!   - binary target `solflow-controller` (`src/bin/server.rs`)
+//!     hosting the HTTP API
 //!
-//! Trait definitions act as the **contract** for what a
-//! controller is. The reference implementations land in:
+//! `StubController` is retained for trait-shape tests; production
+//! consumers construct `LocalController::new(...)`.
 //!
-//!   C.2 — `LocalController` with SQLite persistence + HTTP API
-//!   C.3 — `TokioScheduler` with cron + webhook triggers
-//!   C.4 — `HttpConnector` reference impl + connector registry
+//! Pending milestones:
+//!   C.3 — TokioScheduler (timer + webhook triggers)
+//!   C.4 — Connector framework + HTTP reference impl
 //!   C.5 — Event log + WebSocket event stream
 //!   C.6 — Multi-run management
 //!   C.7 — Remote (TLS) controller mode
@@ -25,6 +28,14 @@
 #![allow(async_fn_in_trait)] // C.1: traits are scaffolding; the
                               // async_trait wrapper lands when
                               // reference impls do.
+
+pub mod executor;
+pub mod local;
+pub mod persistence;
+pub mod server;
+
+pub use local::LocalController;
+pub use persistence::SqlitePersistence;
 
 use async_trait::async_trait;
 use solflow_host_spec::{

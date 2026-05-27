@@ -2,35 +2,67 @@
 name = "solflow_controller"
 version = "0.1.0"
 edition = "2024"
-description = "SolFlow orchestration controller — Phase C. Trait definitions + stub impls scaffolded in C.1; reference impls land in C.2+."
+description = "SolFlow orchestration controller — Phase C. C.2 ships a working local controller binary with SQLite persistence + HTTP API."
 publish = false
 
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "solflow-controller"
+path = "src/bin/server.rs"
+
 [dependencies]
 # Core SOL compilation + execution. The controller hosts the
 # canonical VM so production runs use exactly the same semantics
 # as the browser sim.
-solflow_compiler = { path = "../compiler" }
+solflow_compiler = { path = "../compiler", features = ["serde"] }
 solflow_runtime = { path = "../runtime" }
-# Wire-protocol shapes (RunRecord, RunEvent, ...).
+# Wire-protocol shapes (RunRecord, RunEvent, ...) + bytecode
+# encoding helpers.
 solflow_host_spec = { path = "../host-spec" }
 
-# Async runtime for the future Controller impl. Trait-only
-# scaffolding doesn't strictly need it, but the traits are
-# `async_trait`-decorated so impls land cleanly later.
+# Async runtime + trait support.
 async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
 
 # Error handling for trait return values. Lightweight.
 thiserror = "1"
 
-# serde + serde_json — declared explicitly even though
-# solflow_host_spec re-exports them transitively; declaring here
-# keeps trait bodies independent of transitive features.
+# serde + serde_json — declared explicitly so trait bodies
+# don't depend on transitive features.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Persistence backend (C.2). SQLite for the local-first MVP.
+# `runtime-tokio-rustls` keeps a single TLS impl across the
+# workspace; sqlite feature is built-in to sqlx without an
+# external libsqlite3.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "macros",
+    "chrono",
+] }
+
+# UUID generation for run/workflow IDs.
+uuid = { version = "1", features = ["v4"] }
+
+# SHA-256 for content-hashing submitted bytecode (audit + replay).
+sha2 = "0.10"
+hex = "0.4"
+
+# Timestamps. Used for created_at / started_at / completed_at.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+
+# HTTP server (C.2 c61).
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [dev-dependencies]
-# Future test-impl needs an async runtime; declared now so C.2's
-# first test landings don't churn this file.
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+# In-memory SQLite for tests; production uses on-disk.
+tempfile = "3"
