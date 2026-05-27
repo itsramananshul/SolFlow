@@ -1,0 +1,36 @@
+[package]
+name = "solflow_controller"
+version = "0.1.0"
+edition = "2024"
+description = "SolFlow orchestration controller — Phase C. Trait definitions + stub impls scaffolded in C.1; reference impls land in C.2+."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Core SOL compilation + execution. The controller hosts the
+# canonical VM so production runs use exactly the same semantics
+# as the browser sim.
+solflow_compiler = { path = "../compiler" }
+solflow_runtime = { path = "../runtime" }
+# Wire-protocol shapes (RunRecord, RunEvent, ...).
+solflow_host_spec = { path = "../host-spec" }
+
+# Async runtime for the future Controller impl. Trait-only
+# scaffolding doesn't strictly need it, but the traits are
+# `async_trait`-decorated so impls land cleanly later.
+async-trait = "0.1"
+
+# Error handling for trait return values. Lightweight.
+thiserror = "1"
+
+# serde + serde_json — declared explicitly even though
+# solflow_host_spec re-exports them transitively; declaring here
+# keeps trait bodies independent of transitive features.
+serde_json = "1"
+
+[dev-dependencies]
+# Future test-impl needs an async runtime; declared now so C.2's
+# first test landings don't churn this file.
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
