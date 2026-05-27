@@ -5,10 +5,10 @@
 //! produced value, a list of `SolDiagnostic`s, or both (warnings
 //! alongside a successful result).
 //!
-//! **B.2 status:** the API surface is final. Lexer, parser, and
-//! analyzer all return `SolDiagnostic` values (c3 + c4). Codegen
-//! still `process::exit(1)`s on its two error sites — that
-//! conversion lands in c5.
+//! **B.2 status:** the API surface is final. Lexer, parser,
+//! analyzer, and codegen all return `SolDiagnostic` values
+//! (c3 + c4 + c5). Every compile-time error path in the crate is
+//! now a value, not a `process::exit(1)`.
 
 use crate::analyzer::{Analyzer, TypeTable};
 use crate::bytecode::{Codegen, Inst};
@@ -171,9 +171,9 @@ pub fn analyze_source(source: &str) -> CompileResult<AnalyzedProgram> {
 //  Compile (full pipeline)
 // =============================================================
 
-/// Parse + analyze + code-generate. Same diagnostic semantics as
-/// `analyze_source`; codegen's remaining `process::exit` sites
-/// land in c5.
+/// Parse + analyze + code-generate. Errors from any stage are
+/// collected; a hard error at any stage short-circuits and the
+/// `CompileResult` is returned without a value.
 pub fn compile_source(source: &str) -> CompileResult<CompiledProgram> {
     let mut lexer = Lexer::from_str(source);
     let tokens = lexer.tokens();
@@ -204,6 +204,15 @@ pub fn compile_source(source: &str) -> CompileResult<CompiledProgram> {
     let tt_arena_for_codegen = analyzer.tt_arena.clone();
     let mut codegen = Codegen::from(analyzer.tt_arena);
     let bytecode = codegen.gen_bcode(&program);
+    diagnostics.append(&mut codegen.diagnostics);
+
+    if diagnostics
+        .iter()
+        .any(|d| d.severity == crate::diagnostic::DiagnosticSeverity::Error)
+    {
+        return CompileResult::err(diagnostics);
+    }
+
     let result = CompiledProgram {
         program,
         tt_arena: tt_arena_for_codegen,

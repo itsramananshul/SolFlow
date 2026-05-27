@@ -1,4 +1,9 @@
-use crate::{analyzer::{Symbol, TypeTable}, lexer::{Token, TokenKind}, parser::{Ast, Program, Type}};
+use crate::{
+    analyzer::{Symbol, TypeTable},
+    diagnostic::{codes, DiagnosticPhase, SolDiagnostic},
+    lexer::{Token, TokenKind},
+    parser::{Ast, Program, Type},
+};
 use std::collections::{HashMap, HashSet};
 
 struct Scope {
@@ -61,16 +66,20 @@ pub enum Inst {
 
 pub struct Codegen {
     type_tables: Vec<TypeTable>,
-    locals: HashMap<String, (usize, Type)>, 
-    next_slot: usize,                       
-    active_scopes: Vec<Scope>,              
-    functions: HashMap<String, usize>, 
-    fn_returns: HashMap<String, Type>, 
-    struct_layouts: HashMap<String, Vec<(String, Type)>>, 
+    locals: HashMap<String, (usize, Type)>,
+    next_slot: usize,
+    active_scopes: Vec<Scope>,
+    functions: HashMap<String, usize>,
+    fn_returns: HashMap<String, Type>,
+    struct_layouts: HashMap<String, Vec<(String, Type)>>,
     for_loop_counter: usize,
     pending_calls: Vec<(usize, String)>,
     ext_functions: HashSet<String>,
     ext_endpoints: HashMap<String, String>,
+    /// Diagnostics produced during codegen. Replaces the upstream
+    /// `eprintln + process::exit(1)` and bare `panic!` sites.
+    /// Callers drain this after `gen_bcode()`.
+    pub diagnostics: Vec<SolDiagnostic>,
 }
 
 impl Codegen {
@@ -87,7 +96,16 @@ impl Codegen {
             pending_calls: Vec::new(),
             ext_functions: HashSet::new(),
             ext_endpoints: HashMap::new(),
+            diagnostics: Vec::new(),
         }
+    }
+
+    fn emit_error(&mut self, code: &'static str, message: impl Into<String>) {
+        self.diagnostics.push(SolDiagnostic::error(
+            DiagnosticPhase::Codegen,
+            code,
+            message,
+        ));
     }
 
     pub fn with_ext_endpoints(mut self, endpoints: HashMap<String, String>) -> Self {
@@ -360,7 +378,12 @@ impl Codegen {
                             }
                             insts.push(Inst::SetField(field_idx)); 
                         }
-                        _ => panic!("Compile Error: Invalid left-hand side assignment target."),
+                        _ => {
+                            self.emit_error(
+                                codes::CODEGEN_BAD_LHS,
+                                "invalid left-hand side in assignment",
+                            );
+                        }
                     }
                 } else {
                     self.compile(insts, *lhs.clone());
@@ -454,10 +477,19 @@ impl Codegen {
                 } else if self.ext_functions.contains(&name) {
                     let ret = self.fn_returns.get(&name).cloned().unwrap_or(Type::String);
                     let arg_types: Vec<Type> = args.iter().map(|a| self.infer_type(a)).collect();
-                    let url = self.ext_endpoints.get(&name).cloned().unwrap_or_else(|| {
-                        eprintln!("no endpoint configured for ext function `{name}`");
-                        std::process::exit(1);
-                    });
+                    let url = match self.ext_endpoints.get(&name).cloned() {
+                        Some(u) => u,
+                        None => {
+                            self.emit_error(
+                                codes::CODEGEN_MISSING_EXT_ENDPOINT,
+                                format!("no endpoint configured for ext function `{name}`"),
+                            );
+                            // Skip emitting ExtCall bytecode — caller's
+                            // CompileResult will surface the error and the
+                            // bytecode won't be executed.
+                            return;
+                        }
+                    };
                     for arg in args {
                         self.compile(insts, arg);
                     }

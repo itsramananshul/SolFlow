@@ -9,7 +9,7 @@
 //! no compile-time call reaches it.
 
 use solflow_compiler::{
-    analyze_source, codes, parse_source, DiagnosticPhase, DiagnosticSeverity,
+    analyze_source, codes, compile_source, parse_source, DiagnosticPhase, DiagnosticSeverity,
 };
 
 fn read_fixture(name: &str) -> String {
@@ -170,6 +170,24 @@ fn positive_fixtures_still_parse_cleanly() {
             "{name}: parse_source returned no value",
         );
     }
+}
+
+/// `error_codegen_ext.sol`: calls an `ext` function with no
+/// endpoint configured. Parser + analyzer accept it; codegen
+/// emits E0051 (CODEGEN_MISSING_EXT_ENDPOINT).
+#[test]
+fn codegen_missing_ext_endpoint_returns_diagnostic() {
+    let source = read_fixture("error_codegen_ext");
+    let result = compile_source(&source);
+
+    assert!(result.has_errors(), "expected codegen error");
+    let first = result
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == DiagnosticSeverity::Error)
+        .unwrap();
+    assert_eq!(first.phase, DiagnosticPhase::Codegen);
+    assert_eq!(first.code, codes::CODEGEN_MISSING_EXT_ENDPOINT);
 }
 
 /// Smoke: analyze_source on every positive fixture stays clean.
