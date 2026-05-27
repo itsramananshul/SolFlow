@@ -245,6 +245,37 @@ function onRecheck() {
             </div>
           </section>
 
+          <section v-if="ctrl.isConnected" class="settings-section">
+            <h3>Connectors</h3>
+            <div v-if="ctrl.connectors.length === 0" class="subtle">
+              No connectors reported. (Older controller, or
+              <code>GET /connectors</code> blocked.)
+            </div>
+            <ul v-else class="connectors-list">
+              <li
+                v-for="c in ctrl.connectors"
+                :key="c.name"
+                class="connector-row"
+              >
+                <span class="conn-name">{{ c.name }}</span>
+                <span class="conn-desc">{{ c.description }}</span>
+                <span class="conn-policy subtle">
+                  timeout {{ c.default_policy.timeout_ms }}ms ·
+                  retries {{ c.default_policy.retry_attempts }} ·
+                  max-resp {{ (c.default_policy.max_response_bytes / 1024).toFixed(0) }}KiB
+                </span>
+                <span class="conn-version subtle">v{{ c.version }}</span>
+              </li>
+            </ul>
+            <div class="conn-help subtle">
+              Use these from SOL via
+              <code>connector://&lt;name&gt;?...</code> URLs in
+              <code>ext function</code> endpoints. ExtCall via
+              an unknown connector produces a structured
+              <code>ExtCallFailed</code> runtime error.
+            </div>
+          </section>
+
           <section class="settings-section">
             <h3>Execution mode</h3>
             <div class="mode-list">
@@ -580,5 +611,53 @@ function onRecheck() {
   background: var(--sf-bg-2);
   padding: 0 4px;
   border-radius: 2px;
+}
+
+/* Connectors list (C.4 c78) */
+.connectors-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.connector-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  background: var(--sf-bg-1);
+  border: 1px solid var(--sf-border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 0.6875rem;
+}
+.conn-name {
+  font-family: var(--sf-font-mono);
+  font-weight: 600;
+  color: var(--sf-text-0);
+  grid-row: 1;
+  grid-column: 1;
+}
+.conn-desc {
+  color: var(--sf-text-1);
+  grid-row: 1;
+  grid-column: 2;
+}
+.conn-version {
+  grid-row: 1;
+  grid-column: 3;
+  font-family: var(--sf-font-mono);
+}
+.conn-policy {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  font-style: italic;
+  margin-top: 2px;
+}
+.conn-help {
+  margin-top: 8px;
+  line-height: 1.4;
 }
 </style>

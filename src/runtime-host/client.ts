@@ -31,6 +31,7 @@
  */
 import { HOST_SPEC_MAJOR } from './types';
 import type {
+  ConnectorMeta,
   Health,
   RunCreated,
   RunRecord,
@@ -205,6 +206,11 @@ export interface ControllerClient {
     body: unknown,
     opts?: RequestOpts,
   ): Promise<RunRecord>;
+
+  // ---- Phase C C.4 — connectors ----
+
+  /** `GET /connectors` — list registered connector metadata. */
+  listConnectors(opts?: RequestOpts): Promise<ConnectorMeta[]>;
 }
 
 export interface RequestOpts {
@@ -474,6 +480,9 @@ export function controllerClient(
         opts,
       );
     },
+
+    listConnectors: (opts) =>
+      request<ConnectorMeta[]>('GET', '/connectors', undefined, opts),
   };
 }
 

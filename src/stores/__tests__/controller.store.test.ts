@@ -163,4 +163,69 @@ describe('useControllerStore — connection state machine', () => {
     s.tryReconnectOnMount();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it('populates connectors after a successful connect (C.4)', async () => {
+    const healthBody = {
+      ok: true,
+      controller_version: '0.1.0',
+      host_spec_major: HOST_SPEC_MAJOR,
+    };
+    const connectorsBody = [
+      {
+        name: 'http',
+        description: 'HTTP reference',
+        version: '0.1.0',
+        default_policy: {
+          timeout_ms: 10_000,
+          retry_attempts: 0,
+          backoff_base_ms: 100,
+          max_response_bytes: 1_048_576,
+        },
+      },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/healthz')) return Promise.resolve(jsonOk(healthBody));
+        if (url.endsWith('/connectors')) return Promise.resolve(jsonOk(connectorsBody));
+        return Promise.reject(new Error('unexpected URL: ' + url));
+      }),
+    );
+    const s = useControllerStore();
+    s.setUrl('http://x.example');
+    await s.connect();
+    expect(s.connection.kind).toBe('connected');
+    expect(s.connectors).toHaveLength(1);
+    expect(s.connectors[0].name).toBe('http');
+    s.disconnect();
+    expect(s.connectors).toEqual([]);
+  });
+
+  it('connectors list degrades to empty when /connectors fails', async () => {
+    const healthBody = {
+      ok: true,
+      controller_version: '0.1.0',
+      host_spec_major: HOST_SPEC_MAJOR,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/healthz')) return Promise.resolve(jsonOk(healthBody));
+        // Older controllers may return 404 for /connectors.
+        if (url.endsWith('/connectors')) {
+          return Promise.resolve(
+            new Response('not found', { status: 404 }),
+          );
+        }
+        return Promise.reject(new Error('unexpected URL: ' + url));
+      }),
+    );
+    const s = useControllerStore();
+    s.setUrl('http://x.example');
+    await s.connect();
+    expect(s.connection.kind).toBe('connected');
+    expect(s.connectors).toEqual([]);
+  });
 });

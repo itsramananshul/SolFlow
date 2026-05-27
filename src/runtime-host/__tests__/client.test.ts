@@ -419,3 +419,35 @@ describe('controllerClient — schedules (C.3)', () => {
     });
   });
 });
+
+// ----- C.4 — connectors -----
+
+describe('controllerClient — connectors (C.4)', () => {
+  it('listConnectors returns the parsed list', async () => {
+    let url = '';
+    const payload = [
+      {
+        name: 'http',
+        description: 'HTTP reference',
+        version: '0.1.0',
+        default_policy: {
+          timeout_ms: 10_000,
+          retry_attempts: 0,
+          backoff_base_ms: 100,
+          max_response_bytes: 1024 * 1024,
+        },
+      },
+    ];
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch((u) => {
+        url = String(u);
+        return jsonResponse(payload);
+      }),
+    });
+    const got = await c.listConnectors();
+    expect(url).toBe('http://x.example/connectors');
+    expect(got).toHaveLength(1);
+    expect(got[0].name).toBe('http');
+    expect(got[0].default_policy.timeout_ms).toBe(10_000);
+  });
+});

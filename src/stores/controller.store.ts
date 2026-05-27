@@ -29,7 +29,7 @@ import {
   controllerClient,
   type ControllerClient,
 } from '@/runtime-host/client';
-import type { Health } from '@/runtime-host/types';
+import type { ConnectorMeta, Health } from '@/runtime-host/types';
 
 const STORAGE_KEY_URL = 'solflow.controller.url';
 const STORAGE_KEY_AUTO = 'solflow.controller.auto_reconnect';
@@ -64,6 +64,9 @@ export const useControllerStore = defineStore('controller', () => {
 
   // ---- runtime state ----
   const connection = ref<ConnectionState>({ kind: 'idle' });
+  /** Connector metadata reported by the controller on connect.
+   *  Empty when not connected; populated by `connect()`. */
+  const connectors = ref<ConnectorMeta[]>([]);
 
   let cachedClient: ControllerClient | null = null;
   let cachedFor: string | null = null;
@@ -138,6 +141,16 @@ export const useControllerStore = defineStore('controller', () => {
     connection.value = { kind: 'connecting' };
     try {
       const health = await client.healthzChecked();
+      // Fetch connectors. Don't fail the connect on this — older
+      // controllers without /connectors will 404; leave the
+      // connectors list empty so the editor's connector UX
+      // degrades gracefully ("no connectors reported") instead
+      // of refusing to mark the controller as connected.
+      try {
+        connectors.value = await client.listConnectors({ timeoutMs: 3_000 });
+      } catch {
+        connectors.value = [];
+      }
       connection.value = {
         kind: 'connected',
         health,
@@ -151,11 +164,13 @@ export const useControllerStore = defineStore('controller', () => {
       }
     } catch (e) {
       connection.value = { kind: 'error', reason: connectionErrorFrom(e) };
+      connectors.value = [];
     }
   }
 
   function disconnect(): void {
     connection.value = { kind: 'idle' };
+    connectors.value = [];
     autoReconnect.value = false;
     try {
       localStorage.setItem(STORAGE_KEY_AUTO, '0');
@@ -185,6 +200,7 @@ export const useControllerStore = defineStore('controller', () => {
     url,
     autoReconnect,
     connection,
+    connectors,
     isConnected,
     controllerVersion,
     setUrl,

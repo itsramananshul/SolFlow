@@ -511,7 +511,9 @@ function formatRuntimeError(e: RuntimeError): string {
     case 'StepLimit':
       return `Execution step limit reached (${e.limit.toLocaleString()} instructions). The program may have an infinite loop.`;
     case 'ExtCallBlocked':
-      return `External function call to "${e.function_name}" at ${e.url} is blocked. External calls are not available in browser simulation — deploy to run them for real.`;
+      return `External function call to "${e.function_name}" at ${e.url} is blocked. External calls are not available in browser simulation — switch to controller-local mode (or deploy) to run them for real.`;
+    case 'ExtCallFailed':
+      return `External call "${e.function_name}" via connector "${e.connector}" failed: ${e.message}`;
     case 'HeapShapeMismatch':
       return `Heap shape mismatch: expected ${e.expected}, got ${e.got}. Likely a compiler bug; please report.`;
   }

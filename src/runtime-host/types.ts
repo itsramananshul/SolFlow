@@ -226,3 +226,24 @@ export interface Health {
   controller_version: string;
   host_spec_major: number;
 }
+
+// =============================================================
+//  Connectors (Phase C C.4)
+// =============================================================
+
+/** Conservative per-call execution policy mirroring
+ *  `solflow_controller::InvocationPolicy`. */
+export interface InvocationPolicy {
+  timeout_ms: number;
+  retry_attempts: number;
+  backoff_base_ms: number;
+  max_response_bytes: number;
+}
+
+/** Per-connector metadata returned by `GET /connectors`. */
+export interface ConnectorMeta {
+  name: string;
+  description: string;
+  version: string;
+  default_policy: InvocationPolicy;
+}

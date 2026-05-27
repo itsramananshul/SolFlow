@@ -83,6 +83,7 @@ export type RuntimeError =
   | { kind: 'StackUnderflow' }
   | { kind: 'StepLimit'; limit: number }
   | { kind: 'ExtCallBlocked'; function_name: string; url: string }
+  | { kind: 'ExtCallFailed'; connector: string; function_name: string; message: string }
   | { kind: 'HeapShapeMismatch'; expected: string; got: string };
 
 /**
