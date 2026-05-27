@@ -203,6 +203,36 @@ function closeImportReport() {
 }
 
 /**
+ * B.6 c25: handle "show function source" click from the import
+ * report modal. Re-enters edit mode (so the user can scroll +
+ * actually read the source) and focuses the editor on the given
+ * line. The buffer is whatever's currently emitted — which for a
+ * freshly-imported workflow is exactly the source the user just
+ * imported. We don't snapshot the original imported source
+ * because once they edit + import, the canonical form lives in
+ * the graph's emit output.
+ */
+function focusFunctionInSource(line: number) {
+  // Close the modal first so the editor is visible.
+  importReport.value = null;
+  if (!isEditing.value) enterEdit();
+  // Wait a tick for CodeMirror's edit-mode reconfigure to apply,
+  // then dispatch the scroll. Doing it synchronously sometimes
+  // races the readOnly compartment swap.
+  setTimeout(() => {
+    if (!view) return;
+    const lineCount = view.state.doc.lines;
+    const targetLine = Math.min(Math.max(1, line), lineCount);
+    const linePos = view.state.doc.line(targetLine).from;
+    view.dispatch({
+      selection: { anchor: linePos },
+      effects: EditorView.scrollIntoView(linePos, { y: 'center' }),
+    });
+    view.focus();
+  }, 0);
+}
+
+/**
  * B.6: focus the CodeMirror cursor at a given source offset and
  * scroll the line into view. Called by CompilerDiagnosticPanel
  * when the user clicks a diagnostic row.
@@ -471,6 +501,7 @@ function downloadEdited() {
       :report="importReport"
       :applied="importApplied"
       @close="closeImportReport"
+      @focus-source-line="focusFunctionInSource"
     />
   </div>
 </template>

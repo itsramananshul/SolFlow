@@ -94,6 +94,19 @@ export interface FunctionGraph {
   returnType: SolType; // { kind: 'void' } if absent
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /**
+   * Optional source-attachment metadata, populated when this
+   * function was produced by the AST→graph importer (B.6 c25).
+   *
+   * Phase-A workflows (hand-built in the editor) don't have this.
+   * Re-importing later overwrites it with fresh values.
+   */
+  meta?: {
+    /** 1-indexed line in the imported source where the function
+     *  declaration begins. Used by the import report panel to
+     *  scroll the source pane on click. */
+    sourceLine?: number;
+  };
 }
 
 // =============================================================

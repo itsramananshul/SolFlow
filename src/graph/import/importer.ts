@@ -97,10 +97,15 @@ export interface ImportResult {
  *
  * @param program  parsed AST
  * @param meta     workflow-level metadata (name / description)
+ * @param source   optional raw SOL source; when provided, function
+ *                 nodes get `meta.sourceLine` populated by scanning
+ *                 the source for `function <name>` (B.6 c25).
+ *                 Used by the import report's "show source" UX.
  */
 export function importProgram(
   program: Program,
   meta: { name: string; description?: string } = { name: 'Imported workflow' },
+  source?: string,
 ): ImportResult {
   const report = emptyReport();
   const workflow: SolWorkflow = {
@@ -176,10 +181,23 @@ export function importProgram(
 
   // ---- Pass 2: functions. Need pass 1 to be done so call-nodes can resolve. ----
   const ctxStubs = buildCtxStubs(program); // pre-allocated function id stubs
+  // Source-line lookup map for B.6 c25 click-to-source: only built
+  // when raw source is supplied. Scans for `function <name>` at
+  // line-start; tolerant of leading whitespace + comments.
+  const sourceLines = source ? scanFunctionLines(source) : new Map<string, number>();
   for (const node of program) {
     if (typeof node === 'string' || !('DeclFunc' in node)) continue;
     const stub = ctxStubs.functions.find((f) => f.name === node.DeclFunc.name)!;
     const fn = importFunction(node.DeclFunc, stub, ctxStubs, report);
+    const sourceLine = sourceLines.get(fn.name);
+    if (sourceLine !== undefined) {
+      fn.meta = { ...(fn.meta ?? {}), sourceLine };
+      // Mirror onto the per-function report row so the import
+      // modal can render it as a clickable navigation target
+      // without consulting the graph store.
+      const summary = report.functions.find((f) => f.name === fn.name);
+      if (summary) summary.sourceLine = sourceLine;
+    }
     workflow.functions.push(fn);
   }
 
@@ -787,3 +805,42 @@ function stableId(): string {
 // type only appears in a comment.
 type _NodeKindCheck = NodeKind;
 type _ParamCheck = Param;
+
+/**
+ * Scan source for `function <name>` declarations and return a
+ * `Map<name, lineNumber>` (1-indexed). Used to attach
+ * `FunctionGraph.meta.sourceLine` so the import report can scroll
+ * the source pane to a function on click.
+ *
+ * Why textual not AST-based:
+ *   - The parsed AST doesn't yet carry source spans on nodes
+ *     (deferred — see compiler/REMAINING_PANICS.md).
+ *   - A simple regex scan is accurate enough for the
+ *     editor-typical case: function declarations at line start.
+ *   - First-match-wins on duplicate names (which would also fail
+ *     the analyzer's `redefinition` check upstream of import).
+ *
+ * Limitations the user would only hit by trying:
+ *   - `function foo` appearing inside a string literal would
+ *     mis-match. Tolerable; the worst outcome is a misleading line
+ *     hint, not a crash.
+ *   - Function declared on the same line as other text (rare):
+ *     reports the line correctly but scroll-into-view lands at
+ *     the start of that line.
+ */
+function scanFunctionLines(source: string): Map<string, number> {
+  const result = new Map<string, number>();
+  // Matches:  optional whitespace, `function`, mandatory ws, then
+  // identifier capture, then optional whitespace, then `(`.
+  // No multiline flag — we scan line by line so the line number
+  // is naturally available.
+  const fnPattern = /^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+  const lines = source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(fnPattern);
+    if (m && m[1] && !result.has(m[1])) {
+      result.set(m[1], i + 1); // 1-indexed
+    }
+  }
+  return result;
+}

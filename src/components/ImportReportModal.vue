@@ -20,7 +20,13 @@ const props = defineProps<{
    *  compiler diagnostics instead. */
   applied: boolean;
 }>();
-const emit = defineEmits<{ (e: 'close'): void }>();
+const emit = defineEmits<{
+  (e: 'close'): void;
+  /** User clicked a function summary row that has a known source
+   *  line. Parent (SourcePreview) re-enters edit mode (if needed)
+   *  and scrolls the editor to that line. */
+  (e: 'focusSourceLine', line: number): void;
+}>();
 
 const headlineLabel = computed(() => (props.applied ? 'Imported' : 'Import failed'));
 const headlineTone = computed(() => {
@@ -97,10 +103,21 @@ function supportTone(s: ImportSupport): string {
                 <th>Support</th>
                 <th class="num">Statements</th>
                 <th class="num">Degraded</th>
+                <th class="num">Source</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="fn in report.functions" :key="fn.name">
+              <tr
+                v-for="fn in report.functions"
+                :key="fn.name"
+                :class="{ clickable: fn.sourceLine !== undefined }"
+                :title="
+                  fn.sourceLine !== undefined
+                    ? `Open source at line ${fn.sourceLine}`
+                    : 'No source line attached'
+                "
+                @click="fn.sourceLine !== undefined && emit('focusSourceLine', fn.sourceLine)"
+              >
                 <td class="mono">{{ fn.name }}</td>
                 <td>
                   <span class="pill" :class="supportTone(fn.support)">
@@ -110,6 +127,12 @@ function supportTone(s: ImportSupport): string {
                 <td class="num mono">{{ fn.statementCount }}</td>
                 <td class="num mono" :class="{ warn: fn.unsupportedCount > 0 }">
                   {{ fn.unsupportedCount }}
+                </td>
+                <td class="num mono src-col">
+                  <span v-if="fn.sourceLine !== undefined" class="src-link">
+                    line {{ fn.sourceLine }} →
+                  </span>
+                  <span v-else class="src-na">—</span>
                 </td>
               </tr>
             </tbody>
@@ -255,8 +278,22 @@ function supportTone(s: ImportSupport): string {
   padding: 6px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
+.fn-table tbody tr.clickable { cursor: pointer; }
+.fn-table tbody tr.clickable:hover {
+  background: rgba(98, 154, 220, 0.06);
+}
 .fn-table .num { text-align: right; }
 .fn-table .num.warn { color: var(--sf-warning); }
+.src-col { text-align: right; min-width: 80px; }
+.src-link {
+  color: var(--sf-text-1);
+  text-decoration: none;
+}
+tr.clickable:hover .src-link {
+  color: var(--sf-text-0);
+  text-decoration: underline;
+}
+.src-na { color: var(--sf-text-3); }
 .mono { font-family: var(--sf-font-mono); }
 .pill {
   display: inline-block;

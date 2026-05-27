@@ -1031,10 +1031,14 @@ export const useGraphStore = defineStore('graph', () => {
       return { ok: false, report };
     }
 
-    const { workflow: imported, report } = importProgram(env.value, {
-      name: meta.name ?? workflow.value.meta.name ?? 'Imported workflow',
-      description: meta.description ?? workflow.value.meta.description,
-    });
+    const { workflow: imported, report } = importProgram(
+      env.value,
+      {
+        name: meta.name ?? workflow.value.meta.name ?? 'Imported workflow',
+        description: meta.description ?? workflow.value.meta.description,
+      },
+      source, // B.6 c25 — populates FunctionGraph.meta.sourceLine
+    );
     const loaded = loadWorkflow(imported);
     return { ok: loaded, report };
   }

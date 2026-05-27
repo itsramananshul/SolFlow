@@ -174,6 +174,59 @@ describe('importProgram — empty / degenerate', () => {
   });
 });
 
+describe('importProgram — source attachment (B.6 c25)', () => {
+  it('attaches sourceLine to functions when source is provided', () => {
+    const source = `// header comment
+
+function alpha() -> int {
+    return 0;
+}
+
+function beta() -> int {
+    return alpha();
+}
+`;
+    const program = loadFixture('linear_flow');
+    // Use a hand-crafted source whose function names match the
+    // fixture so we can verify the lookup works without needing
+    // an exact-match fixture. The importer's textual scan only
+    // reads function names from the source string.
+    const { workflow, report } = importProgram(
+      program,
+      { name: 't' },
+      source.replace('function alpha', 'function start'),
+    );
+    // linear_flow has one function named "start".
+    const start = workflow.functions.find((f) => f.name === 'start');
+    expect(start?.meta?.sourceLine).toBe(3);
+    // Mirror onto the report summary.
+    const summary = report.functions.find((f) => f.name === 'start');
+    expect(summary?.sourceLine).toBe(3);
+  });
+
+  it('omits sourceLine when source is not provided', () => {
+    const program = loadFixture('linear_flow');
+    const { workflow, report } = importProgram(program, { name: 't' });
+    const start = workflow.functions.find((f) => f.name === 'start');
+    expect(start?.meta?.sourceLine).toBeUndefined();
+    const summary = report.functions.find((f) => f.name === 'start');
+    expect(summary?.sourceLine).toBeUndefined();
+  });
+
+  it('falls back gracefully on missing match (function not in source)', () => {
+    const program = loadFixture('linear_flow');
+    // Pass source that does NOT contain `function start` — the
+    // importer should still produce the workflow, just without
+    // a sourceLine.
+    const { workflow } = importProgram(
+      program,
+      { name: 't' },
+      '// no function declarations here\n',
+    );
+    expect(workflow.functions[0]?.meta?.sourceLine).toBeUndefined();
+  });
+});
+
 describe('importProgram — report counts', () => {
   it('headline counts roll up across functions', () => {
     const program = loadFixture('branch_and_loop');

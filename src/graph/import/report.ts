@@ -41,6 +41,11 @@ export interface FunctionImportSummary {
   statementCount: number;
   /** How many statements landed as source-only / unsupported. */
   unsupportedCount: number;
+  /** 1-indexed source line where the function declaration starts,
+   *  if the importer was able to derive it (only when source was
+   *  passed to importProgram). Drives the import report's
+   *  click-to-source UX (B.6 c25). */
+  sourceLine?: number;
 }
 
 /** What the importer hands back to the caller. */
