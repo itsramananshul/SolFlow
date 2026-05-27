@@ -28,9 +28,9 @@ use std::sync::Once;
 use serde::Serialize;
 use solflow_compiler::{
     analyze_source, codes, compile_source, parse_source, AnalyzedProgram, CompiledProgram,
-    DiagnosticPhase, DiagnosticSeverity, SolDiagnostic,
+    DiagnosticPhase, DiagnosticSeverity, SolDiagnostic, SourceSpan,
 };
-use solflow_runtime::{run_program, RunError};
+use solflow_runtime::{run_program_with, RunError, RunOptions};
 use wasm_bindgen::prelude::*;
 
 static PANIC_HOOK_INIT: Once = Once::new();
@@ -199,6 +199,21 @@ struct RunResultView<'a> {
     /// ExtCall blocked, heap shape mismatch, stack underflow).
     /// Null on clean termination.
     runtime_error: Option<RuntimeErrorView>,
+    /// Approximate source span of the offending instruction when
+    /// `runtime_error` is non-null AND the bytecode at that
+    /// inst_ptr had a span (most do). Lets the editor scroll the
+    /// source pane to the failure site on error.
+    runtime_error_source_span: Option<SourceSpan>,
+    /// Executed-source-range trace (B.D c42). One entry per
+    /// observable source position the VM visited, in order.
+    /// Adjacent equal spans are de-duplicated (a 100-step inner
+    /// loop produces one trace entry, not 100). Empty when
+    /// tracing wasn't enabled by the caller.
+    trace: Vec<SourceSpan>,
+    /// True when the underlying VM's trace cap was hit. The UI
+    /// renders "execution trace truncated" so the user knows the
+    /// list isn't complete.
+    trace_truncated: bool,
 }
 
 #[derive(Serialize)]
@@ -266,7 +281,7 @@ pub fn run_source_json(source: &str) -> String {
         let has_errors = diagnostics
             .iter()
             .any(|d| d.severity == DiagnosticSeverity::Error);
-        let CompiledProgram { program, bytecode, .. } = match cr.value {
+        let CompiledProgram { program, bytecode, instruction_spans, .. } = match cr.value {
             Some(v) => v,
             None => {
                 // Compile failed — surface diagnostics, skip
@@ -291,8 +306,15 @@ pub fn run_source_json(source: &str) -> String {
             }
         };
 
-        // Compile clean — run.
-        let outcome = run_program(&bytecode, None);
+        // Compile clean — run with tracing enabled so the editor
+        // can render the execution trace panel (B.D c42). Trace
+        // overhead is one usize push per step; bounded by the
+        // runtime's default cap (10k entries) so a runaway loop
+        // doesn't blow memory.
+        let outcome = run_program_with(
+            &bytecode,
+            RunOptions { step_limit: None, trace: true },
+        );
 
         #[derive(Serialize)]
         struct CompileOkEnvelope<'a> {
@@ -312,7 +334,32 @@ pub fn run_source_json(source: &str) -> String {
         // use compile_source_json when they want the AST too).
         let _ = program;
 
+        // Map inst_ptr → source span for the runtime error site
+        // (if any) and for each trace step. The span lookup is
+        // guarded against pathological inst_ptrs.
+        let span_for = |ip: usize| -> Option<SourceSpan> {
+            instruction_spans.get(ip).copied().flatten()
+        };
+
         let runtime_err_view = outcome.error.as_ref().map(RuntimeErrorView::from);
+        let runtime_err_span = outcome.error_inst_ptr.and_then(span_for);
+
+        // Build trace as de-duplicated source-span list. The VM
+        // produces one entry per executed inst_ptr; many adjacent
+        // ips share spans (e.g. arithmetic chain inside one
+        // expression), so the deduped list is much shorter and
+        // much more readable as a UX surface.
+        let mut trace_spans: Vec<SourceSpan> = Vec::new();
+        let mut last_pushed: Option<SourceSpan> = None;
+        for &ip in &outcome.trace {
+            if let Some(span) = span_for(ip) {
+                if Some(span) != last_pushed {
+                    trace_spans.push(span);
+                    last_pushed = Some(span);
+                }
+            }
+        }
+
         let env = CompileOkEnvelope {
             ok: !has_errors,
             value: CompiledView { instruction_count: bytecode.len() },
@@ -326,6 +373,9 @@ pub fn run_source_json(source: &str) -> String {
                 output: &outcome.output,
                 steps: outcome.steps,
                 runtime_error: runtime_err_view,
+                runtime_error_source_span: runtime_err_span,
+                trace: trace_spans,
+                trace_truncated: outcome.trace_truncated,
             },
         };
         serde_json::to_string(&env)
@@ -443,6 +493,46 @@ mod tests {
         assert_eq!(v["ok"], true, "compile clean (runtime-only failure)");
         assert!(v["run"]["return_value"].is_null());
         assert_eq!(v["run"]["runtime_error"]["kind"], "DivByZero");
+    }
+
+    #[test]
+    fn run_source_surfaces_execution_trace_when_program_runs(
+    ) {
+        // B.D c42: every successful run includes a de-duplicated
+        // source-span execution trace.
+        let json = run_source_json(
+            "function start() -> int { let x: int = 1; return x; }",
+        );
+        let v = must_parse_envelope(&json);
+        assert_eq!(v["ok"], true, "{json}");
+        let trace = v["run"]["trace"]
+            .as_array()
+            .expect("trace should be an array");
+        assert!(!trace.is_empty(), "trace should have at least one entry");
+        // Each entry shape: { start, end }
+        let first = &trace[0];
+        assert!(first["start"].is_number());
+        assert!(first["end"].is_number());
+        assert_eq!(v["run"]["trace_truncated"], false);
+    }
+
+    #[test]
+    fn run_source_attaches_source_span_to_runtime_error() {
+        // B.D c42: when a runtime error fires, the offending
+        // instruction's source span is surfaced so the editor can
+        // scroll the source pane to the failure site.
+        let json = run_source_json(
+            "function start() -> int { return 10 / 0; }",
+        );
+        let v = must_parse_envelope(&json);
+        assert_eq!(v["run"]["runtime_error"]["kind"], "DivByZero");
+        let span = &v["run"]["runtime_error_source_span"];
+        assert!(
+            span.is_object(),
+            "runtime_error_source_span should be populated; got {span}",
+        );
+        assert!(span["start"].is_number());
+        assert!(span["end"].is_number());
     }
 
     #[test]

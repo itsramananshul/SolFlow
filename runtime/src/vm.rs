@@ -12,6 +12,11 @@ use solflow_compiler::parser::{Ast, Type};
 use std::collections::HashMap;
 
 const DEFAULT_STEP_LIMIT: usize = 1_000_000;
+/// Default cap on captured trace entries when tracing is enabled.
+/// SOL programs can run millions of instructions; bounded memory
+/// matters more than full history for the editor UX (truncated
+/// trace surfaces a `trace_truncated: true` flag in the envelope).
+pub const DEFAULT_TRACE_LIMIT: usize = 10_000;
 
 #[derive(Debug, Clone)]
 pub enum HeapObject {
@@ -50,6 +55,32 @@ pub struct VM {
     /// construction. Reset doesn't exist on purpose — runs are
     /// always one-shot from a fresh VM.
     pub steps: usize,
+
+    // -------- Optional execution trace (B.D2 / c42) --------
+
+    /// When tracing is enabled, the inst_ptr of each executed
+    /// instruction is appended here. Adjacent-equal entries are
+    /// NOT de-duplicated (a tight loop produces many entries with
+    /// the same inst_ptr) — the bridge does span-level de-dup
+    /// for the UX surface. Bounded by `trace_limit` to keep
+    /// memory predictable.
+    pub trace: Vec<usize>,
+
+    /// When the trace cap is hit, recording silently stops and
+    /// this flag flips. The bridge surfaces it so the UI can
+    /// render "trace truncated at N steps."
+    pub trace_truncated: bool,
+
+    /// Tracing is opt-in. Default `None` means no recording (no
+    /// per-step push, no memory cost). `Some(limit)` records up
+    /// to `limit` entries.
+    pub trace_limit: Option<usize>,
+
+    /// When a run ends in error, the inst_ptr of the offending
+    /// instruction is captured here. The bridge uses it to attach
+    /// a source span to the runtime error so the editor can
+    /// scroll the source pane to the failure site.
+    pub error_inst_ptr: Option<usize>,
 }
 
 impl Default for VM {
@@ -72,6 +103,10 @@ impl VM {
             output: Vec::new(),
             step_limit: DEFAULT_STEP_LIMIT,
             steps: 0,
+            trace: Vec::new(),
+            trace_truncated: false,
+            trace_limit: None,
+            error_inst_ptr: None,
         }
     }
 
@@ -87,6 +122,17 @@ impl VM {
         self
     }
 
+    /// Enable execution-trace recording. Pass `None` for the
+    /// default cap (`DEFAULT_TRACE_LIMIT`); pass `Some(n)` for
+    /// a custom one. With no call to this, no trace is recorded
+    /// (zero overhead).
+    pub fn with_trace(mut self, limit: Option<usize>) -> Self {
+        self.trace_limit = Some(limit.unwrap_or(DEFAULT_TRACE_LIMIT));
+        // Best-effort reserve so trace pushes don't realloc.
+        self.trace.reserve(self.trace_limit.unwrap_or(0));
+        self
+    }
+
     pub fn heap_push_string(&mut self, s: String) -> u64 {
         let idx = self.heap.len();
         self.heap.push(HeapObject::String(s));
@@ -94,16 +140,36 @@ impl VM {
     }
 
     /// Run to completion, returning the top-of-stack value or
-    /// the first `RunError` encountered.
+    /// the first `RunError` encountered. When tracing is enabled
+    /// (`with_trace`), the inst_ptr of each executed instruction
+    /// is appended to `self.trace` before `step()` runs.
     pub fn run(&mut self) -> Result<u64, RunError> {
         loop {
             if self.steps >= self.step_limit {
                 return Err(RunError::StepLimit { limit: self.step_limit });
             }
             self.steps += 1;
-            match self.step()? {
-                Some(v) => return Ok(v),
-                None => continue,
+            // Capture trace BEFORE step() advances inst_ptr — we
+            // want the IP of the instruction about to execute.
+            // EOF / done is detected inside step(); the trace push
+            // is harmless if the program is about to end.
+            if let Some(limit) = self.trace_limit {
+                if self.trace.len() < limit {
+                    self.trace.push(self.inst_ptr);
+                } else if !self.trace_truncated {
+                    self.trace_truncated = true;
+                }
+            }
+            // The inst_ptr that's about to execute — captured for
+            // error-attribution if step() returns an error.
+            let pre_step_ip = self.inst_ptr;
+            match self.step() {
+                Ok(Some(v)) => return Ok(v),
+                Ok(None) => continue,
+                Err(e) => {
+                    self.error_inst_ptr = Some(pre_step_ip);
+                    return Err(e);
+                }
             }
         }
     }

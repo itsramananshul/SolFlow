@@ -5,7 +5,7 @@
 //! exactly the path the WASM bridge uses. No browser needed.
 
 use solflow_compiler::compile_source;
-use solflow_runtime::{run_program, RunError};
+use solflow_runtime::{run_program, run_program_with, RunError, RunOptions};
 
 fn run(source: &str) -> solflow_runtime::RunOutcome {
     let compiled = compile_source(source);
@@ -13,6 +13,14 @@ fn run(source: &str) -> solflow_runtime::RunOutcome {
         panic!("compile failed: {:#?}", compiled.diagnostics);
     });
     run_program(&cp.bytecode, None)
+}
+
+fn run_traced(source: &str) -> solflow_runtime::RunOutcome {
+    let compiled = compile_source(source);
+    let cp = compiled.value.unwrap_or_else(|| {
+        panic!("compile failed: {:#?}", compiled.diagnostics);
+    });
+    run_program_with(&cp.bytecode, RunOptions { step_limit: None, trace: true })
 }
 
 #[test]
@@ -192,6 +200,72 @@ fn set_field_index_out_of_bounds_is_structured_error() {
         }
         other => panic!("expected IndexOutOfBounds; got {other:?}"),
     }
+}
+
+// =============================================================
+//  B.D c42 — execution trace + error inst_ptr
+// =============================================================
+
+#[test]
+fn trace_is_empty_when_disabled() {
+    let out = run("function start() -> int { return 42; }");
+    assert!(out.error.is_none());
+    // Default `run_program` doesn't enable tracing.
+    assert!(out.trace.is_empty(), "trace should be off by default");
+    assert!(!out.trace_truncated);
+    assert!(out.error_inst_ptr.is_none());
+}
+
+#[test]
+fn trace_records_inst_ptrs_when_enabled() {
+    let out = run_traced(
+        "function start() -> int { let x: int = 7; return x; }",
+    );
+    assert!(out.error.is_none(), "{:?}", out.error);
+    assert!(
+        !out.trace.is_empty(),
+        "trace should be populated when enabled",
+    );
+    // Steps + trace entries are 1:1 modulo the synthesized end-
+    // of-program step (steps counts that one; trace doesn't).
+    // Looser invariant: trace is non-empty and bounded by steps.
+    assert!(out.trace.len() <= out.steps);
+    assert!(!out.trace_truncated);
+}
+
+#[test]
+fn trace_truncates_at_default_cap_for_infinite_loop() {
+    // Hits step_limit before the trace fills (default trace cap
+    // 10k; step_limit 1M means we'd cap trace first).
+    let source = "function start() -> int { while (1 == 1) { } return 0; }";
+    let compiled = compile_source(source);
+    let cp = compiled.value.expect("should compile");
+    let out = run_program_with(
+        &cp.bytecode,
+        RunOptions { step_limit: Some(100_000), trace: true },
+    );
+    match out.error {
+        Some(RunError::StepLimit { .. }) => {}
+        other => panic!("expected StepLimit; got {other:?}"),
+    }
+    assert!(out.trace_truncated, "should have truncated at cap");
+}
+
+#[test]
+fn error_inst_ptr_captured_on_runtime_error() {
+    let out = run_traced("function start() -> int { return 10 / 0; }");
+    match out.error {
+        Some(RunError::DivByZero) => {}
+        other => panic!("expected DivByZero; got {other:?}"),
+    }
+    assert!(
+        out.error_inst_ptr.is_some(),
+        "error_inst_ptr should be set on runtime error",
+    );
+    // The IntDiv instruction is somewhere in the middle of the
+    // program; just assert it's a valid index, not the exact value.
+    let ip = out.error_inst_ptr.unwrap();
+    assert!(ip > 0, "error inst_ptr {ip} should be after some setup");
 }
 
 #[test]

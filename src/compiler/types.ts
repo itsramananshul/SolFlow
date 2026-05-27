@@ -99,6 +99,27 @@ export interface RunResult {
   steps: number;
   /** Structured runtime error if execution didn't complete cleanly. */
   runtime_error: RuntimeError | null;
+  /**
+   * Source span of the instruction that produced `runtime_error`,
+   * when one was captured (B.D c42). Lets the UI scroll the
+   * source pane to the failure site. Null when execution
+   * completed cleanly or the failing instruction's bytecode
+   * didn't have a span (rare).
+   */
+  runtime_error_source_span: SourceSpan | null;
+  /**
+   * Executed-source-range trace (B.D c42). One entry per
+   * observable source position the VM visited, in order.
+   * Adjacent equal spans are de-duplicated by the bridge.
+   * Empty when no trace was recorded.
+   */
+  trace: SourceSpan[];
+  /**
+   * True when the VM's trace cap was hit (default 10k entries).
+   * The UI surfaces "execution trace truncated" so users know
+   * the list isn't the full history.
+   */
+  trace_truncated: boolean;
 }
 
 /**

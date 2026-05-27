@@ -12,7 +12,7 @@
 
 use crate::analyzer::{Analyzer, TypeTable};
 use crate::bytecode::{Codegen, Inst};
-use crate::diagnostic::SolDiagnostic;
+use crate::diagnostic::{SolDiagnostic, SourceSpan};
 use crate::lexer::{Lexer, Token};
 use crate::parser::{Parser, Program};
 
@@ -74,6 +74,13 @@ pub struct CompiledProgram {
     pub program: Program,
     pub tt_arena: Vec<TypeTable>,
     pub bytecode: Vec<Inst>,
+    /// Per-instruction source-span sidecar (B.D c36). Always
+    /// `bytecode.len() == instruction_spans.len()`. Index N gives
+    /// the approximate source span of instruction N; entries are
+    /// `None` for instructions emitted by top-level synthesized
+    /// code (the trailing `Call(start, 0)`) or other paths that
+    /// don't correspond to user source.
+    pub instruction_spans: Vec<Option<SourceSpan>>,
 }
 
 // =============================================================
@@ -220,6 +227,9 @@ pub fn compile_source(source: &str) -> CompileResult<CompiledProgram> {
         program,
         tt_arena: tt_arena_for_codegen,
         bytecode,
+        // B.D c42: surface the codegen sidecar so the bridge can
+        // map VM trace inst_ptrs → source spans for the editor.
+        instruction_spans: std::mem::take(&mut codegen.instruction_spans),
     };
     if diagnostics.is_empty() {
         CompileResult::ok(result)
