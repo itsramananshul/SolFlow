@@ -66,6 +66,75 @@ fn source_span_roundtrips() {
     assert_eq!(span, restored);
 }
 
+/// Pin the AST JSON shape so the TS importer's typed mirror in
+/// `src/compiler/ast.ts` can't silently drift. If this test breaks,
+/// either the Rust AST changed (in which case update ast.ts in the
+/// same commit) or serde's representation flipped (in which case
+/// the breakage is the alarm).
+///
+/// We test a representative slice — every variant that matters for
+/// the importer — and assert specific substrings rather than the
+/// full JSON. That keeps the test stable under inconsequential
+/// changes (e.g. HashMap reordering) while still locking the bits
+/// the TS side parses.
+#[test]
+fn ast_json_shape_locked_for_importer() {
+    let source = r#"
+        struct Point { x: int }
+        enum Status { Active }
+        function start() -> int {
+            let p: int = 0;
+            if (p == 0) { print("z"); }
+            while (p < 10) { p = p + 1; }
+            for x in [1, 2, 3] { print(x); }
+            return p;
+        }
+    "#;
+    let parsed = parse_source(source);
+    assert!(!parsed.has_errors(), "fixture should parse cleanly");
+    let json = serde_json::to_string(&parsed.value).expect("serialize");
+
+    // Top-level declaration variants — externally tagged objects.
+    assert!(json.contains(r#""DeclStruct""#), "DeclStruct shape");
+    assert!(json.contains(r#""DeclEnum""#), "DeclEnum shape");
+    assert!(json.contains(r#""DeclFunc""#), "DeclFunc shape");
+
+    // Type union — primitives serialize as plain strings.
+    assert!(json.contains(r#""Integer""#), "Integer type");
+
+    // Statements + control flow.
+    assert!(json.contains(r#""Block""#), "Block wrapper");
+    assert!(json.contains(r#""StmtIf""#), "StmtIf shape");
+    assert!(json.contains(r#""StmtWhile""#), "StmtWhile shape");
+    assert!(json.contains(r#""StmtFor""#), "StmtFor shape");
+
+    // Expressions.
+    assert!(json.contains(r#""ExprBinary""#), "ExprBinary shape");
+    assert!(json.contains(r#""ExprVar""#), "ExprVar shape");
+    assert!(json.contains(r#""ExprInteger""#), "ExprInteger shape");
+    assert!(json.contains(r#""ExprFuncCall""#), "ExprFuncCall shape");
+    assert!(json.contains(r#""ExprArrayInit""#), "ExprArrayInit shape");
+    assert!(json.contains(r#""ExprReturn""#), "ExprReturn shape");
+    assert!(json.contains(r#""DeclVar""#), "DeclVar shape");
+
+    // Op token names — the TS BinOpToken / UnaryOpToken unions
+    // depend on these exact strings.
+    assert!(json.contains(r#""op":"Plus""#), "Plus op token");
+    assert!(json.contains(r#""op":"EqEq""#), "EqEq op token");
+    assert!(json.contains(r#""op":"LessThan""#), "LessThan op token");
+    // Assignment encoded as ExprBinary { op: "Eq" } — the importer
+    // explicitly distinguishes this from EqEq.
+    assert!(json.contains(r#""op":"Eq""#), "Eq op token (assignment)");
+
+    // `params` of DeclFunc is Vec<(String, Type)> → array of pairs.
+    // Verify the pair shape rather than the variable order serde
+    // chose for HashMap keys.
+    assert!(
+        json.contains(r#""params":[]"#) || json.contains(r#""params":[["#),
+        "params shape (array of pairs)",
+    );
+}
+
 #[test]
 fn enum_phases_serialize_as_human_strings() {
     // Serde's default enum representation for unit-variants is a

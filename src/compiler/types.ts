@@ -51,12 +51,13 @@ export interface CompileEnvelope<T> {
 }
 
 /**
- * AST shape — opaque on the TS side for now. The editor only needs
- * to display diagnostics; reading individual AST nodes is a B.6+
- * concern once hover/symbol-info lands. We type it as `unknown` to
- * keep callers honest about not depending on undocumented structure.
+ * AST shape — fully typed mirror of the Rust `parser::Program`.
+ * See `./ast.ts` for the variant union. Pinned by a serde-snapshot
+ * test in `compiler/tests/serde_roundtrip.rs` so the contract
+ * can't silently drift.
  */
-export type Program = unknown;
+import type { Program } from './ast';
+export type { Program, Ast, SolType, BinOpToken, UnaryOpToken } from './ast';
 
 export interface AnalyzedProgramView {
   program: Program;
