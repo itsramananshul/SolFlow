@@ -3,6 +3,8 @@
 
 export function analyze_source_json(source: string): string;
 
+export function compile_for_wire_json(source: string): string;
+
 export function compile_source_json(source: string): string;
 
 /**

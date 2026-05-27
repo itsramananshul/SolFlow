@@ -29,11 +29,21 @@ export type ScheduleId = string;
 export interface WorkflowSubmission {
   name: string;
   description?: string;
-  /** Canonical-compiled bytecode, bincode-encoded. Editor
-   *  base64-encodes for JSON transport; controller decodes. */
-  bytecode: string;            // base64
-  /** Per-instruction span sidecar, bincode-encoded + base64. */
-  instruction_spans: string;   // base64
+  /**
+   * Wire-encoded bytecode bytes. Comes from the WASM compiler's
+   * `compile_for_wire_json` entry point, which JSON-encodes
+   * `Vec<Inst>` via `serde_json::to_vec` to match
+   * `solflow_host_spec::encode_bytecode`. Transported as a JSON
+   * number-array since the outer `WorkflowSubmission` itself is
+   * JSON — `Vec<u8>` serializes as `[u8, u8, …]` by default.
+   */
+  bytecode: number[];
+  /**
+   * Wire-encoded per-instruction span sidecar. Same contract
+   * as `bytecode`. Parallel to the instruction stream so the
+   * controller can attach source-mapped runtime errors.
+   */
+  instruction_spans: number[];
   /** Optional original SOL source — purely for debug. */
   source?: string;
 }

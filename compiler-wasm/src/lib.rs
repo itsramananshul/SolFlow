@@ -167,6 +167,52 @@ pub fn version() -> String {
 }
 
 // =============================================================
+//  Phase C C.2 — wire-ready compile for controller submission
+// =============================================================
+//
+// `compile_for_wire_json(source)` returns an envelope whose value
+// contains wire-encoded `bytecode` and `instruction_spans` as
+// `Vec<u8>` (serialized as JSON number-arrays). The editor pipes
+// these directly into `WorkflowSubmission`.
+//
+// The encoding is `serde_json::to_vec` of the bytecode (matching
+// `solflow_host_spec::encode_bytecode`) — by keeping the bytes in
+// the same shape the host-spec helper produces, the editor and
+// controller agree on the wire format without either side knowing
+// the inner JSON structure of `Inst`.
+
+#[derive(Serialize)]
+struct CompiledForWireView<'a> {
+    program: &'a solflow_compiler::parser::Program,
+    instruction_count: usize,
+    /// `serde_json::to_vec(&bytecode)` — opaque bytes the editor
+    /// forwards verbatim to `POST /workflows`.
+    bytecode: Vec<u8>,
+    /// `serde_json::to_vec(&instruction_spans)` — same contract.
+    instruction_spans: Vec<u8>,
+}
+
+#[wasm_bindgen]
+pub fn compile_for_wire_json(source: &str) -> String {
+    safe(|| {
+        let cr = compile_source(source);
+        let view = cr.value.as_ref().and_then(
+            |CompiledProgram { program, bytecode, instruction_spans, .. }| {
+                let bc = serde_json::to_vec(bytecode).ok()?;
+                let sp = serde_json::to_vec(instruction_spans).ok()?;
+                Some(CompiledForWireView {
+                    program,
+                    instruction_count: bytecode.len(),
+                    bytecode: bc,
+                    instruction_spans: sp,
+                })
+            },
+        );
+        envelope_json(view.as_ref(), &cr.diagnostics)
+    })
+}
+
+// =============================================================
 //  B.10 — canonical VM execution
 // =============================================================
 //
