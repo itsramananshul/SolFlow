@@ -11,6 +11,7 @@ import { analyzeSource } from '@/compiler/api';
 import type { SolDiagnostic } from '@/compiler/types';
 import type { ImportReport } from '@/graph/import';
 import ImportReportModal from './ImportReportModal.vue';
+import CompilerDiagnosticPanel from './CompilerDiagnosticPanel.vue';
 
 const graph = useGraphStore();
 
@@ -199,6 +200,32 @@ async function runImport() {
 
 function closeImportReport() {
   importReport.value = null;
+}
+
+/**
+ * B.6: focus the CodeMirror cursor at a given source offset and
+ * scroll the line into view. Called by CompilerDiagnosticPanel
+ * when the user clicks a diagnostic row.
+ *
+ * Offset/line/col are in source bytes. CodeMirror's positions are
+ * character-units; for ASCII source they're equivalent. SOL is
+ * mostly ASCII so this is fine in practice; the imprecision only
+ * matters inside string literals containing multi-byte UTF-8.
+ */
+function focusSourceAt(loc: { start: number; end: number }) {
+  if (!view) return;
+  // Clamp into the live document length — the source the
+  // diagnostic was emitted against may differ slightly from what's
+  // in the editor RIGHT NOW (user kept typing during the debounce
+  // window). Without the clamp CodeMirror throws.
+  const len = view.state.doc.length;
+  const start = Math.min(Math.max(0, loc.start), len);
+  const end = Math.min(Math.max(start, loc.end), len);
+  view.dispatch({
+    selection: { anchor: start, head: end },
+    effects: EditorView.scrollIntoView(start, { y: 'center' }),
+  });
+  view.focus();
 }
 
 // Minimal SOL StreamLanguage — keyword + literal + comment highlighting.
@@ -426,43 +453,18 @@ function downloadEdited() {
       </span>
     </div>
     <!--
-      Live compiler-diagnostics panel. Only rendered while editing so
-      we don't add chrome to the read-only preview path. Empty list
-      shows "clean" so the panel never looks broken when the source
-      is valid.
+      Live compiler-diagnostics panel (B.6). Diagnostics grouped by
+      phase; rows with source spans are clickable + scroll the
+      editor to that location.
     -->
-    <div v-if="isEditing" class="compiler-panel" :class="{ erred: compilerErrorCount > 0 }">
-      <div class="compiler-panel-header">
-        <span class="compiler-label">Compiler</span>
-        <span v-if="compilerState === 'loading'" class="compiler-status loading">
-          loading WASM…
-        </span>
-        <span v-else-if="compilerState === 'error'" class="compiler-status err">
-          load failed: {{ compilerError }}
-        </span>
-        <span v-else-if="compilerErrorCount > 0" class="compiler-status err">
-          {{ compilerErrorCount }} error{{ compilerErrorCount === 1 ? '' : 's' }}
-        </span>
-        <span v-else-if="compilerWarningCount > 0" class="compiler-status warn">
-          {{ compilerWarningCount }} warning{{ compilerWarningCount === 1 ? '' : 's' }}
-        </span>
-        <span v-else-if="compilerState === 'ready'" class="compiler-status ok">
-          clean
-        </span>
-      </div>
-      <ul v-if="compilerDiagnostics.length > 0" class="compiler-list">
-        <li
-          v-for="(d, i) in compilerDiagnostics"
-          :key="i"
-          class="compiler-row"
-          :class="d.severity.toLowerCase()"
-        >
-          <span class="diag-code">{{ d.code }}</span>
-          <span class="diag-phase">{{ d.phase }}</span>
-          <span class="diag-msg">{{ d.message }}</span>
-        </li>
-      </ul>
-    </div>
+    <CompilerDiagnosticPanel
+      v-if="isEditing"
+      :diagnostics="compilerDiagnostics"
+      :state="compilerState"
+      :error-message="compilerError"
+      :source="editedBuffer"
+      @focus="focusSourceAt"
+    />
     <div ref="editorContainer" class="editor" />
     <ImportReportModal
       v-if="importReport"
@@ -590,71 +592,6 @@ function downloadEdited() {
   overflow: auto;
 }
 
-/* ---------- Live compiler diagnostics (B.5) ---------- */
-.compiler-panel {
-  display: flex;
-  flex-direction: column;
-  border-bottom: 1px solid var(--sf-border);
-  background: var(--sf-bg-0);
-  max-height: 140px;
-  overflow-y: auto;
-}
-.compiler-panel.erred {
-  background: rgba(220, 80, 80, 0.04);
-}
-.compiler-panel-header {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 6px 14px;
-  border-bottom: 1px solid var(--sf-border);
-}
-.compiler-label {
-  font-size: 0.5625rem;
-  font-weight: 600;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--sf-text-2);
-}
-.compiler-status {
-  font-size: 0.625rem;
-  font-family: var(--sf-font-mono);
-}
-.compiler-status.loading { color: var(--sf-text-3); }
-.compiler-status.ok      { color: var(--sf-success); }
-.compiler-status.warn    { color: var(--sf-warning); }
-.compiler-status.err     { color: var(--sf-error, #d96666); }
-.compiler-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.compiler-row {
-  display: grid;
-  grid-template-columns: 56px 70px 1fr;
-  gap: 8px;
-  padding: 4px 14px;
-  font-size: 0.6875rem;
-  font-family: var(--sf-font-mono);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-  align-items: baseline;
-}
-.compiler-row.error    { color: var(--sf-text-0); }
-.compiler-row.warning  { color: var(--sf-text-1); }
-.compiler-row.note     { color: var(--sf-text-2); }
-.diag-code {
-  font-weight: 600;
-  color: var(--sf-text-2);
-}
-.compiler-row.error   .diag-code { color: var(--sf-error, #d96666); }
-.compiler-row.warning .diag-code { color: var(--sf-warning); }
-.diag-phase {
-  color: var(--sf-text-3);
-  text-transform: lowercase;
-  font-size: 0.625rem;
-}
-.diag-msg {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
+/* Live compiler diagnostics panel moved to
+ * CompilerDiagnosticPanel.vue (B.6 c24). */
 </style>
