@@ -68,6 +68,8 @@ behavior is flagged as a tool-side mismatch.
 | [`EXAMPLES.md`](./EXAMPLES.md) | Long-form example catalogue (companion to chapter 16) |
 | [`IMPORT_COMPATIBILITY.md`](./IMPORT_COMPATIBILITY.md) | What the AST→graph importer can / cannot represent visually; per-construct classification + round-trip caveats |
 | [`SYNC_MODEL.md`](./SYNC_MODEL.md) | The explicit-action sync philosophy between source pane and visual graph (B.9 architectural model) |
+| [`CANONICALIZATION.md`](./CANONICALIZATION.md) | Graph → source canonicalization rules; round-trip stability contract; known formatting asymmetries (B.8) |
+| [`SIMULATOR_PARITY.md`](./SIMULATOR_PARITY.md) | Drift audit between the in-browser simulator and the canonical SOL compiler/VM (B.10 groundwork) |
 
 ### Internal
 

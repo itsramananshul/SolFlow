@@ -51,7 +51,31 @@ instead of aborting the test runner / WASM worker. See
 `compiler/src/diagnostic.rs` (`SolDiagnostic::internal`) and the
 `ICE_*` code constants.
 
-## 4. Excluded by design (not in this crate)
+## 4. Deferred work the compiler should still do
+
+Not panics — but tracked here so we don't forget.
+
+### AST-level source spans
+
+B.6 c23 attached spans to lexer + parser diagnostics. The
+analyzer's diagnostics still emit with `span: null` because the
+spans the analyzer would need live on AST nodes, and AST nodes
+don't carry spans today.
+
+Plumbing requires:
+- Add `span: SourceSpan` to every `Ast` variant (or wrap with
+  `Spanned<T>`)
+- Parser propagates token-start → node-end as it builds each AST
+  node
+- Analyzer emit sites read the AST node's span and attach to the
+  diagnostic
+
+When this lands, the editor's `CompilerDiagnosticPanel` analyzer
+rows become clickable too (currently non-affordant), and the
+importer can lift its current textual function-line scan to a
+real per-node attachment.
+
+## 5. Excluded by design (not in this crate)
 
 The following upstream-host concerns were deliberately not vendored
 in B.1 and therefore have no panics here at all:

@@ -1,11 +1,15 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
-> **Status:** B.1–B.5 complete, **B.7 AST→graph importer + early
-> B.9 sync model complete** (2026-05-27). SolFlow now does both
-> directions: graph→source via the live emit pipeline, and
-> source→graph via an explicit "Import to graph" action backed by
-> the WASM compiler. Sync remains explicit-action (B.9 philosophy);
-> live bidirectional binding is intentionally not implemented.
+> **Status:** B.1–B.5 + B.7 complete; **B.6 rich diagnostics UX,
+> B.8 graph→source canonicalization MVP, and B.10 simulator
+> parity audit complete** (2026-05-27). The IDE now feels
+> coherent: lexer/parser diagnostics carry source spans, the
+> editor's diagnostic panel groups by phase with click-to-source,
+> the import report links per-function entries back to source
+> lines, the emit pipeline is provably deterministic + round-trip
+> stable (caught a real `exitPort` wiring bug in the process),
+> and the simulator/compiler semantic drift is documented in
+> `SIMULATOR_PARITY.md`.
 >
 > **Branch:** `feat/solflow-phase-a` (Phase B work continues here
 > until a `feat/solflow-phase-b` branch is cut).
@@ -752,11 +756,22 @@ B.7 (importer).
 - No graph generation yet (B.7)
 - No round-trip / sync yet (B.9)
 
-### B.6 — Source diagnostics in SolFlow
+### B.6 — Source diagnostics in SolFlow ✅ **DONE**
 
-**Goal:** surface compiler diagnostics in the source pane (red
-squiggles + gutter markers + DiagnosticsDrawer rows). This is
-where the IDE feel starts.
+> **Landed 2026-05-27.** Lexer + parser diagnostics now carry
+> source spans (`SourceSpan { start, end }`). Editor renders them
+> in a dedicated `CompilerDiagnosticPanel.vue` grouped by phase
+> with click-to-source: clicking a parse-stage diagnostic scrolls
+> CodeMirror to the offending byte range. Analyzer diagnostics
+> still emit with `span: null` (would need AST-level spans —
+> deferred). Function-level source attachment: the importer
+> populates `FunctionGraph.meta.sourceLine`; the import report's
+> function rows are clickable and scroll the source pane to the
+> function declaration. CodeMirror gutter markers (red dot per
+> error line) deferred to a future polish pass; the current
+> click-from-panel UX covers the navigation case without them.
+
+### B.6 — original plan below
 
 **Why it matters:** users expect a real IDE to mark errors in
 the editor surface. Until this lands, the WASM bridge is just
@@ -877,7 +892,22 @@ IDE" milestone.
 - No live sync yet (B.9)
 - No advanced layout — autoLayout v2 is enough
 
-### B.8 — Graph → AST/source canonicalization
+### B.8 — Graph → AST/source canonicalization ✅ **MVP**
+
+> **Landed 2026-05-27.** The existing `src/emit/emit.ts` is
+> already structurally canonical; B.8 c26 added the test harness
+> proving it, AND caught a real importer bug in the process:
+> branch/while/for nodes were wiring continuation via `next` port
+> instead of `after`, silently dropping all statements after a
+> branch from the emit output. Fixed by widening
+> `StmtImportResult` with an `exitPort` field. Round-trip
+> snapshot tests for every fixture; 50/50 vitest green. See
+> `docs/sol-language/CANONICALIZATION.md` for the contract
+> (semantics + structure stable; byte-fidelity not promised).
+> True parse→emit→parse end-to-end round-trip wants WASM-in-Node;
+> the snapshot tests catch the same drift one cycle earlier.
+
+### B.8 — original plan below
 
 **Goal:** invert B.7. Take a SolFlow graph, produce a
 canonical AST, then a pretty-printed `.sol` source. Replaces
@@ -979,7 +1009,24 @@ sync to Phase C.
 - No silent data loss; the user is always told when their
   in-flight edits are about to be regenerated
 
-### B.10 — Simulator / compiler parity plan
+### B.10 — Simulator / compiler parity plan 🟡 **Audit complete**
+
+> **Audit landed 2026-05-27.** See
+> `docs/sol-language/SIMULATOR_PARITY.md` for the drift report —
+> categorized list of every observable divergence between the
+> in-browser simulator and the canonical SOL compiler/VM.
+> Headline drifts: numeric/bool coercion in `applyBinaryOp`,
+> JS-style `+` string concat (T9023 hazard), JS-style integer
+> division (`/` is float in sim), `toBool` on strings,
+> `!`-on-string acceptance, enum equality via string
+> normalization vs canonical first-char-hash (T9002 hazard),
+> `new Function`-based inline expression evaluation. No code
+> changes in this phase; B.10 rewrite (two paths recommended:
+> sim-tightening OR ship-canonical-VM-as-WASM) is its own
+> milestone. Live B.5 compiler diagnostics already surface most
+> of these mismatches at edit time.
+
+### B.10 — original plan below
 
 **Goal:** make the in-browser simulator match canonical SOL
 semantics so "works in simulator → works in production"
