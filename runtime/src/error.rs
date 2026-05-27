@@ -38,13 +38,25 @@ pub enum RunError {
         limit: usize,
     },
 
-    /// `Inst::ExtCall` was reached. The browser VM intentionally
-    /// refuses to do real network I/O — see
-    /// `runtime/UPSTREAM.md` for the rationale and
-    /// `SIMULATOR_PARITY.md` for what this means for users.
+    /// `Inst::ExtCall` was reached but no `ExtCallHandler` was
+    /// installed on the VM. The browser-sim VM hits this on every
+    /// ExtCall by design — see `runtime/UPSTREAM.md`. The
+    /// controller installs a handler so this variant is reserved
+    /// for the browser path.
     ExtCallBlocked {
         function_name: String,
         url: String,
+    },
+
+    /// `Inst::ExtCall` reached a handler, but the handler returned
+    /// an error. Carries the connector name, the SOL function
+    /// name, and a free-form message the editor renders verbatim.
+    /// (Structured connector-error variants live in the
+    /// controller's run-event log — Phase C.5.)
+    ExtCallFailed {
+        connector: String,
+        function_name: String,
+        message: String,
     },
 
     /// Heap object's variant didn't match what the instruction
@@ -73,6 +85,10 @@ impl fmt::Display for RunError {
                 f,
                 "external call to `{function_name}` at `{url}` blocked: \
                  external calls are not available in browser simulation",
+            ),
+            RunError::ExtCallFailed { connector, function_name, message } => write!(
+                f,
+                "external call to `{function_name}` via connector `{connector}` failed: {message}",
             ),
             RunError::HeapShapeMismatch { expected, got } => write!(
                 f,

@@ -161,7 +161,7 @@ impl Controller for LocalController {
         let r = record.clone();
         let policy = self.policy;
         tokio::spawn(async move {
-            execute_run(p, r, policy).await;
+            execute_run(p, r, policy, None).await;
         });
 
         Ok(RunCreated {

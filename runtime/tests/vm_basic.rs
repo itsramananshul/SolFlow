@@ -20,7 +20,7 @@ fn run_traced(source: &str) -> solflow_runtime::RunOutcome {
     let cp = compiled.value.unwrap_or_else(|| {
         panic!("compile failed: {:#?}", compiled.diagnostics);
     });
-    run_program_with(&cp.bytecode, RunOptions { step_limit: None, trace: true })
+    run_program_with(&cp.bytecode, RunOptions { step_limit: None, trace: true, ext_call_handler: None })
 }
 
 #[test]
@@ -151,6 +151,111 @@ fn ext_call_is_blocked_not_panicked() {
     }
 }
 
+/// Phase C C.4 c76: with an `ExtCallHandler` installed, the VM
+/// dispatches to the handler and pushes its returned value back
+/// onto the stack instead of erroring with `ExtCallBlocked`.
+#[test]
+fn ext_call_with_handler_returns_value() {
+    use solflow_compiler::bytecode::Inst;
+    use solflow_compiler::parser::{Ast, Type};
+    use solflow_runtime::{
+        run_program_with, ExtCallContext, ExtCallError, ExtCallHandler,
+        ExtCallValue, RunOptions,
+    };
+    use std::sync::{Arc, Mutex};
+
+    /// Echo handler: returns the integer it received, scaled by 10.
+    struct EchoHandler {
+        seen: Mutex<Vec<(String, String, Vec<ExtCallValue>)>>,
+    }
+    impl ExtCallHandler for EchoHandler {
+        fn handle(
+            &self,
+            ctx: ExtCallContext<'_>,
+        ) -> Result<ExtCallValue, ExtCallError> {
+            self.seen.lock().unwrap().push((
+                ctx.function_name.to_string(),
+                ctx.url.to_string(),
+                ctx.args.to_vec(),
+            ));
+            match ctx.args.first() {
+                Some(ExtCallValue::Int(n)) => Ok(ExtCallValue::Int(n * 10)),
+                _ => Err(ExtCallError::failed(
+                    "echo",
+                    ctx.function_name,
+                    "expected one int arg",
+                )),
+            }
+        }
+    }
+
+    let handler = Arc::new(EchoHandler { seen: Mutex::new(Vec::new()) });
+    let program = vec![
+        Inst::PushConst(Ast::ExprInteger(7)),
+        Inst::PushConst(Ast::ExprString("scale".to_string())),
+        Inst::PushConst(Ast::ExprString("connector://echo".to_string())),
+        Inst::ExtCall(vec![Type::Integer], Box::new(Type::Integer)),
+        Inst::Ret,
+    ];
+    let opts = RunOptions {
+        step_limit: None,
+        trace: false,
+        ext_call_handler: Some(handler.clone()),
+    };
+    let out = run_program_with(&program, opts);
+    assert!(out.error.is_none(), "expected clean run, got {:?}", out.error);
+    // Top-of-stack (return_value) should be 7 * 10 = 70.
+    assert_eq!(out.return_value as i64, 70);
+    let seen = handler.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, "scale");
+    assert_eq!(seen[0].1, "connector://echo");
+    assert!(matches!(seen[0].2[0], ExtCallValue::Int(7)));
+}
+
+/// Phase C C.4 c76: a handler that returns `Err` surfaces as
+/// `RunError::ExtCallFailed` (not the blocked variant).
+#[test]
+fn ext_call_handler_error_surfaces_as_extcall_failed() {
+    use solflow_compiler::bytecode::Inst;
+    use solflow_compiler::parser::{Ast, Type};
+    use solflow_runtime::{
+        run_program_with, ExtCallContext, ExtCallError, ExtCallHandler,
+        ExtCallValue, RunOptions,
+    };
+    use std::sync::Arc;
+
+    struct FailingHandler;
+    impl ExtCallHandler for FailingHandler {
+        fn handle(
+            &self,
+            ctx: ExtCallContext<'_>,
+        ) -> Result<ExtCallValue, ExtCallError> {
+            Err(ExtCallError::failed("test", ctx.function_name, "boom"))
+        }
+    }
+    let program = vec![
+        Inst::PushConst(Ast::ExprString("greet".to_string())),
+        Inst::PushConst(Ast::ExprString("connector://test".to_string())),
+        Inst::ExtCall(vec![], Box::new(Type::Integer)),
+        Inst::Ret,
+    ];
+    let opts = RunOptions {
+        step_limit: None,
+        trace: false,
+        ext_call_handler: Some(Arc::new(FailingHandler)),
+    };
+    let out = run_program_with(&program, opts);
+    match out.error {
+        Some(RunError::ExtCallFailed { connector, function_name, message }) => {
+            assert_eq!(connector, "test");
+            assert_eq!(function_name, "greet");
+            assert!(message.contains("boom"));
+        }
+        other => panic!("expected ExtCallFailed; got {other:?}"),
+    }
+}
+
 /// B.11 c32 regression: GetField on an OOB index used to panic
 /// (uncaught), bringing down the WASM boundary as an ICE. After
 /// the hardening sweep it produces a structured runtime error.
@@ -242,7 +347,7 @@ fn trace_truncates_at_default_cap_for_infinite_loop() {
     let cp = compiled.value.expect("should compile");
     let out = run_program_with(
         &cp.bytecode,
-        RunOptions { step_limit: Some(100_000), trace: true },
+        RunOptions { step_limit: Some(100_000), trace: true, ext_call_handler: None },
     );
     match out.error {
         Some(RunError::StepLimit { .. }) => {}

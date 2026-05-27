@@ -4,9 +4,14 @@
 //! relative to the upstream sibling workspace.
 
 pub mod error;
+pub mod extcall;
 pub mod vm;
 
 pub use error::RunError;
+pub use extcall::{
+    ExtCallContext, ExtCallError, ExtCallHandler, ExtCallHandlerArc, ExtCallType,
+    ExtCallValue,
+};
 pub use vm::{HeapObject, VM};
 
 use solflow_compiler::bytecode::Inst;
@@ -46,7 +51,12 @@ pub struct RunOutcome {
 
 /// Options for `run_program`. Built explicitly rather than as
 /// positional args so future additions don't break callers.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// As of C.4 (c76) this is no longer `Copy` — an installed
+/// `ExtCallHandler` holds an `Arc`, which makes the struct
+/// non-Copy. Callers that previously relied on copy semantics
+/// should clone explicitly (cheap — the option is mostly None).
+#[derive(Clone, Default)]
 pub struct RunOptions {
     /// Override the VM's default `step_limit` (1M). `None` keeps
     /// the default.
@@ -56,6 +66,12 @@ pub struct RunOptions {
     /// it to populate the execution-trace UI, while plain
     /// `cargo test` paths leave it off for speed.
     pub trace: bool,
+    /// Optional `Inst::ExtCall` handler. When `None` (the
+    /// browser-sim default), ExtCall returns
+    /// `RunError::ExtCallBlocked`. When `Some`, the VM
+    /// materializes args + invokes the handler synchronously
+    /// and pushes its returned value back onto the stack.
+    pub ext_call_handler: Option<ExtCallHandlerArc>,
 }
 
 /// Run a compiled program to completion (or to first runtime
@@ -64,7 +80,14 @@ pub struct RunOptions {
 /// compiler emits this trailing call automatically, so callers
 /// can just pass `CompiledProgram.bytecode` directly.
 pub fn run_program(program: &[Inst], step_limit: Option<usize>) -> RunOutcome {
-    run_program_with(program, RunOptions { step_limit, trace: false })
+    run_program_with(
+        program,
+        RunOptions {
+            step_limit,
+            trace: false,
+            ext_call_handler: None,
+        },
+    )
 }
 
 /// Run a compiled program with explicit options (B.D2 c42).
@@ -77,6 +100,7 @@ pub fn run_program_with(program: &[Inst], opts: RunOptions) -> RunOutcome {
     if opts.trace {
         vm = vm.with_trace(None);
     }
+    vm.ext_call_handler = opts.ext_call_handler;
     match vm.run() {
         Ok(return_value) => RunOutcome {
             return_value,

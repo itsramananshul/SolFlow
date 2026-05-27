@@ -270,6 +270,7 @@ enum RuntimeErrorView {
     StackUnderflow,
     StepLimit { limit: usize },
     ExtCallBlocked { function_name: String, url: String },
+    ExtCallFailed { connector: String, function_name: String, message: String },
     HeapShapeMismatch { expected: String, got: String },
 }
 
@@ -286,6 +287,13 @@ impl From<&RunError> for RuntimeErrorView {
                 RuntimeErrorView::ExtCallBlocked {
                     function_name: function_name.clone(),
                     url: url.clone(),
+                }
+            }
+            RunError::ExtCallFailed { connector, function_name, message } => {
+                RuntimeErrorView::ExtCallFailed {
+                    connector: connector.clone(),
+                    function_name: function_name.clone(),
+                    message: message.clone(),
                 }
             }
             RunError::HeapShapeMismatch { expected, got } => {
@@ -359,7 +367,7 @@ pub fn run_source_json(source: &str) -> String {
         // doesn't blow memory.
         let outcome = run_program_with(
             &bytecode,
-            RunOptions { step_limit: None, trace: true },
+            RunOptions { step_limit: None, trace: true, ext_call_handler: None },
         );
 
         #[derive(Serialize)]

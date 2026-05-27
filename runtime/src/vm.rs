@@ -7,6 +7,10 @@
 //! were replaced.
 
 use crate::error::RunError;
+use crate::extcall::{
+    try_ext_call_type, ExtCallContext, ExtCallError, ExtCallHandlerArc,
+    ExtCallType, ExtCallValue,
+};
 use solflow_compiler::bytecode::Inst;
 use solflow_compiler::parser::{Ast, Type};
 use std::collections::HashMap;
@@ -81,6 +85,12 @@ pub struct VM {
     /// a source span to the runtime error so the editor can
     /// scroll the source pane to the failure site.
     pub error_inst_ptr: Option<usize>,
+
+    /// Optional `Inst::ExtCall` handler (Phase C C.4 c76). When
+    /// `None`, ExtCall returns `RunError::ExtCallBlocked` as it
+    /// has since C.1. When `Some`, the VM marshals args + invokes
+    /// the handler + pushes the typed return value.
+    pub ext_call_handler: Option<ExtCallHandlerArc>,
 }
 
 impl Default for VM {
@@ -107,6 +117,7 @@ impl VM {
             trace_truncated: false,
             trace_limit: None,
             error_inst_ptr: None,
+            ext_call_handler: None,
         }
     }
 
@@ -605,15 +616,23 @@ impl VM {
                 self.push((self.heap.len() - 1) as u64);
             }
 
-            // --- 10. External Function Call (browser-blocked) ---
+            // --- 10. External Function Call ---
             //
-            // EDIT vs. upstream: instead of opening a real TCP
-            // socket and speaking HTTP/1.1, we refuse the
-            // operation and return a structured error. The
-            // editor renders an honest "external call not
-            // available in browser simulation" message and
-            // execution halts.
-            Inst::ExtCall(ref _arg_types, ref _ret_type) => {
+            // EDIT vs. upstream: instead of speaking HTTP/1.1
+            // directly, the VM dispatches to an optional
+            // `ExtCallHandler`. The browser-sim path installs no
+            // handler → falls back to `ExtCallBlocked` exactly
+            // like before. The controller installs a handler that
+            // dispatches to its connector registry (Phase C C.4).
+            //
+            // The stack on entry (top first) is:
+            //   url, function_name, arg_{n-1}, ..., arg_0
+            //
+            // For args we decode each raw u64 according to the
+            // compile-time `arg_types` slot. Compound types are
+            // not yet supported at this boundary — they surface
+            // as `ExtCallFailed { … unsupported … }`.
+            Inst::ExtCall(ref arg_types, ref ret_type) => {
                 let url_idx = self.pop()? as usize;
                 let name_idx = self.pop()? as usize;
                 let url = match self.heap.get(url_idx) {
@@ -624,7 +643,81 @@ impl VM {
                     Some(HeapObject::String(s)) => s.clone(),
                     _ => "<unknown>".to_string(),
                 };
-                return Err(RunError::ExtCallBlocked { function_name, url });
+
+                let Some(handler) = self.ext_call_handler.clone() else {
+                    // C.1 / browser-sim path — pop args off the
+                    // stack so we leave a clean state, then return
+                    // the blocked error.
+                    for _ in 0..arg_types.len() {
+                        let _ = self.pop()?;
+                    }
+                    return Err(RunError::ExtCallBlocked { function_name, url });
+                };
+
+                // Decode args in REVERSE pop order so the handler
+                // receives them in compile-time order.
+                let mut popped: Vec<u64> = Vec::with_capacity(arg_types.len());
+                for _ in 0..arg_types.len() {
+                    popped.push(self.pop()?);
+                }
+                popped.reverse();
+                let mut args: Vec<ExtCallValue> = Vec::with_capacity(arg_types.len());
+                for (raw, ty) in popped.iter().zip(arg_types.iter()) {
+                    match decode_extcall_arg(*raw, ty, &self.heap) {
+                        Ok(v) => args.push(v),
+                        Err(e) => {
+                            return Err(RunError::from(map_extcall_err(
+                                e,
+                                &function_name,
+                            )));
+                        }
+                    }
+                }
+                let ret_ty = match try_ext_call_type(ret_type) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return Err(RunError::from(map_extcall_err(e, &function_name)));
+                    }
+                };
+
+                let outcome = handler.handle(ExtCallContext {
+                    function_name: &function_name,
+                    url: &url,
+                    args: &args,
+                    ret_type: ret_ty,
+                });
+                let value = match outcome {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(RunError::from(map_extcall_err(e, &function_name)));
+                    }
+                };
+
+                // Encode return value back onto the VM stack /
+                // heap as appropriate for its type.
+                match (value, ret_ty) {
+                    (ExtCallValue::Void, ExtCallType::Void) => {
+                        // No push.
+                    }
+                    (ExtCallValue::Int(n), ExtCallType::Int) => self.push(n as u64),
+                    (ExtCallValue::Float(f), ExtCallType::Float) => self.push(f.to_bits()),
+                    (ExtCallValue::Bool(b), ExtCallType::Bool) => {
+                        self.push(if b { 1 } else { 0 });
+                    }
+                    (ExtCallValue::String(s), ExtCallType::String) => {
+                        let idx = self.heap_push_string(s);
+                        self.push(idx);
+                    }
+                    (got, expected) => {
+                        return Err(RunError::from(map_extcall_err(
+                            ExtCallError::TypeMismatch {
+                                expected,
+                                got: got.ty(),
+                            },
+                            &function_name,
+                        )));
+                    }
+                }
             }
         }
 
@@ -637,6 +730,66 @@ fn heap_kind(h: &HeapObject) -> &'static str {
         HeapObject::String(_) => "String",
         HeapObject::Struct(_) => "Struct",
         HeapObject::Array(_) => "Array",
+    }
+}
+
+/// Decode a raw u64 stack value back into a typed `ExtCallValue`
+/// for handler dispatch (C.4 c76).
+fn decode_extcall_arg(
+    raw: u64,
+    ty: &Type,
+    heap: &[HeapObject],
+) -> Result<ExtCallValue, ExtCallError> {
+    match try_ext_call_type(ty)? {
+        ExtCallType::Int => Ok(ExtCallValue::Int(raw as i64)),
+        ExtCallType::Float => Ok(ExtCallValue::Float(f64::from_bits(raw))),
+        ExtCallType::Bool => Ok(ExtCallValue::Bool(raw != 0)),
+        ExtCallType::String => {
+            let s = match heap.get(raw as usize) {
+                Some(HeapObject::String(s)) => s.clone(),
+                Some(other) => {
+                    return Err(ExtCallError::Unsupported {
+                        reason: format!(
+                            "expected String on heap for ExtCall arg, got {}",
+                            heap_kind(other)
+                        ),
+                    });
+                }
+                None => {
+                    return Err(ExtCallError::Unsupported {
+                        reason: format!("invalid heap index {raw} for ExtCall string arg"),
+                    });
+                }
+            };
+            Ok(ExtCallValue::String(s))
+        }
+        ExtCallType::Void => Err(ExtCallError::Unsupported {
+            reason: "void cannot appear in ExtCall arg position".into(),
+        }),
+    }
+}
+
+/// Patch the connector / function_name fields of an
+/// `ExtCallError::Unsupported` or `TypeMismatch` so the eventual
+/// `RunError::ExtCallFailed` carries the actual SOL function name
+/// rather than `(unknown)`.
+fn map_extcall_err(e: ExtCallError, fn_name: &str) -> ExtCallError {
+    match e {
+        ExtCallError::Unsupported { reason } => ExtCallError::Failed {
+            connector: "(runtime)".into(),
+            fn_name: fn_name.to_string(),
+            message: reason,
+        },
+        ExtCallError::TypeMismatch { expected, got } => ExtCallError::Failed {
+            connector: "(runtime)".into(),
+            fn_name: fn_name.to_string(),
+            message: format!(
+                "ExtCall return type mismatch: expected {}, got {}",
+                expected.name(),
+                got.name()
+            ),
+        },
+        other => other,
     }
 }
 
