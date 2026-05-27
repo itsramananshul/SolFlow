@@ -1,0 +1,58 @@
+[
+  {
+    "DeclVar": {
+      "name": "counter",
+      "kind": "Integer",
+      "value": {
+        "ExprInteger": 0
+      },
+      "span": {
+        "start": 0,
+        "end": 21
+      }
+    }
+  },
+  {
+    "DeclVar": {
+      "name": "name",
+      "kind": "String",
+      "value": {
+        "ExprString": "alice"
+      },
+      "span": {
+        "start": 22,
+        "end": 46
+      }
+    }
+  },
+  {
+    "DeclFunc": {
+      "name": "start",
+      "params": [],
+      "ret": "Integer",
+      "body": {
+        "Block": {
+          "block": [
+            {
+              "ExprReturn": {
+                "val": {
+                  "ExprInteger": 0
+                }
+              }
+            }
+          ],
+          "scope": 18446744073709551615,
+          "span": {
+            "start": 72,
+            "end": 89
+          }
+        }
+      },
+      "scope": 18446744073709551615,
+      "span": {
+        "start": 48,
+        "end": 89
+      }
+    }
+  }
+]

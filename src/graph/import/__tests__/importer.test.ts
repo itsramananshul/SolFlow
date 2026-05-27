@@ -165,6 +165,65 @@ describe('importProgram — structs + enums', () => {
   });
 });
 
+describe('importProgram — B.D c37 field/index set + top-level let', () => {
+  it('imports varName.field = expr as a fieldSet node with inferred struct name', () => {
+    const program = loadFixture('field_index_assign');
+    const { workflow, report } = importProgram(
+      program,
+      { name: 't' },
+      // Provide source so AST spans are usable (regen-friendly).
+      undefined,
+    );
+    const start = workflow.functions.find((f) => f.name === 'start')!;
+    const fieldSets = start.nodes.filter((n) => n.data.kind === 'fieldSet');
+    expect(fieldSets.length).toBe(2);
+    for (const n of fieldSets) {
+      if (n.data.kind === 'fieldSet') {
+        // Struct name inferred from `let p: Point = ...`.
+        expect(n.data.structName).toBe('Point');
+        expect(['x', 'y']).toContain(n.data.fieldName);
+      }
+    }
+    // No "complex assignment LHS" placeholder notices should fire
+    // for the field sets.
+    const placeholderNotices = report.notices.filter(
+      (n) => n.message.includes('complex assignment LHS'),
+    );
+    expect(placeholderNotices).toHaveLength(0);
+  });
+
+  it('imports array[idx] = expr as an indexSet node', () => {
+    const program = loadFixture('field_index_assign');
+    const { workflow } = importProgram(program, { name: 't' });
+    const start = workflow.functions.find((f) => f.name === 'start')!;
+    const indexSets = start.nodes.filter((n) => n.data.kind === 'indexSet');
+    expect(indexSets.length).toBe(1);
+    const node = indexSets[0]!;
+    expect(node.expressions?.array).toBeDefined();
+    expect(node.expressions?.index).toBeDefined();
+    expect(node.expressions?.value).toBeDefined();
+  });
+
+  it('hoists top-level let declarations into a synthetic __init function', () => {
+    const program = loadFixture('top_level_let');
+    const { workflow, report } = importProgram(program, { name: 't' });
+    const init = workflow.functions.find((f) => f.name === '__init');
+    expect(init).toBeDefined();
+    const lets = init!.nodes.filter((n) => n.data.kind === 'let');
+    expect(lets.length).toBe(2);
+    const names = lets.map((n) =>
+      n.data.kind === 'let' ? n.data.varName : '',
+    );
+    expect(names).toContain('counter');
+    expect(names).toContain('name');
+    // Notice surfaces the semantic change honestly.
+    const hoistNotice = report.notices.find((n) =>
+      n.message.includes('Hoisted'),
+    );
+    expect(hoistNotice).toBeDefined();
+  });
+});
+
 describe('importProgram — empty / degenerate', () => {
   it('empty program yields empty workflow + no notices', () => {
     const { workflow, report } = importProgram([]);
@@ -174,34 +233,21 @@ describe('importProgram — empty / degenerate', () => {
   });
 });
 
-describe('importProgram — source attachment (B.6 c25)', () => {
+describe('importProgram — source attachment (B.6 c25 + B.D c37)', () => {
   it('attaches sourceLine to functions when source is provided', () => {
-    const source = `// header comment
-
-function alpha() -> int {
-    return 0;
-}
-
-function beta() -> int {
-    return alpha();
-}
-`;
-    const program = loadFixture('linear_flow');
-    // Use a hand-crafted source whose function names match the
-    // fixture so we can verify the lookup works without needing
-    // an exact-match fixture. The importer's textual scan only
-    // reads function names from the source string.
-    const { workflow, report } = importProgram(
-      program,
-      { name: 't' },
-      source.replace('function alpha', 'function start'),
+    // Use the actual source the fixture was generated from — AST
+    // spans are byte-offsets into THIS source, not arbitrary text.
+    const source = readFileSync(
+      join(FIXTURES_DIR, 'linear_flow.sol'),
+      'utf-8',
     );
-    // linear_flow has one function named "start".
+    const program = loadFixture('linear_flow');
+    const { workflow, report } = importProgram(program, { name: 't' }, source);
     const start = workflow.functions.find((f) => f.name === 'start');
-    expect(start?.meta?.sourceLine).toBe(3);
-    // Mirror onto the report summary.
+    // linear_flow.sol has `function start` on line 1.
+    expect(start?.meta?.sourceLine).toBe(1);
     const summary = report.functions.find((f) => f.name === 'start');
-    expect(summary?.sourceLine).toBe(3);
+    expect(summary?.sourceLine).toBe(1);
   });
 
   it('omits sourceLine when source is not provided', () => {
@@ -213,17 +259,27 @@ function beta() -> int {
     expect(summary?.sourceLine).toBeUndefined();
   });
 
-  it('falls back gracefully on missing match (function not in source)', () => {
-    const program = loadFixture('linear_flow');
-    // Pass source that does NOT contain `function start` — the
-    // importer should still produce the workflow, just without
-    // a sourceLine.
-    const { workflow } = importProgram(
-      program,
-      { name: 't' },
-      '// no function declarations here\n',
-    );
-    expect(workflow.functions[0]?.meta?.sourceLine).toBeUndefined();
+  it('uses textual fallback when AST spans are absent (pre-span fixture)', () => {
+    // Hand-craft a Program WITHOUT span fields on the DeclFunc to
+    // simulate an old pre-c35 fixture. The importer should fall
+    // back to scanFunctionLines (textual scan).
+    const program: Program = [
+      {
+        DeclFunc: {
+          name: 'start',
+          params: [],
+          ret: 'Integer',
+          body: { Block: { block: [], scope: 0 } },
+          scope: 0,
+          // span deliberately omitted
+        },
+      },
+    ];
+    const source = `\n\nfunction start() -> int {\n    return 0;\n}\n`;
+    const { workflow } = importProgram(program, { name: 't' }, source);
+    // Without an AST span, fall back to scanning. `function start`
+    // is on line 3 of the hand-crafted source.
+    expect(workflow.functions[0]?.meta?.sourceLine).toBe(3);
   });
 });
 

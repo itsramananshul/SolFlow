@@ -122,6 +122,10 @@ export function importProgram(
     functions: [],
   };
 
+  /** Collected top-level let declarations — auto-wrapped into a
+   *  synthetic `__init()` function after pass 2 (B.D c37). */
+  const pendingTopLevelLets: Ast[] = [];
+
   // ---- Pass 1: top-level declarations that have direct graph reps ----
   for (const node of program) {
     if (typeof node === 'string') {
@@ -163,12 +167,17 @@ export function importProgram(
     }
     if ('DeclFunc' in node) continue; // handled in pass 2
     if ('DeclVar' in node) {
-      report.notices.push({
-        severity: 'warning',
-        message: `Top-level \`let ${node.DeclVar.name}\` is not modeled in the graph (SolFlow wraps all let-bindings inside functions). Move it into a function or it will be lost on round-trip.`,
-        support: 'source-only',
-      });
-      report.counts.sourceOnly++;
+      // B.D c37: top-level lets are collected here, then auto-
+      // wrapped into a synthetic `__init()` function after pass 2.
+      // SolFlow's graph schema doesn't model module-scoped lets,
+      // and the emit pipeline can't produce them either — so the
+      // round-trip choice is: lose them, or hoist them. We hoist.
+      // The semantic change is documented: hoisted lets are
+      // function-scoped to `__init()` and not visible to other
+      // functions. (The original was already broken — anything
+      // referencing the module-scoped let from another function
+      // would have failed analyzer's `SEMA_UNDEFINED_NAME`.)
+      pendingTopLevelLets.push(node);
       continue;
     }
     report.notices.push({
@@ -189,16 +198,64 @@ export function importProgram(
     if (typeof node === 'string' || !('DeclFunc' in node)) continue;
     const stub = ctxStubs.functions.find((f) => f.name === node.DeclFunc.name)!;
     const fn = importFunction(node.DeclFunc, stub, ctxStubs, report);
-    const sourceLine = sourceLines.get(fn.name);
+
+    // B.D c37: prefer the AST's own span (B.D c35) over the
+    // textual function-line scan when present. AST spans come
+    // from the parser and are byte-exact; the textual scan is
+    // a regex heuristic. Fall back to scan for old fixtures or
+    // pre-span builds.
+    let sourceLine: number | undefined;
+    if (node.DeclFunc.span && source) {
+      sourceLine = lineNumberAt(source, node.DeclFunc.span.start);
+    }
+    if (sourceLine === undefined) {
+      sourceLine = sourceLines.get(fn.name);
+    }
     if (sourceLine !== undefined) {
       fn.meta = { ...(fn.meta ?? {}), sourceLine };
-      // Mirror onto the per-function report row so the import
-      // modal can render it as a clickable navigation target
-      // without consulting the graph store.
       const summary = report.functions.find((f) => f.name === fn.name);
       if (summary) summary.sourceLine = sourceLine;
     }
     workflow.functions.push(fn);
+  }
+
+  // ---- B.D c37: wrap collected top-level lets into __init() ----
+  if (pendingTopLevelLets.length > 0) {
+    const initDecl: DeclFunc = {
+      name: '__init',
+      params: [],
+      ret: 'Void',
+      // Synthetic body containing the collected let declarations
+      // wrapped in a Block. No span — we created it after parse.
+      body: {
+        Block: {
+          block: pendingTopLevelLets,
+          scope: Number.MAX_SAFE_INTEGER,
+        },
+      },
+      scope: Number.MAX_SAFE_INTEGER,
+    };
+    // Pre-allocate the function stub like pass 2 does, then run
+    // importFunction so the body's let nodes get materialized
+    // through the normal path.
+    const initStub: FunctionGraph = {
+      id: nanoid(8),
+      name: '__init',
+      params: [],
+      returnType: { kind: 'void' },
+      nodes: [],
+      edges: [],
+    };
+    ctxStubs.functions.push(initStub);
+    const initFn = importFunction(initDecl, initStub, ctxStubs, report);
+    workflow.functions.push(initFn);
+    report.notices.push({
+      severity: 'info',
+      message: `Hoisted ${pendingTopLevelLets.length} top-level \`let\` declaration(s) into a synthetic \`__init()\` function. SolFlow's graph schema doesn't model module-scoped lets; this preserves the bindings for round-trip but changes their scope.`,
+      functionName: '__init',
+      support: 'partial',
+    });
+    report.counts.partial += pendingTopLevelLets.length;
   }
 
   // ---- Post-pass: rebuild every node's ports against the full workflow ctx ----
@@ -297,6 +354,64 @@ interface FuncImportState {
   funcName: string;
   /** Mutable report. */
   report: ImportReport;
+  /**
+   * Local-variable type map built up-front by scanning the
+   * function body for `let varName: TypeName` declarations.
+   * Used by fieldSet/indexSet importers (B.D c37) to infer the
+   * struct name from the assignment's LHS variable.
+   *
+   * Limitation: no shadowing support (uses last-wins); no scope
+   * tracking. Sufficient for the editor's typical workflows where
+   * names don't shadow within a function.
+   */
+  varTypes: Map<string, string>;
+}
+
+/**
+ * Scan a function body's AST recursively for `let varName: TypeIdent`
+ * declarations and return a `Map<varName, TypeIdent>` for struct
+ * name inference in the fieldSet/indexSet importers (B.D c37).
+ *
+ * Only collects `{ Ident: string }` types (struct/enum references);
+ * primitives like `Integer` aren't useful for field-set inference.
+ */
+function scanVarTypes(body: Ast): Map<string, string> {
+  const result = new Map<string, string>();
+  function walk(node: Ast) {
+    if (typeof node === 'string') return;
+    if ('DeclVar' in node) {
+      const t = node.DeclVar.kind;
+      if (typeof t !== 'string' && 'Ident' in t) {
+        result.set(node.DeclVar.name, t.Ident);
+      }
+      if (node.DeclVar.value) walk(node.DeclVar.value);
+      return;
+    }
+    if ('Block' in node) {
+      for (const stmt of node.Block.block) walk(stmt);
+      return;
+    }
+    if ('StmtIf' in node) {
+      walk(node.StmtIf.condition);
+      walk(node.StmtIf.body);
+      if (node.StmtIf.alt) walk(node.StmtIf.alt);
+      return;
+    }
+    if ('StmtWhile' in node) {
+      walk(node.StmtWhile.condition);
+      walk(node.StmtWhile.body);
+      return;
+    }
+    if ('StmtFor' in node) {
+      walk(node.StmtFor.array);
+      walk(node.StmtFor.body);
+      return;
+    }
+    // Other AST kinds: don't recurse; let-declarations only
+    // appear at statement positions.
+  }
+  walk(body);
+  return result;
 }
 
 function importFunction(
@@ -305,6 +420,15 @@ function importFunction(
   ctx: WorkflowCtx,
   report: ImportReport,
 ): FunctionGraph {
+  // B.D c37: pre-scan body for let-declarations so fieldSet /
+  // indexSet importers can infer struct names. Parameters with
+  // Ident types also feed the map.
+  const varTypes = scanVarTypes(decl.body);
+  for (const [paramName, paramType] of decl.params) {
+    if (typeof paramType !== 'string' && 'Ident' in paramType) {
+      varTypes.set(paramName, paramType.Ident);
+    }
+  }
   const state: FuncImportState = {
     nodes: [],
     edges: [],
@@ -315,6 +439,7 @@ function importFunction(
     ctx,
     funcName: decl.name,
     report,
+    varTypes,
   };
 
   // Start node — every function starts with one. (`start` is a real
@@ -442,35 +567,90 @@ function importStatement(stmt: Ast, state: FuncImportState): StmtImportResult | 
   }
 
   // ---- Assignment (parser emits ExprBinary { op: 'Eq' }) ----
+  //
+  // B.D c37 expanded coverage to three LHS shapes:
+  //   varName = expr            → assign
+  //   varName.field = expr      → fieldSet  (struct inferred from scope)
+  //   array[idx] = expr         → indexSet
+  // Anything else still falls through to a placeholder.
   if (('ExprBinary' in stmt && stmt.ExprBinary.op === 'Eq') || 'ExprAssign' in stmt) {
-    let varName = '';
-    let value: Ast;
     if ('ExprAssign' in stmt) {
-      varName = stmt.ExprAssign.var_name;
-      value = stmt.ExprAssign.value;
-    } else {
-      // ExprBinary path — the LHS should be an ExprVar.
-      const lhs = stmt.ExprBinary.lhs;
-      value = stmt.ExprBinary.rhs;
-      if (typeof lhs !== 'string' && 'ExprVar' in lhs) {
-        varName = lhs.ExprVar;
-      } else {
-        // LHS is something more complex (field set / index set).
-        // Bail to a placeholder — the graph schema has dedicated
-        // fieldSet / indexSet nodes but mapping them correctly
-        // requires resolving the LHS type, which is a B.8 concern.
-        return makeUnsupportedPlaceholder(
-          state,
-          'complex assignment LHS (field/index set)',
-          'partial',
-          stringifyExpr(stmt),
-        );
-      }
+      // ExprAssign was the old parser form; LHS is always a plain
+      // variable name in this shape. Modern parser uses ExprBinary.
+      const data: NodeData = { kind: 'assign', varName: stmt.ExprAssign.var_name };
+      const realNode = createNode('assign', { x: 0, y: 0 }, state.ctx, data);
+      realNode.expressions = { value: stringifyExpr(stmt.ExprAssign.value) };
+      return pushSimpleStatement(state, realNode, 'assign', 'partial');
     }
-    const data: NodeData = { kind: 'assign', varName };
-    const realNode = createNode('assign', { x: 0, y: 0 }, state.ctx, data);
-    realNode.expressions = { value: stringifyExpr(value) };
-    return pushSimpleStatement(state, realNode, 'assign', 'partial');
+    const lhs = stmt.ExprBinary.lhs;
+    const value = stmt.ExprBinary.rhs;
+
+    // varName = expr
+    if (typeof lhs !== 'string' && 'ExprVar' in lhs) {
+      const data: NodeData = { kind: 'assign', varName: lhs.ExprVar };
+      const realNode = createNode('assign', { x: 0, y: 0 }, state.ctx, data);
+      realNode.expressions = { value: stringifyExpr(value) };
+      return pushSimpleStatement(state, realNode, 'assign', 'partial');
+    }
+
+    // varName.field = expr → fieldSet
+    if (
+      typeof lhs !== 'string'
+      && 'ExprMemAcc' in lhs
+      && typeof lhs.ExprMemAcc.lhs !== 'string'
+      && 'ExprVar' in lhs.ExprMemAcc.lhs
+    ) {
+      const targetVar = lhs.ExprMemAcc.lhs.ExprVar;
+      const fieldName = lhs.ExprMemAcc.member;
+      // Infer struct name from scope (let-declarations + params).
+      // If we can't infer, use '' — the graph validator will flag
+      // it; better than dropping the assignment entirely.
+      const structName = state.varTypes.get(targetVar) ?? '';
+      if (!structName) {
+        state.report.notices.push({
+          severity: 'warning',
+          message: `In function "${state.funcName}": couldn't infer struct type for \`${targetVar}.${fieldName} = ...\` — node imported with empty structName; you may need to set it manually.`,
+          functionName: state.funcName,
+          support: 'partial',
+        });
+      }
+      const data: NodeData = { kind: 'fieldSet', structName, fieldName };
+      const realNode = createNode('fieldSet', { x: 0, y: 0 }, state.ctx, data);
+      // fieldSet has two data inputs: `target` (the struct ref)
+      // + `value`. Inline both as text since we're not lifting
+      // them to sub-graphs.
+      realNode.expressions = {
+        target: targetVar,
+        value: stringifyExpr(value),
+      };
+      return pushSimpleStatement(state, realNode, 'assign', 'partial');
+    }
+
+    // array[idx] = expr → indexSet
+    if (typeof lhs !== 'string' && 'ExprArrAcc' in lhs) {
+      const data: NodeData = {
+        kind: 'indexSet',
+        // No analyzer info, so elementType defaults to any. User
+        // can retype in the Inspector. This matches the existing
+        // forEach iteratorType fallback strategy.
+        elementType: { kind: 'any' },
+      };
+      const realNode = createNode('indexSet', { x: 0, y: 0 }, state.ctx, data);
+      realNode.expressions = {
+        array: stringifyExpr(lhs.ExprArrAcc.lhs),
+        index: stringifyExpr(lhs.ExprArrAcc.index),
+        value: stringifyExpr(value),
+      };
+      return pushSimpleStatement(state, realNode, 'assign', 'partial');
+    }
+
+    // Other LHS shapes — keep the placeholder fallback for safety.
+    return makeUnsupportedPlaceholder(
+      state,
+      'complex assignment LHS (multi-level member access or other)',
+      'partial',
+      stringifyExpr(stmt),
+    );
   }
 
   // ---- print(...) → `print` ----
@@ -856,6 +1036,20 @@ type _ParamCheck = Param;
  *     reports the line correctly but scroll-into-view lands at
  *     the start of that line.
  */
+/**
+ * Convert a 0-indexed byte offset to a 1-indexed line number.
+ * Mirrors `SourceSpan::to_line_col` on the Rust side. ASCII-only
+ * safe (multi-byte UTF-8 chars in strings could shift column but
+ * not line, which is what this helper returns).
+ */
+function lineNumberAt(source: string, byteOffset: number): number {
+  let line = 1;
+  for (let i = 0; i < byteOffset && i < source.length; i++) {
+    if (source.charCodeAt(i) === 10) line++;
+  }
+  return line;
+}
+
 function scanFunctionLines(source: string): Map<string, number> {
   const result = new Map<string, number>();
   // Matches:  optional whitespace, `function`, mandatory ws, then

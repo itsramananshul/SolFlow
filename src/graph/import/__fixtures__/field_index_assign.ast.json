@@ -1,0 +1,161 @@
+[
+  {
+    "DeclStruct": {
+      "name": "Point",
+      "fields": {
+        "x": "Integer",
+        "y": "Integer"
+      },
+      "span": {
+        "start": 0,
+        "end": 31
+      }
+    }
+  },
+  {
+    "DeclFunc": {
+      "name": "start",
+      "params": [],
+      "ret": "Integer",
+      "body": {
+        "Block": {
+          "block": [
+            {
+              "DeclVar": {
+                "name": "p",
+                "kind": {
+                  "Ident": "Point"
+                },
+                "value": {
+                  "ExprStructInit": {
+                    "name": "Point",
+                    "fields": [
+                      [
+                        "x",
+                        {
+                          "ExprInteger": 0
+                        }
+                      ],
+                      [
+                        "y",
+                        {
+                          "ExprInteger": 0
+                        }
+                      ]
+                    ]
+                  }
+                },
+                "span": {
+                  "start": 63,
+                  "end": 99
+                }
+              }
+            },
+            {
+              "ExprBinary": {
+                "lhs": {
+                  "ExprMemAcc": {
+                    "lhs": {
+                      "ExprVar": "p"
+                    },
+                    "member": "x"
+                  }
+                },
+                "rhs": {
+                  "ExprInteger": 42
+                },
+                "op": "Eq"
+              }
+            },
+            {
+              "ExprBinary": {
+                "lhs": {
+                  "ExprMemAcc": {
+                    "lhs": {
+                      "ExprVar": "p"
+                    },
+                    "member": "y"
+                  }
+                },
+                "rhs": {
+                  "ExprInteger": 99
+                },
+                "op": "Eq"
+              }
+            },
+            {
+              "DeclVar": {
+                "name": "arr",
+                "kind": {
+                  "Array": {
+                    "size": 3,
+                    "inner": "Integer"
+                  }
+                },
+                "value": {
+                  "ExprArrayInit": {
+                    "values": [
+                      {
+                        "ExprInteger": 1
+                      },
+                      {
+                        "ExprInteger": 2
+                      },
+                      {
+                        "ExprInteger": 3
+                      }
+                    ]
+                  }
+                },
+                "span": {
+                  "start": 132,
+                  "end": 160
+                }
+              }
+            },
+            {
+              "ExprBinary": {
+                "lhs": {
+                  "ExprArrAcc": {
+                    "lhs": {
+                      "ExprVar": "arr"
+                    },
+                    "index": {
+                      "ExprInteger": 0
+                    }
+                  }
+                },
+                "rhs": {
+                  "ExprInteger": 100
+                },
+                "op": "Eq"
+              }
+            },
+            {
+              "ExprReturn": {
+                "val": {
+                  "ExprMemAcc": {
+                    "lhs": {
+                      "ExprVar": "p"
+                    },
+                    "member": "x"
+                  }
+                }
+              }
+            }
+          ],
+          "scope": 18446744073709551615,
+          "span": {
+            "start": 57,
+            "end": 196
+          }
+        }
+      },
+      "scope": 18446744073709551615,
+      "span": {
+        "start": 33,
+        "end": 196
+      }
+    }
+  }
+]
