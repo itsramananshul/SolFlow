@@ -629,7 +629,17 @@ impl Analyzer {
                 Some(*var_type)
             }
             // Ast::ExprStructInit { name, fields } => {}
-            x => todo!("{x:?}"),
+            x => {
+                // The analyzer has no rule for this AST shape yet.
+                // Report as an ICE so editor-generated AST that hits
+                // an unfinished arm doesn't abort the test runner
+                // (or, in a browser, the WASM worker).
+                self.diagnostics.push(SolDiagnostic::internal(
+                    codes::ICE_UNHANDLED_AST,
+                    format!("analyzer has no rule for AST node: {x:?}"),
+                ));
+                None
+            }
         }
     }
 }

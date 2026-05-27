@@ -42,6 +42,13 @@ impl fmt::Display for DiagnosticSeverity {
 /// Which pipeline stage produced the diagnostic. Lets the IDE
 /// group + filter (e.g. "show me only the parse errors") and lets
 /// the CLI prefix output cleanly.
+///
+/// `Internal` is special — it marks an *internal compiler error*
+/// (ICE). User code did not cause it; the compiler itself is at
+/// fault (e.g. an analyzer arm reached an AST shape it doesn't
+/// yet handle). The CLI and editor render ICEs differently from
+/// user errors so the bug-report-vs-fix-your-code distinction is
+/// visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticPhase {
     Lexer,
@@ -49,6 +56,7 @@ pub enum DiagnosticPhase {
     Analyzer,
     Codegen,
     Runtime,
+    Internal,
 }
 
 impl fmt::Display for DiagnosticPhase {
@@ -59,6 +67,7 @@ impl fmt::Display for DiagnosticPhase {
             DiagnosticPhase::Analyzer => write!(f, "analyzer"),
             DiagnosticPhase::Codegen => write!(f, "codegen"),
             DiagnosticPhase::Runtime => write!(f, "runtime"),
+            DiagnosticPhase::Internal => write!(f, "internal compiler error"),
         }
     }
 }
@@ -152,6 +161,24 @@ impl SolDiagnostic {
             span: None,
             related: Vec::new(),
             help: None,
+        }
+    }
+
+    /// Shorthand for an internal compiler error. Always tagged with
+    /// the `Internal` phase and `Error` severity, with a built-in
+    /// help string instructing the user to file a bug. Use this when
+    /// the compiler reaches a state it can't reason about (e.g. an
+    /// AST shape an analyzer arm doesn't handle), not for *user*
+    /// errors — those go through `error()`.
+    pub fn internal(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            severity: DiagnosticSeverity::Error,
+            phase: DiagnosticPhase::Internal,
+            code,
+            message: message.into(),
+            span: None,
+            related: Vec::new(),
+            help: Some("this is a bug in solflow_compiler; please report it".to_string()),
         }
     }
 
@@ -289,4 +316,11 @@ pub mod codes {
     //            errors are still compile-time) ----------
     pub const CODEGEN_BAD_LHS:                   &str = "E0050";
     pub const CODEGEN_MISSING_EXT_ENDPOINT:      &str = "E0051";
+
+    // ---------- Internal compiler errors (ICE) ----------
+    //
+    // ICE_xxxx codes signal a bug in solflow_compiler itself —
+    // user code did not directly cause them. See `SolDiagnostic::internal`.
+    pub const ICE_UNHANDLED_AST:                 &str = "ICE0001";
+    pub const ICE_MISSING_TYPE_INFO:             &str = "ICE0002";
 }
