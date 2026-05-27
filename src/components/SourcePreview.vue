@@ -6,8 +6,11 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { HighlightStyle, syntaxHighlighting, StreamLanguage } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 import { useGraphStore } from '@/stores/graph.store';
+import { useToastStore } from '@/stores/toast.store';
 import { analyzeSource } from '@/compiler/api';
 import type { SolDiagnostic } from '@/compiler/types';
+import type { ImportReport } from '@/graph/import';
+import ImportReportModal from './ImportReportModal.vue';
 
 const graph = useGraphStore();
 
@@ -145,6 +148,58 @@ const compilerErrorCount = computed(
 const compilerWarningCount = computed(
   () => compilerDiagnostics.value.filter((d) => d.severity === 'Warning').length,
 );
+
+// ---------- B.7: AST → graph import ----------
+//
+// "Import to graph" turns the edited SOL into a fresh workflow,
+// replacing the current one. We block the action when the compiler
+// reports errors — importing a broken AST is guaranteed to produce
+// a degraded graph, and the user is better served fixing source first.
+//
+// Result of a successful import opens the ImportReportModal so the
+// user can see what landed as full / partial / source-only /
+// unsupported. We don't toast on success — the modal is the
+// canonical UX surface for the report.
+const importReport = ref<ImportReport | null>(null);
+const importApplied = ref(false);
+const importInFlight = ref(false);
+
+async function runImport() {
+  if (!view) return;
+  if (importInFlight.value) return;
+  if (compilerErrorCount.value > 0) {
+    // Importing a broken AST yields garbage. Surface the gate
+    // honestly rather than silently doing something useless.
+    useToastStore().warning(
+      'Fix compiler errors first',
+      'Import to graph parses + walks the AST; a parse error means there is no AST to walk.',
+    );
+    return;
+  }
+  const source = view.state.doc.toString();
+  importInFlight.value = true;
+  try {
+    const result = await graph.importFromSource(source);
+    importReport.value = result.report;
+    importApplied.value = result.ok;
+    if (result.ok) {
+      // Leave edit mode — the source pane will re-mirror the new
+      // graph's emitted source automatically.
+      exitEdit();
+    }
+  } catch (e) {
+    useToastStore().error(
+      'Import failed',
+      e instanceof Error ? e.message : 'Unknown error',
+    );
+  } finally {
+    importInFlight.value = false;
+  }
+}
+
+function closeImportReport() {
+  importReport.value = null;
+}
 
 // Minimal SOL StreamLanguage — keyword + literal + comment highlighting.
 const solLang = StreamLanguage.define({
@@ -319,6 +374,19 @@ function downloadEdited() {
         >Reset to graph</button>
         <button
           v-if="isEditing"
+          class="copy-btn import-btn"
+          :disabled="importInFlight || compilerErrorCount > 0"
+          :title="
+            compilerErrorCount > 0
+              ? 'Fix compiler errors before importing'
+              : 'Parse this source and replace the current workflow with the imported graph'
+          "
+          @click="runImport"
+        >
+          {{ importInFlight ? 'Importing…' : 'Import to graph' }}
+        </button>
+        <button
+          v-if="isEditing"
           class="copy-btn"
           @click="downloadEdited"
         >Download .sol</button>
@@ -351,9 +419,10 @@ function downloadEdited() {
       </svg>
       <span class="banner-text">
         <strong>Editing in detached mode.</strong>
-        Compiler diagnostics below are live, but edits don't yet sync
-        back to the visual graph — AST → graph import lands next.
-        Copy or download your edited SOL, or reset to graph output.
+        Compiler diagnostics below are live. Click <em>Import to graph</em>
+        to parse this source and replace the visual graph with what
+        you typed — partial/unsupported constructs are preserved
+        explicitly. Or copy/download/reset without importing.
       </span>
     </div>
     <!--
@@ -395,6 +464,12 @@ function downloadEdited() {
       </ul>
     </div>
     <div ref="editorContainer" class="editor" />
+    <ImportReportModal
+      v-if="importReport"
+      :report="importReport"
+      :applied="importApplied"
+      @close="closeImportReport"
+    />
   </div>
 </template>
 
@@ -464,6 +539,19 @@ function downloadEdited() {
   background: rgba(232, 166, 87, 0.12);
   border-color: rgba(232, 166, 87, 0.32);
   color: var(--sf-cat-trigger);
+}
+.copy-btn.import-btn {
+  background: rgba(98, 154, 220, 0.10);
+  border-color: rgba(98, 154, 220, 0.32);
+  color: var(--sf-text-0);
+}
+.copy-btn.import-btn:hover:not(:disabled) {
+  background: rgba(98, 154, 220, 0.18);
+  border-color: rgba(98, 154, 220, 0.5);
+}
+.copy-btn.import-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .hint.editing {
   color: var(--sf-cat-trigger);
