@@ -1,0 +1,129 @@
+[
+  {
+    "DeclFunc": {
+      "name": "add",
+      "params": [
+        [
+          "a",
+          "Integer"
+        ],
+        [
+          "b",
+          "Integer"
+        ]
+      ],
+      "ret": "Integer",
+      "body": {
+        "Block": {
+          "block": [
+            {
+              "ExprReturn": {
+                "val": {
+                  "ExprBinary": {
+                    "lhs": {
+                      "ExprVar": "a"
+                    },
+                    "rhs": {
+                      "ExprVar": "b"
+                    },
+                    "op": "Plus"
+                  }
+                }
+              }
+            }
+          ],
+          "scope": 18446744073709551615
+        }
+      },
+      "scope": 18446744073709551615
+    }
+  },
+  {
+    "DeclFunc": {
+      "name": "notify",
+      "params": [
+        [
+          "msg",
+          "String"
+        ]
+      ],
+      "ret": "Integer",
+      "body": {
+        "Block": {
+          "block": [
+            {
+              "ExprFuncCall": {
+                "name": "print",
+                "args": [
+                  {
+                    "ExprVar": "msg"
+                  }
+                ]
+              }
+            },
+            {
+              "ExprReturn": {
+                "val": {
+                  "ExprInteger": 0
+                }
+              }
+            }
+          ],
+          "scope": 18446744073709551615
+        }
+      },
+      "scope": 18446744073709551615
+    }
+  },
+  {
+    "DeclFunc": {
+      "name": "start",
+      "params": [],
+      "ret": "Integer",
+      "body": {
+        "Block": {
+          "block": [
+            {
+              "ExprFuncCall": {
+                "name": "notify",
+                "args": [
+                  {
+                    "ExprString": "starting"
+                  }
+                ]
+              }
+            },
+            {
+              "ExprFuncCall": {
+                "name": "notify",
+                "args": [
+                  {
+                    "ExprString": "running"
+                  }
+                ]
+              }
+            },
+            {
+              "DeclVar": {
+                "name": "result",
+                "kind": "Integer",
+                "value": {
+                  "ExprInteger": 42
+                }
+              }
+            },
+            {
+              "ExprReturn": {
+                "val": {
+                  "ExprVar": "result"
+                }
+              }
+            }
+          ],
+          "scope": 18446744073709551615
+        }
+      },
+      "scope": 18446744073709551615
+    }
+  }
+]

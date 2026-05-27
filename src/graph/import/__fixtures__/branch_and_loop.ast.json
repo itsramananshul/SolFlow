@@ -1,0 +1,160 @@
+[
+  {
+    "DeclFunc": {
+      "name": "start",
+      "params": [],
+      "ret": "Integer",
+      "body": {
+        "Block": {
+          "block": [
+            {
+              "DeclVar": {
+                "name": "x",
+                "kind": "Integer",
+                "value": {
+                  "ExprInteger": 0
+                }
+              }
+            },
+            {
+              "StmtIf": {
+                "condition": {
+                  "ExprBinary": {
+                    "lhs": {
+                      "ExprVar": "x"
+                    },
+                    "rhs": {
+                      "ExprInteger": 0
+                    },
+                    "op": "EqEq"
+                  }
+                },
+                "body": {
+                  "Block": {
+                    "block": [
+                      {
+                        "ExprFuncCall": {
+                          "name": "print",
+                          "args": [
+                            {
+                              "ExprString": "zero"
+                            }
+                          ]
+                        }
+                      }
+                    ],
+                    "scope": 18446744073709551615
+                  }
+                },
+                "alt": {
+                  "Block": {
+                    "block": [
+                      {
+                        "ExprFuncCall": {
+                          "name": "print",
+                          "args": [
+                            {
+                              "ExprString": "nonzero"
+                            }
+                          ]
+                        }
+                      }
+                    ],
+                    "scope": 18446744073709551615
+                  }
+                }
+              }
+            },
+            {
+              "StmtWhile": {
+                "condition": {
+                  "ExprBinary": {
+                    "lhs": {
+                      "ExprVar": "x"
+                    },
+                    "rhs": {
+                      "ExprInteger": 5
+                    },
+                    "op": "LessThan"
+                  }
+                },
+                "body": {
+                  "Block": {
+                    "block": [
+                      {
+                        "ExprBinary": {
+                          "lhs": {
+                            "ExprVar": "x"
+                          },
+                          "rhs": {
+                            "ExprBinary": {
+                              "lhs": {
+                                "ExprVar": "x"
+                              },
+                              "rhs": {
+                                "ExprInteger": 1
+                              },
+                              "op": "Plus"
+                            }
+                          },
+                          "op": "Eq"
+                        }
+                      }
+                    ],
+                    "scope": 18446744073709551615
+                  }
+                }
+              }
+            },
+            {
+              "StmtFor": {
+                "elem_name": "item",
+                "array": {
+                  "ExprArrayInit": {
+                    "values": [
+                      {
+                        "ExprInteger": 1
+                      },
+                      {
+                        "ExprInteger": 2
+                      },
+                      {
+                        "ExprInteger": 3
+                      }
+                    ]
+                  }
+                },
+                "body": {
+                  "Block": {
+                    "block": [
+                      {
+                        "ExprFuncCall": {
+                          "name": "print",
+                          "args": [
+                            {
+                              "ExprVar": "item"
+                            }
+                          ]
+                        }
+                      }
+                    ],
+                    "scope": 18446744073709551615
+                  }
+                }
+              }
+            },
+            {
+              "ExprReturn": {
+                "val": {
+                  "ExprVar": "x"
+                }
+              }
+            }
+          ],
+          "scope": 18446744073709551615
+        }
+      },
+      "scope": 18446744073709551615
+    }
+  }
+]

@@ -13,6 +13,8 @@
     "build:nocheck": "vite build",
     "build:wasm": "cd compiler-wasm && wasm-pack build --release --target bundler --out-dir pkg",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint . --ext .ts,.vue"
   },
@@ -34,11 +36,13 @@
   "devDependencies": {
     "@vercel/node": "^3.2.0",
     "@vitejs/plugin-vue": "^5.1.4",
+    "@vitest/ui": "^4.1.7",
     "@vue/tsconfig": "^0.5.1",
     "typescript": "^5.5.4",
     "vite": "^5.4.6",
     "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.6.0",
+    "vitest": "^4.1.7",
     "vue-tsc": "^2.1.6"
   }
 }

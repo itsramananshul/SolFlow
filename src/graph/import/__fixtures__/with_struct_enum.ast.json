@@ -1,0 +1,51 @@
+[
+  {
+    "DeclStruct": {
+      "name": "Point",
+      "fields": {
+        "y": "Integer",
+        "x": "Integer"
+      }
+    }
+  },
+  {
+    "DeclEnum": {
+      "name": "Status",
+      "variants": {
+        "Inactive": 1,
+        "Active": 0
+      }
+    }
+  },
+  {
+    "DeclFunc": {
+      "name": "start",
+      "params": [],
+      "ret": "Integer",
+      "body": {
+        "Block": {
+          "block": [
+            {
+              "DeclVar": {
+                "name": "p",
+                "kind": "Integer",
+                "value": {
+                  "ExprInteger": 0
+                }
+              }
+            },
+            {
+              "ExprReturn": {
+                "val": {
+                  "ExprVar": "p"
+                }
+              }
+            }
+          ],
+          "scope": 18446744073709551615
+        }
+      },
+      "scope": 18446744073709551615
+    }
+  }
+]

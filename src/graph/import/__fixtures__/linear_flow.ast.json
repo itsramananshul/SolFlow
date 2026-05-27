@@ -1,0 +1,62 @@
+[
+  {
+    "DeclFunc": {
+      "name": "start",
+      "params": [],
+      "ret": "Integer",
+      "body": {
+        "Block": {
+          "block": [
+            {
+              "DeclVar": {
+                "name": "x",
+                "kind": "Integer",
+                "value": {
+                  "ExprInteger": 5
+                }
+              }
+            },
+            {
+              "DeclVar": {
+                "name": "y",
+                "kind": "Integer",
+                "value": {
+                  "ExprInteger": 10
+                }
+              }
+            },
+            {
+              "ExprFuncCall": {
+                "name": "print",
+                "args": [
+                  {
+                    "ExprVar": "x"
+                  }
+                ]
+              }
+            },
+            {
+              "ExprFuncCall": {
+                "name": "print",
+                "args": [
+                  {
+                    "ExprVar": "y"
+                  }
+                ]
+              }
+            },
+            {
+              "ExprReturn": {
+                "val": {
+                  "ExprVar": "x"
+                }
+              }
+            }
+          ],
+          "scope": 18446744073709551615
+        }
+      },
+      "scope": 18446744073709551615
+    }
+  }
+]
