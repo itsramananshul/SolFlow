@@ -10,7 +10,12 @@ struct Scope {
     variables: Vec<(String, Type)>, 
 }
 
+// Phase C c59: serde feature derives Inst (de)serialization so
+// compiled workflows can be submitted across the IDE↔controller
+// wire protocol. Browser bundle absorbs the derive code (~few KB)
+// but it never executes there since browser-sim doesn't network.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Inst {
     PushConst(Ast), 
     StoreLocal(isize), 
