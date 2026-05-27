@@ -20,7 +20,7 @@ that, split it.
 
 ## Milestones
 
-### C.1 — Architecture + scaffolding 🟡 in progress (c54–c58)
+### C.1 — Architecture + scaffolding ✅ complete (c54–c58)
 
 **Goal.** Lock the architecture. Land scaffolding so subsequent
 milestones build against a stable contract.
@@ -29,13 +29,13 @@ milestones build against a stable contract.
 - `PHASE_C_ARCHITECTURE.md` (c54) ✅
 - `PHASE_C_ROADMAP.md` (this doc; c55) ✅
 - `host-spec/` Rust crate — wire types + serde, no transport
-  (c56)
+  (c56) ✅
 - `controller/` Rust crate — Controller / Connector / Scheduler /
-  Persistence traits + stub impls (c57)
+  Persistence traits + stub impls (c57) ✅
 - TS mirror of `host-spec` types in `src/runtime-host/types.ts`
-  (c56)
+  (c56) ✅
 - Editor `ControllerSettingsModal.vue` stub — display-only,
-  no networking (c58)
+  no networking (c58) ✅
 
 **Success criteria.**
 - `cargo test --workspace` green including the two new crates
@@ -226,10 +226,13 @@ These belong to Phase D or later:
 
 ## Status (2026-05-27)
 
-- **C.1 — Architecture + scaffolding** — 🟡 in progress
-  - c54 architecture doc ✅
-  - c55 this roadmap ✅
-  - c56–c58 scaffolding (next)
+- **C.1 — Architecture + scaffolding** — ✅ complete (c54–c58)
+  - c54 architecture doc
+  - c55 this roadmap + Phase B plan flip
+  - c56 host-spec crate + TS mirror
+  - c57 controller crate (traits + StubController)
+  - c58 editor ControllerSettingsModal stub
+- **C.2 — Controller MVP (local)** — next milestone
 - All later milestones not started
 
 ## How to contribute to Phase C

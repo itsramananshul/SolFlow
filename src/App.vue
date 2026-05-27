@@ -12,6 +12,7 @@ import DiagnosticsDrawer from '@/components/DiagnosticsDrawer.vue';
 import RunModal from '@/components/RunModal.vue';
 import StatusBar from '@/components/StatusBar.vue';
 import HelpModal from '@/components/HelpModal.vue';
+import ControllerSettingsModal from '@/components/ControllerSettingsModal.vue';
 import Splitter from '@/components/Splitter.vue';
 import SolManModal from '@/components/SolManModal.vue';
 import WelcomeScreen from '@/components/WelcomeScreen.vue';
@@ -27,6 +28,7 @@ const blocks = useBlocksStore();
 const solManConfig = useSolManConfigStore();
 const runOpen = ref(false);
 const helpOpen = ref(false);
+const controllerSettingsOpen = ref(false);
 const solManOpen = ref(false);
 const welcomeOpen = ref(false);
 
@@ -307,6 +309,7 @@ function downloadSol() {
       :run-open="runOpen"
       @open-run="runOpen = true"
       @open-help="helpOpen = true"
+      @open-controller-settings="controllerSettingsOpen = true"
       @open-sol-man="solManOpen = true"
       @open-welcome="welcomeOpen = true"
       @toggle-presentation="togglePresentation"
@@ -394,6 +397,10 @@ function downloadSol() {
     </Transition>
     <RunModal :open="runOpen" @close="runOpen = false" />
     <HelpModal :open="helpOpen" @close="helpOpen = false" />
+    <ControllerSettingsModal
+      :open="controllerSettingsOpen"
+      @close="controllerSettingsOpen = false"
+    />
     <SolManModal :open="solManOpen" @close="solManOpen = false" />
     <WelcomeScreen
       :open="welcomeOpen"

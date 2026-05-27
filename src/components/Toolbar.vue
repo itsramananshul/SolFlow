@@ -10,6 +10,7 @@ defineProps<{ runOpen: boolean }>();
 const emit = defineEmits<{
   (e: 'open-run'): void;
   (e: 'open-help'): void;
+  (e: 'open-controller-settings'): void;
   (e: 'open-sol-man'): void;
   (e: 'open-welcome'): void;
   (e: 'toggle-presentation'): void;
@@ -92,6 +93,9 @@ function openRun() {
 }
 function openHelp() {
   emit('open-help');
+}
+function openControllerSettings() {
+  emit('open-controller-settings');
 }
 function openSolMan() {
   emit('open-sol-man');
@@ -337,6 +341,19 @@ function toggleSampleMenu() {
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
           <rect x="2" y="3" width="12" height="9" rx="1" stroke="currentColor" stroke-width="1.4" />
           <path d="M5 14 H11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+      </button>
+      <button
+        class="ghost icon-btn controller-btn"
+        @click="openControllerSettings"
+        title="Controller settings (Phase C.1 scaffold)"
+        aria-label="Controller settings"
+      >
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+          <rect x="2" y="3" width="12" height="4" rx="0.8" stroke="currentColor" stroke-width="1.4" />
+          <rect x="2" y="9" width="12" height="4" rx="0.8" stroke="currentColor" stroke-width="1.4" />
+          <circle cx="5" cy="5" r="0.8" fill="currentColor" />
+          <circle cx="5" cy="11" r="0.8" fill="currentColor" />
         </svg>
       </button>
       <button class="ghost icon-btn help-btn" @click="openHelp" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
