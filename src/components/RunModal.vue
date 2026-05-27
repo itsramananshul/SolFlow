@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useUIStore } from '@/stores/ui.store';
@@ -247,6 +247,14 @@ function close() {
 function onBackdrop(e: MouseEvent) {
   if (e.target === e.currentTarget) close();
 }
+
+// Prod c51 — Escape-key close. Only active while open so closed
+// modals don't intercept the editor's other shortcuts.
+function onKey(e: KeyboardEvent) {
+  if (props.open && e.key === 'Escape') close();
+}
+onMounted(() => document.addEventListener('keydown', onKey));
+onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 </script>
 
 <template>

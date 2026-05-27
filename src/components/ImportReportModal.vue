@@ -10,7 +10,7 @@
  * before this modal opens). This is the "what just happened" panel
  * so they understand what's full vs partial vs unsupported.
  */
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, onMounted } from 'vue';
 import type { ImportReport, ImportSupport } from '@/graph/import';
 
 const props = defineProps<{
@@ -48,6 +48,13 @@ function supportTone(s: ImportSupport): string {
   if (s === 'partial') return 'info';
   return 'warn';
 }
+
+// Prod c51 — Escape-key close, matching other modals.
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') emit('close');
+}
+onMounted(() => document.addEventListener('keydown', onKey));
+onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 </script>
 
 <template>
