@@ -6,6 +6,8 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { HighlightStyle, syntaxHighlighting, StreamLanguage } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 import { useGraphStore } from '@/stores/graph.store';
+import { analyzeSource } from '@/compiler/api';
+import type { SolDiagnostic } from '@/compiler/types';
 
 const graph = useGraphStore();
 
@@ -59,6 +61,89 @@ function currentSource(): string {
 
 const isDetached = computed(
   () => isEditing.value && editedBuffer.value !== graph.emitted.source,
+);
+
+// ---------- Phase B.5: live compiler diagnostics ----------
+//
+// When the user is in edit mode we run the REAL SOL compiler
+// (compiled to WASM in compiler-wasm/) against their buffer and
+// surface its diagnostics inline. Phase A only had graph-derived
+// warnings; this is the first time the editor calls canonical
+// compiler logic.
+//
+// Sync flow:
+//   - watch `editedBuffer` (only changes while in edit mode)
+//   - debounce 250ms (analyzeSource on every keystroke is wasteful
+//     on long files — empirically the parser is fast but JSON
+//     round-trip dominates)
+//   - cancel any in-flight call on new input (epoch check)
+//   - never throw out the user's editing; only display diagnostics
+type CompilerState = 'idle' | 'loading' | 'ready' | 'error';
+const compilerDiagnostics = ref<SolDiagnostic[]>([]);
+const compilerState = ref<CompilerState>('idle');
+const compilerError = ref<string | null>(null);
+let analyzeEpoch = 0;
+let debounceHandle: number | null = null;
+
+async function runAnalyzeNow(source: string) {
+  const myEpoch = ++analyzeEpoch;
+  // First call after WASM load takes longer; mark explicitly so the
+  // UI can show "loading compiler…" instead of looking dead.
+  if (compilerState.value === 'idle') compilerState.value = 'loading';
+  try {
+    const result = await analyzeSource(source);
+    // Stale-response guard: a later edit's analysis won the race.
+    if (myEpoch !== analyzeEpoch) return;
+    compilerDiagnostics.value = result.diagnostics;
+    compilerState.value = 'ready';
+    compilerError.value = null;
+  } catch (e) {
+    if (myEpoch !== analyzeEpoch) return;
+    // WASM failed to load or the bridge threw before catch_unwind
+    // could catch (shouldn't happen in practice, but defensive).
+    compilerState.value = 'error';
+    compilerError.value = e instanceof Error ? e.message : String(e);
+    compilerDiagnostics.value = [];
+  }
+}
+
+function scheduleAnalyze(source: string) {
+  if (debounceHandle !== null) window.clearTimeout(debounceHandle);
+  debounceHandle = window.setTimeout(() => {
+    debounceHandle = null;
+    void runAnalyzeNow(source);
+  }, 250);
+}
+
+watch(editedBuffer, (src) => {
+  if (!isEditing.value) return;
+  scheduleAnalyze(src);
+});
+
+// When the user enters edit mode, kick off an immediate analyze so
+// they see compiler diagnostics for the graph-derived source even
+// before they touch a key.
+watch(isEditing, (editing) => {
+  if (editing) {
+    void runAnalyzeNow(editedBuffer.value);
+  } else {
+    // Leaving edit mode: clear diagnostics so the next entry starts
+    // fresh and we don't keep stale state around.
+    compilerDiagnostics.value = [];
+    compilerState.value = 'idle';
+    compilerError.value = null;
+    if (debounceHandle !== null) {
+      window.clearTimeout(debounceHandle);
+      debounceHandle = null;
+    }
+  }
+});
+
+const compilerErrorCount = computed(
+  () => compilerDiagnostics.value.filter((d) => d.severity === 'Error').length,
+);
+const compilerWarningCount = computed(
+  () => compilerDiagnostics.value.filter((d) => d.severity === 'Warning').length,
 );
 
 // Minimal SOL StreamLanguage — keyword + literal + comment highlighting.
@@ -254,9 +339,10 @@ function downloadEdited() {
       </div>
     </div>
     <!--
-      Detached-edit banner. Surfaced honestly: this Phase-A build has
-      no SOL → graph parser, so anything typed here lives only in the
-      editor buffer. Phase B (WASM) will close this loop.
+      Edit-mode banner. Phase B.4 wired up real compiler-backed
+      diagnostics (the lexer + parser + analyzer now run in-browser
+      via WASM), but the AST → graph importer is still pending, so
+      edits don't yet flow back into nodes.
     -->
     <div v-if="isEditing" class="edit-banner" :class="{ dirty: isDetached }">
       <svg viewBox="0 0 16 16" width="11" height="11" fill="none" class="banner-icon">
@@ -264,11 +350,49 @@ function downloadEdited() {
         <path d="M8 5 V8.5 M8 10.5 V11.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
       </svg>
       <span class="banner-text">
-        <strong>Code editing is detached from the visual graph.</strong>
-        Your changes here don't sync back to nodes — graph sync needs
-        the Phase B WASM parser. Copy or download your edited SOL, or
-        reset to graph output.
+        <strong>Editing in detached mode.</strong>
+        Compiler diagnostics below are live, but edits don't yet sync
+        back to the visual graph — AST → graph import lands next.
+        Copy or download your edited SOL, or reset to graph output.
       </span>
+    </div>
+    <!--
+      Live compiler-diagnostics panel. Only rendered while editing so
+      we don't add chrome to the read-only preview path. Empty list
+      shows "clean" so the panel never looks broken when the source
+      is valid.
+    -->
+    <div v-if="isEditing" class="compiler-panel" :class="{ erred: compilerErrorCount > 0 }">
+      <div class="compiler-panel-header">
+        <span class="compiler-label">Compiler</span>
+        <span v-if="compilerState === 'loading'" class="compiler-status loading">
+          loading WASM…
+        </span>
+        <span v-else-if="compilerState === 'error'" class="compiler-status err">
+          load failed: {{ compilerError }}
+        </span>
+        <span v-else-if="compilerErrorCount > 0" class="compiler-status err">
+          {{ compilerErrorCount }} error{{ compilerErrorCount === 1 ? '' : 's' }}
+        </span>
+        <span v-else-if="compilerWarningCount > 0" class="compiler-status warn">
+          {{ compilerWarningCount }} warning{{ compilerWarningCount === 1 ? '' : 's' }}
+        </span>
+        <span v-else-if="compilerState === 'ready'" class="compiler-status ok">
+          clean
+        </span>
+      </div>
+      <ul v-if="compilerDiagnostics.length > 0" class="compiler-list">
+        <li
+          v-for="(d, i) in compilerDiagnostics"
+          :key="i"
+          class="compiler-row"
+          :class="d.severity.toLowerCase()"
+        >
+          <span class="diag-code">{{ d.code }}</span>
+          <span class="diag-phase">{{ d.phase }}</span>
+          <span class="diag-msg">{{ d.message }}</span>
+        </li>
+      </ul>
     </div>
     <div ref="editorContainer" class="editor" />
   </div>
@@ -376,5 +500,73 @@ function downloadEdited() {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+/* ---------- Live compiler diagnostics (B.5) ---------- */
+.compiler-panel {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--sf-border);
+  background: var(--sf-bg-0);
+  max-height: 140px;
+  overflow-y: auto;
+}
+.compiler-panel.erred {
+  background: rgba(220, 80, 80, 0.04);
+}
+.compiler-panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--sf-border);
+}
+.compiler-label {
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--sf-text-2);
+}
+.compiler-status {
+  font-size: 0.625rem;
+  font-family: var(--sf-font-mono);
+}
+.compiler-status.loading { color: var(--sf-text-3); }
+.compiler-status.ok      { color: var(--sf-success); }
+.compiler-status.warn    { color: var(--sf-warning); }
+.compiler-status.err     { color: var(--sf-error, #d96666); }
+.compiler-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.compiler-row {
+  display: grid;
+  grid-template-columns: 56px 70px 1fr;
+  gap: 8px;
+  padding: 4px 14px;
+  font-size: 0.6875rem;
+  font-family: var(--sf-font-mono);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  align-items: baseline;
+}
+.compiler-row.error    { color: var(--sf-text-0); }
+.compiler-row.warning  { color: var(--sf-text-1); }
+.compiler-row.note     { color: var(--sf-text-2); }
+.diag-code {
+  font-weight: 600;
+  color: var(--sf-text-2);
+}
+.compiler-row.error   .diag-code { color: var(--sf-error, #d96666); }
+.compiler-row.warning .diag-code { color: var(--sf-warning); }
+.diag-phase {
+  color: var(--sf-text-3);
+  text-transform: lowercase;
+  font-size: 0.625rem;
+}
+.diag-msg {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>
