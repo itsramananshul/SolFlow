@@ -11,6 +11,7 @@ const emit = defineEmits<{
   (e: 'open-run'): void;
   (e: 'open-help'): void;
   (e: 'open-controller-settings'): void;
+  (e: 'open-schedules'): void;
   (e: 'open-sol-man'): void;
   (e: 'open-welcome'): void;
   (e: 'toggle-presentation'): void;
@@ -96,6 +97,9 @@ function openHelp() {
 }
 function openControllerSettings() {
   emit('open-controller-settings');
+}
+function openSchedules() {
+  emit('open-schedules');
 }
 function openSolMan() {
   emit('open-sol-man');
@@ -346,7 +350,7 @@ function toggleSampleMenu() {
       <button
         class="ghost icon-btn controller-btn"
         @click="openControllerSettings"
-        title="Controller settings (Phase C.1 scaffold)"
+        title="Controller settings"
         aria-label="Controller settings"
       >
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
@@ -354,6 +358,18 @@ function toggleSampleMenu() {
           <rect x="2" y="9" width="12" height="4" rx="0.8" stroke="currentColor" stroke-width="1.4" />
           <circle cx="5" cy="5" r="0.8" fill="currentColor" />
           <circle cx="5" cy="11" r="0.8" fill="currentColor" />
+        </svg>
+      </button>
+      <button
+        class="ghost icon-btn schedules-btn"
+        @click="openSchedules"
+        title="Schedules (Timer + Event triggers)"
+        aria-label="Schedules"
+      >
+        <!-- clock-with-bolt icon: scheduled triggers -->
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.4" />
+          <path d="M8 5v3l2 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
         </svg>
       </button>
       <button class="ghost icon-btn help-btn" @click="openHelp" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
