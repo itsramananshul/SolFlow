@@ -34,18 +34,22 @@ These can be replaced with `debug_assert!` + safe fallbacks in a
 later hardening pass; they don't affect Phase-B correctness because
 no real input can reach them.
 
-## 3. `todo!()` for unhandled AST variants
+## 3. ~~`todo!()` for unhandled AST variants~~ ✅ resolved in c7
 
-| File:line | What's missing |
-|---|---|
-| `analyzer.rs:632` | `x => todo!("{x:?}")` catch-all in `check()` for AST shapes the upstream analyzer never finished (notably `ExprStructInit`, `ExprArrayInit`, `ExprUndefined`). |
+The analyzer's catch-all `todo!("{x:?}")` was converted to an
+internal compiler error (ICE) diagnostic in B.2 c7:
 
-This is an honest "not yet implemented" rather than a defensive
-panic. Hitting it means SolFlow generated AST the analyzer doesn't
-understand — and right now that means SolFlow's emitter hasn't
-produced any such AST. Converting this to a diagnostic
-(`E1xxx ANALYZER_UNHANDLED_AST`) is a clean fast-follow but isn't
-required to ship B.2.
+```
+internal compiler error[ICE0001] internal compiler error:
+  analyzer has no rule for AST node: ExprStructInit { ... }
+  help: this is a bug in solflow_compiler; please report it
+```
+
+Editor-generated AST shapes that hit unfinished checker arms now
+produce a structured `DiagnosticPhase::Internal` diagnostic
+instead of aborting the test runner / WASM worker. See
+`compiler/src/diagnostic.rs` (`SolDiagnostic::internal`) and the
+`ICE_*` code constants.
 
 ## 4. Excluded by design (not in this crate)
 

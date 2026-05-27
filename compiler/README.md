@@ -55,12 +55,17 @@ cargo run --bin sol -- tests/fixtures/retest.sol
 |---|---|
 | B.1 — library API skeleton | ✅ |
 | B.2 — diagnostics as values | ✅ (lexer + parser + analyzer + codegen) |
-| B.3 — AST serde derives | pending |
+| B.2 polish — internal-error (ICE) boundary + 14-code test sweep | ✅ |
+| B.3 — AST serde derives | ✅ groundwork (feature-gated) |
 | B.4 — WASM bridge | pending |
 
-See [REMAINING_PANICS.md](REMAINING_PANICS.md) for the catalog of
-intentional `unwrap` / `unreachable` / `todo!` sites that remain
-(none of them on a user-reachable error path).
+Notes:
+- [REMAINING_PANICS.md](REMAINING_PANICS.md) — intentional
+  `unwrap` / `unreachable` / CLI exit sites still in the crate
+  (none on a user-reachable error path).
+- [AST_SERDE_NOTES.md](AST_SERDE_NOTES.md) — what's serializable,
+  known blockers (HashMap ordering, arena coupling, bytecode
+  deferral), how to verify (`cargo test --features serde`).
 
 See `docs/sol-language/PHASE_B_COMPILER_IDE_PLAN.md` at the SolFlow
 repo root for the full plan.

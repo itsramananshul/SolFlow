@@ -1,10 +1,11 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
-> **Status:** B.1 + B.2 **complete** (2026-05-26). The standalone
-> Rust compiler now lives in `compiler/` with a `solflow_compiler`
-> library + `sol` CLI; every compile-time error returns a
-> `SolDiagnostic` value rather than aborting the process. Next:
-> B.3 (serde derives on the AST) is the prerequisite for the WASM
+> **Status:** B.1, B.2, and B.3 groundwork **complete** (2026-05-27).
+> The standalone Rust compiler now lives in `compiler/` with a
+> `solflow_compiler` library + `sol` CLI; every compile-time error
+> returns a `SolDiagnostic` value rather than aborting the process;
+> AST + diagnostics derive `serde::{Serialize, Deserialize}` behind
+> an opt-in `serde` cargo feature. The crate is ready for the WASM
 > bridge in B.4.
 >
 > **Branch:** `feat/solflow-phase-a` (Phase B work continues here
@@ -561,7 +562,19 @@ None of these are possible while the compiler exits the process.
 - No runtime work (`vm.rs` panics can stay as `panic!` for now;
   they're already separate from the compile path)
 
-### B.3 — AST serialization contract
+### B.3 — AST serialization contract 🟡 **Groundwork done (c9)**
+
+> **Landed 2026-05-27.** AST + diagnostics derive
+> `serde::{Serialize, Deserialize}` behind an opt-in `serde`
+> cargo feature. Round-trip tests pass (`cargo test --features
+> serde` → 16/16). `SolDiagnostic.code` widened from
+> `&'static str` to `String` to unblock Deserialize.
+>
+> **Still pending for full B.3:** BinOp/UnaryOp enums (G5),
+> `i128` adapter for `ExprInteger` (G7), IndexMap swap for
+> ordered struct fields (G8), TypeScript-types generation. None
+> of these block B.4 (the WASM bridge can ship today's shapes
+> as-is and refine later). See `compiler/AST_SERDE_NOTES.md`.
 
 **Goal:** make every AST type round-trip cleanly through
 `serde_json::to_string` and back.
