@@ -29,6 +29,7 @@ import { createNode, rebuildPorts, type WorkflowCtx } from '@/graph/factory';
 import { bindingsInScope, type ScopeBinding } from '@/graph/scope';
 import { emit } from '@/emit/emit';
 import { validateWorkflow, type Diagnostic } from '@/graph/validate';
+import type { ImportReport } from '@/graph/import';
 import { useToastStore } from '@/stores/toast.store';
 
 const STORAGE_KEY = 'solflow.draft.v1';
@@ -991,6 +992,53 @@ export const useGraphStore = defineStore('graph', () => {
     return true;
   }
 
+  /**
+   * Parse SOL source through the WASM compiler, walk the AST, and
+   * replace the current workflow with the imported graph.
+   *
+   * Returns the import report so the caller can render a per-function
+   * compatibility breakdown. Parse errors land in `report.notices`
+   * and `loadWorkflow` is NOT called (the workflow stays as-is).
+   *
+   * This is the canonical B.7 entry point — the SourcePreview's
+   * "Import to graph" button routes here.
+   */
+  async function importFromSource(
+    source: string,
+    meta: { name?: string; description?: string } = {},
+  ): Promise<{ ok: boolean; report: ImportReport }> {
+    // Lazy-imported so the importer + WASM bridge stay out of the
+    // initial page-load critical path.
+    const [{ parseSource }, { importProgram }] = await Promise.all([
+      import('@/compiler/api'),
+      import('@/graph/import'),
+    ]);
+
+    const env = await parseSource(source);
+    if (!env.ok || !env.value) {
+      // Surface compiler diagnostics as a report notice so the modal
+      // can render them alongside any non-parse warnings.
+      const report = {
+        ok: false,
+        notices: env.diagnostics.map((d) => ({
+          severity: 'warning' as const,
+          message: `[${d.code}] ${d.message}`,
+        })),
+        functions: [],
+        topLevel: { structs: 0, enums: 0, imports: 0, extFunctions: 0 },
+        counts: { full: 0, partial: 0, sourceOnly: 0, unsupported: 0 },
+      };
+      return { ok: false, report };
+    }
+
+    const { workflow: imported, report } = importProgram(env.value, {
+      name: meta.name ?? workflow.value.meta.name ?? 'Imported workflow',
+      description: meta.description ?? workflow.value.meta.description,
+    });
+    const loaded = loadWorkflow(imported);
+    return { ok: loaded, report };
+  }
+
   function newWorkflow() {
     workflow.value = emptyWorkflow();
     activeFunctionId.value = workflow.value.functions[0].id;
@@ -1246,6 +1294,7 @@ export const useGraphStore = defineStore('graph', () => {
     updateImport,
     deleteImport,
     loadWorkflow,
+    importFromSource,
     newWorkflow,
     undo,
     redo,
