@@ -13,6 +13,7 @@ const emit = defineEmits<{
   (e: 'open-controller-settings'): void;
   (e: 'open-schedules'): void;
   (e: 'open-run-history'): void;
+  (e: 'open-active-runs'): void;
   (e: 'open-sol-man'): void;
   (e: 'open-welcome'): void;
   (e: 'toggle-presentation'): void;
@@ -104,6 +105,9 @@ function openSchedules() {
 }
 function openRunHistory() {
   emit('open-run-history');
+}
+function openActiveRuns() {
+  emit('open-active-runs');
 }
 function openSolMan() {
   emit('open-sol-man');
@@ -386,6 +390,19 @@ function toggleSampleMenu() {
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
           <path d="M3 4h10M3 8h7M3 12h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
           <path d="M12 10l2 2-2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <button
+        class="ghost icon-btn active-runs-btn"
+        @click="openActiveRuns"
+        title="Active runs + cancel + concurrency"
+        aria-label="Active runs"
+      >
+        <!-- spinner-ish: orchestration / in-flight -->
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.4" />
+          <path d="M8 4v4l2.5 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          <circle cx="13" cy="3" r="1.5" fill="currentColor" />
         </svg>
       </button>
       <button class="ghost icon-btn help-btn" @click="openHelp" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">

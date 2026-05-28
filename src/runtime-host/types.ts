@@ -287,3 +287,29 @@ export interface ConnectorMeta {
   version: string;
   default_policy: InvocationPolicy;
 }
+
+// =============================================================
+//  Orchestration introspection (Phase C C.6)
+// =============================================================
+
+/** Snapshot of one in-flight run from `GET /runs/active`. */
+export interface ActiveRunSummary {
+  run_id: RunId;
+  workflow_id: WorkflowId;
+  /** ms since UNIX epoch when the worker dequeued the run. */
+  dispatched_at: number;
+}
+
+/** Saturation policy mirrored from
+ *  `solflow_controller::run_manager::SaturationPolicy`. */
+export type SaturationPolicy = 'Queue' | 'Reject';
+
+/** Controller-wide concurrency snapshot from
+ *  `GET /controller/concurrency`. */
+export interface ConcurrencyMetrics {
+  max_concurrent_runs: number;
+  max_queued_runs: number;
+  active_runs: number;
+  queued_runs: number;
+  saturation_policy: SaturationPolicy;
+}

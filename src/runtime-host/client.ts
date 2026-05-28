@@ -31,6 +31,8 @@
  */
 import { HOST_SPEC_MAJOR } from './types';
 import type {
+  ActiveRunSummary,
+  ConcurrencyMetrics,
   ConnectorMeta,
   Health,
   RunCreated,
@@ -211,6 +213,15 @@ export interface ControllerClient {
 
   /** `GET /connectors` — list registered connector metadata. */
   listConnectors(opts?: RequestOpts): Promise<ConnectorMeta[]>;
+
+  // ---- Phase C C.6 — orchestration introspection ----
+
+  /** `GET /runs/active` — in-flight runs from the controller's
+   *  RunManager active registry. */
+  listActiveRuns(opts?: RequestOpts): Promise<ActiveRunSummary[]>;
+
+  /** `GET /controller/concurrency` — saturation snapshot. */
+  getConcurrencyMetrics(opts?: RequestOpts): Promise<ConcurrencyMetrics>;
 }
 
 export interface RequestOpts {
@@ -483,6 +494,17 @@ export function controllerClient(
 
     listConnectors: (opts) =>
       request<ConnectorMeta[]>('GET', '/connectors', undefined, opts),
+
+    // ---- C.6 ----
+    listActiveRuns: (opts) =>
+      request<ActiveRunSummary[]>('GET', '/runs/active', undefined, opts),
+    getConcurrencyMetrics: (opts) =>
+      request<ConcurrencyMetrics>(
+        'GET',
+        '/controller/concurrency',
+        undefined,
+        opts,
+      ),
   };
 }
 

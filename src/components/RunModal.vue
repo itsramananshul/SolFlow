@@ -301,6 +301,54 @@ async function executeControllerLocal() {
   }
 }
 
+// Phase C C.6 c93 — Cancel button availability + handler.
+
+/** True when we're in controller-local mode AND a run is
+ *  currently in flight (not yet terminal). */
+const canCancel = computed(() => {
+  if (mode.value !== 'controller-local') return false;
+  const c = controllerRun.value;
+  return c.kind === 'submitting' || c.kind === 'running';
+});
+
+const cancelInFlight = ref(false);
+
+async function onCancelRun() {
+  const c = controllerRun.value;
+  if (c.kind !== 'running' && c.kind !== 'submitting') return;
+  // submitting state may or may not have a runId yet — read it
+  // from the running variant; submitting has none.
+  const runId = c.kind === 'running' ? c.runId : null;
+  if (!runId) return;
+  cancelInFlight.value = true;
+  try {
+    await controller.getClient().cancelRun(runId, { timeoutMs: 5_000 });
+    // The SSE stream will deliver the Cancelled lifecycle event
+    // and pollRun will resolve with status=Cancelled.
+  } catch (e) {
+    if (e instanceof ControllerClientErr) {
+      controllerRun.value = {
+        kind: 'controller_error',
+        phase: 'poll',
+        error: e.payload,
+        workflowId: c.kind === 'running' ? c.workflowId : undefined,
+        runId,
+      };
+    } else {
+      controllerRun.value = {
+        kind: 'controller_error',
+        phase: 'poll',
+        error: {
+          kind: 'network',
+          message: e instanceof Error ? e.message : String(e),
+        },
+      };
+    }
+  } finally {
+    cancelInFlight.value = false;
+  }
+}
+
 /** Display name for the workflow submission. C.2 doesn't yet have
  *  workflow names in the graph store, so we synthesize one based
  *  on the active function. */
@@ -799,6 +847,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
               title="Replay simulation animation on canvas (browser-sim only)"
             >
               ▷ Replay
+            </button>
+            <button
+              v-if="canCancel"
+              class="ghost danger"
+              @click="onCancelRun"
+              :disabled="cancelInFlight"
+              title="Send DELETE /runs/:id to the controller"
+            >
+              {{ cancelInFlight ? 'Cancelling…' : '✕ Cancel run' }}
             </button>
             <button class="ghost" @click="execute" :disabled="isRunning">
               {{ isRunning ? 'Running…' : 'Re-run' }}
@@ -1720,6 +1777,15 @@ function formatReturn(v: unknown): string {
   padding: 8px 16px;
   border-top: 1px solid var(--sf-border);
   background: var(--sf-bg-0);
+}
+
+/* Phase C C.6 c93 — Cancel button affordance */
+.ghost.danger {
+  color: var(--sf-danger, #e75a5a);
+  border: 1px solid rgba(231, 90, 90, 0.4);
+}
+.ghost.danger:hover {
+  background: rgba(231, 90, 90, 0.08);
 }
 
 /* Live event stream (C.5 c85) */

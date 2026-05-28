@@ -423,6 +423,47 @@ describe('controllerClient — schedules (C.3)', () => {
 // ----- C.4 — connectors -----
 
 describe('controllerClient — connectors (C.4)', () => {
+  it('listActiveRuns returns the parsed list (C.6)', async () => {
+    let url = '';
+    const payload = [
+      {
+        run_id: 'run_a',
+        workflow_id: 'wf_a',
+        dispatched_at: 1_700_000_000_000,
+      },
+    ];
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch((u) => {
+        url = String(u);
+        return jsonResponse(payload);
+      }),
+    });
+    const got = await c.listActiveRuns();
+    expect(url).toBe('http://x.example/runs/active');
+    expect(got).toHaveLength(1);
+    expect(got[0].run_id).toBe('run_a');
+  });
+
+  it('getConcurrencyMetrics returns the parsed snapshot (C.6)', async () => {
+    let url = '';
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch((u) => {
+        url = String(u);
+        return jsonResponse({
+          max_concurrent_runs: 8,
+          max_queued_runs: 64,
+          active_runs: 2,
+          queued_runs: 5,
+          saturation_policy: 'Queue',
+        });
+      }),
+    });
+    const m = await c.getConcurrencyMetrics();
+    expect(url).toBe('http://x.example/controller/concurrency');
+    expect(m.active_runs).toBe(2);
+    expect(m.saturation_policy).toBe('Queue');
+  });
+
   it('listConnectors returns the parsed list', async () => {
     let url = '';
     const payload = [
