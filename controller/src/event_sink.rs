@@ -33,7 +33,7 @@ use crate::executor::now_ms;
 use crate::{Persistence, SqlitePersistence};
 use async_trait::async_trait;
 use solflow_host_spec::{RunEvent, RunId};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -104,11 +104,25 @@ impl EventSink for PersistentEventSink {
 
 /// Per-run context: owns the sink + a monotonic seq counter.
 /// Constructed once per `execute_run` invocation.
+///
+/// Phase C C.6 c94 — `max_events` caps the per-run event log.
+/// When the cap is exceeded, every subsequent emit is silently
+/// dropped (after one terminal `Failed { ResourceLimit }` event
+/// is emitted at the cap boundary). The VM keeps running; the
+/// run terminates normally if it can, but event-stream
+/// subscribers see the explicit `events` cap.
 pub struct RunEventCtx {
     pub run_id: RunId,
     pub sink: Arc<dyn EventSink>,
     next_seq: Arc<AtomicU64>,
     tokio_handle: tokio::runtime::Handle,
+    /// Per-run event cap from `RunPolicy::max_events_per_run`.
+    /// `None` = unbounded (matches browser-sim).
+    max_events: Option<u64>,
+    /// Flips to true the first time `next_seq` is over the
+    /// cap. Used both to emit the cap-reached marker event and
+    /// to short-circuit subsequent emits to avoid log spam.
+    cap_breached: Arc<AtomicBool>,
 }
 
 impl RunEventCtx {
@@ -118,7 +132,16 @@ impl RunEventCtx {
             sink,
             next_seq: Arc::new(AtomicU64::new(0)),
             tokio_handle: tokio::runtime::Handle::current(),
+            max_events: None,
+            cap_breached: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Apply a per-run event cap. Returns `self` for builder
+    /// chaining. Phase C C.6 c94.
+    pub fn with_max_events(mut self, cap: Option<u64>) -> Self {
+        self.max_events = cap;
+        self
     }
 
     /// Allocate the next sequence number. Lock-free; monotonic
@@ -127,11 +150,49 @@ impl RunEventCtx {
         self.next_seq.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// True iff the per-run event cap has already been
+    /// breached (a cap-reached event was already emitted).
+    /// emit() and spawn_emit() consult this before emitting.
+    fn is_capped(&self) -> bool {
+        let Some(cap) = self.max_events else { return false };
+        let used = self.next_seq.load(Ordering::Relaxed);
+        used >= cap
+    }
+
+    /// Mark cap-breached + emit ONE final ResourceLimit event
+    /// so subscribers know the log truncated. Subsequent emit
+    /// calls observe `cap_breached` + skip. Idempotent.
+    async fn maybe_emit_cap_marker(&self) {
+        if self
+            .cap_breached
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        let Some(cap) = self.max_events else { return };
+        let seq = self.next_seq();
+        let ev = RunEvent::Failed {
+            run_id: self.run_id.clone(),
+            seq,
+            ts: now_ms(),
+            error: solflow_host_spec::RuntimeErrorView::ResourceLimit {
+                resource: "events".into(),
+                limit: cap,
+            },
+            source_span: None,
+        };
+        self.sink.emit(ev).await;
+    }
+
     /// Async emit — used from `execute_run`'s outer flow for
     /// terminal-class events (Queued / Started / Completed /
     /// Failed) where the caller wants the emit to land before
     /// returning.
     pub async fn emit(&self, ev: RunEvent) {
+        if self.is_capped() {
+            self.maybe_emit_cap_marker().await;
+            return;
+        }
         self.sink.emit(ev).await;
     }
 
@@ -143,6 +204,36 @@ impl RunEventCtx {
     /// degrades gracefully (the run's terminal state is what
     /// matters for correctness).
     pub fn spawn_emit(&self, ev: RunEvent) {
+        if self.is_capped() {
+            // Spawn the cap marker emit (still async) but skip
+            // the actual event. The marker is idempotent so
+            // repeat fire-and-forget calls collapse to one
+            // persisted marker.
+            let me_cap = self.cap_breached.clone();
+            let me_sink = self.sink.clone();
+            let me_run_id = self.run_id.clone();
+            let me_max = self.max_events;
+            let me_seq = self.next_seq.clone();
+            self.tokio_handle.spawn(async move {
+                if me_cap.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                let Some(cap) = me_max else { return };
+                let seq = me_seq.fetch_add(1, Ordering::Relaxed);
+                let event = RunEvent::Failed {
+                    run_id: me_run_id,
+                    seq,
+                    ts: now_ms(),
+                    error: solflow_host_spec::RuntimeErrorView::ResourceLimit {
+                        resource: "events".into(),
+                        limit: cap,
+                    },
+                    source_span: None,
+                };
+                me_sink.emit(event).await;
+            });
+            return;
+        }
         let sink = self.sink.clone();
         self.tokio_handle.spawn(async move { sink.emit(ev).await });
     }

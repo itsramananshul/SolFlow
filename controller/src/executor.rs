@@ -86,10 +86,15 @@ pub async fn execute_run(
 ) {
     // Per-run event context (shared with the VM print hook + the
     // ExtCallHandler so all three sources of events share the
-    // same monotonic seq counter).
-    let ctx = event_sink
-        .as_ref()
-        .map(|s| Arc::new(RunEventCtx::new(record.id.clone(), s.clone())));
+    // same monotonic seq counter). c94 — install the per-run
+    // event-log cap so a runaway workflow can't spam the SSE
+    // stream or grow the run_events table without bound.
+    let ctx = event_sink.as_ref().map(|s| {
+        Arc::new(
+            RunEventCtx::new(record.id.clone(), s.clone())
+                .with_max_events(Some(policy.max_events_per_run)),
+        )
+    });
 
     if let Some(c) = &ctx {
         c.emit(queued_event(c)).await;
@@ -164,11 +169,21 @@ pub async fn execute_run(
         }) as PrintCallback
     });
 
-    // Phase C C.6 c90 — wire the cancel flag into both the VM's
-    // cancel callback (polled per instruction) and the ExtCall
-    // handler (checked before each connector attempt).
-    let cancel_callback: Option<CancelCallback> = cancel_flag.clone().map(|flag| {
-        Arc::new(move || flag.load(Ordering::Relaxed)) as CancelCallback
+    // Phase C C.6 c90 — user cancel flag (set via DELETE /runs/:id).
+    // Phase C C.6 c94 — internal timeout flag distinct from user
+    // cancel: when wall-clock fires we set this so the VM's
+    // cancel callback returns true + the VM exits cleanly, but
+    // the run_manager's reconcile can tell user cancellation
+    // apart from timeout (so terminal status lands on TimedOut
+    // rather than Cancelled).
+    let user_cancel = cancel_flag
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let timeout_flag = Arc::new(AtomicBool::new(false));
+    let cb_user = user_cancel.clone();
+    let cb_timeout = timeout_flag.clone();
+    let cancel_callback: CancelCallback = Arc::new(move || {
+        cb_user.load(Ordering::Relaxed) || cb_timeout.load(Ordering::Relaxed)
     });
     let opts = RunOptions {
         step_limit: Some(policy.step_limit),
@@ -178,21 +193,72 @@ pub async fn execute_run(
                 registry,
                 tokio_handle: tokio::runtime::Handle::current(),
                 ctx: ctx.clone(),
-                cancel_flag: cancel_flag.clone(),
+                // Connector also sees the combined flag — a
+                // timeout fired during a slow connector call
+                // aborts it via the same path as a user cancel.
+                cancel_flag: Some(user_cancel.clone()),
+                timeout_flag: Some(timeout_flag.clone()),
             }) as ExtCallHandlerArc
         }),
         print_callback,
-        cancel_callback,
+        cancel_callback: Some(cancel_callback),
         max_output_lines: Some(policy.max_output_lines),
         max_events_per_run: Some(policy.max_events_per_run),
     };
     let bytecode_for_task = bytecode.clone();
-    let vm_future = tokio::task::spawn_blocking(move || {
+    let mut vm_handle = tokio::task::spawn_blocking(move || {
         run_program_with(&bytecode_for_task, opts)
     });
-    let outcome = match tokio::time::timeout(policy.wall_clock_timeout, vm_future).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(join_err)) => {
+    // Race the VM against the wall-clock budget. On timeout: flip
+    // the timeout flag so the VM exits at its next cancel poll +
+    // wait for it to drain (with a small grace window so a
+    // pathological VM doesn't leak the blocking thread forever).
+    let mut timed_out = false;
+    let outcome_res = {
+        let timeout_sleep = tokio::time::sleep(policy.wall_clock_timeout);
+        tokio::pin!(timeout_sleep);
+        loop {
+            tokio::select! {
+                biased;
+                res = &mut vm_handle => break res,
+                _ = &mut timeout_sleep, if !timed_out => {
+                    timed_out = true;
+                    timeout_flag.store(true, Ordering::Relaxed);
+                    // Loop again: wait for the VM to honor cancel.
+                    // Grace window (5s) before we abandon the
+                    // blocking thread + synthesize a TimedOut
+                    // outcome.
+                }
+            }
+            if timed_out {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    &mut vm_handle,
+                )
+                .await
+                {
+                    Ok(res) => break res,
+                    Err(_) => {
+                        tracing::error!(
+                            "VM didn't honor cancel within 5s grace; abandoning task for run {}",
+                            record.id,
+                        );
+                        finalize_timed_out(
+                            persistence,
+                            record,
+                            policy.wall_clock_timeout.as_secs(),
+                            ctx.clone(),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    let outcome = match outcome_res {
+        Ok(o) => o,
+        Err(join_err) => {
             tracing::error!("execute_run vm task panicked: {join_err}");
             finalize_failed(
                 persistence,
@@ -203,23 +269,10 @@ pub async fn execute_run(
             .await;
             return;
         }
-        Err(_elapsed) => {
-            // Wall-clock timeout — VM didn't finish in time.
-            finalize_failed(
-                persistence,
-                record,
-                format!(
-                    "wall-clock timeout: {}s",
-                    policy.wall_clock_timeout.as_secs()
-                ),
-                ctx.clone(),
-            )
-            .await;
-            return;
-        }
     };
 
-    // Translate VM outcome to RunRecord.
+    // Translate VM outcome to RunRecord. When timed_out, the VM's
+    // error is Cancelled (we set the flag); promote to TimedOut.
     record.completed_at = Some(now_ms());
     let vm_error = outcome.error.clone();
     let final_output = RunOutput {
@@ -231,25 +284,37 @@ pub async fn execute_run(
         output: outcome.output.clone(),
         steps: outcome.steps,
     };
-    if vm_error.is_some() {
-        record.status = RunStatus::Failed;
+    record.status = if timed_out {
+        RunStatus::TimedOut
+    } else if vm_error.is_some() {
+        RunStatus::Failed
     } else {
-        record.status = RunStatus::Succeeded;
-    }
+        RunStatus::Succeeded
+    };
     record.output = Some(final_output.clone());
     if let Err(e) = persistence.put_run(&record).await {
         tracing::error!("execute_run persistence put_run (final) failed: {e}");
     }
 
     // Emit terminal event AFTER the final RunRecord write so any
-    // subscriber that immediately fetches the record on Completed
-    // sees the final state.
+    // subscriber that immediately fetches the record on the
+    // terminal event sees the final state.
     if let Some(c) = &ctx {
-        match vm_error {
-            Some(err) => {
-                c.emit(failed_event(c, run_error_to_view(&err), None)).await;
+        if timed_out {
+            c.emit(RunEvent::TimedOut {
+                run_id: c.run_id.clone(),
+                seq: c.next_seq(),
+                ts: now_ms(),
+                wall_clock_secs: policy.wall_clock_timeout.as_secs(),
+            })
+            .await;
+        } else {
+            match vm_error {
+                Some(err) => {
+                    c.emit(failed_event(c, run_error_to_view(&err), None)).await;
+                }
+                None => c.emit(completed_event(c, final_output)).await,
             }
-            None => c.emit(completed_event(c, final_output)).await,
         }
     }
 }
@@ -292,6 +357,40 @@ fn run_error_to_view(e: &RunError) -> RuntimeErrorView {
                 limit: *limit,
             }
         }
+    }
+}
+
+/// Phase C C.6 c94 — synthesize a TimedOut terminal when the
+/// VM ignored its cancel hook for too long after the wall-clock
+/// fired. Sets the persisted status + emits one TimedOut event;
+/// the orphaned spawn_blocking thread will eventually exit on
+/// its own (step_limit at worst).
+async fn finalize_timed_out(
+    persistence: SqlitePersistence,
+    mut record: RunRecord,
+    wall_clock_secs: u64,
+    ctx: Option<Arc<RunEventCtx>>,
+) {
+    record.status = RunStatus::TimedOut;
+    record.completed_at = Some(now_ms());
+    record.output = Some(RunOutput {
+        return_value: None,
+        output: vec![format!(
+            "[controller] wall-clock timeout: {wall_clock_secs}s (VM did not honor cancel)",
+        )],
+        steps: 0,
+    });
+    if let Err(e) = persistence.put_run(&record).await {
+        tracing::error!("finalize_timed_out persistence put_run failed: {e}");
+    }
+    if let Some(c) = ctx {
+        c.emit(RunEvent::TimedOut {
+            run_id: c.run_id.clone(),
+            seq: c.next_seq(),
+            ts: now_ms(),
+            wall_clock_secs,
+        })
+        .await;
     }
 }
 
@@ -357,12 +456,15 @@ struct ControllerExtCallHandler {
     /// ExtCallCompleted around every dispatch. The seq counter
     /// is shared with the rest of execute_run via Arc.
     ctx: Option<Arc<RunEventCtx>>,
-    /// Phase C C.6 c90 — shared with the VM's cancel callback.
-    /// Checked before each connector dispatch; when set, the
-    /// handler short-circuits with `ExtCallError::Failed{...}`
-    /// (the post-VM cancel-detection in `RunManager` then
-    /// promotes the run's terminal status to `Cancelled`).
+    /// Phase C C.6 c90 — user cancel flag from
+    /// `DELETE /runs/:id`. Short-circuits the connector with
+    /// Failed; reconcile promotes to Cancelled.
     cancel_flag: Option<Arc<AtomicBool>>,
+    /// Phase C C.6 c94 — wall-clock timeout flag. When set,
+    /// the handler aborts in-flight connector work the same
+    /// way as cancel_flag; the executor promotes the terminal
+    /// to TimedOut.
+    timeout_flag: Option<Arc<AtomicBool>>,
 }
 
 impl ExtCallHandler for ControllerExtCallHandler {
@@ -383,19 +485,29 @@ impl ExtCallHandler for ControllerExtCallHandler {
             ExtCallError::failed("(unresolved)", ctx.function_name, e.to_string())
         })?;
 
-        // Phase C C.6 c90 — short-circuit if the run was
-        // cancelled while the VM was preparing this ExtCall.
-        // Returning Failed here lets execute_run see the abort;
-        // the run_manager's post-execution sweep then promotes
-        // the terminal status to Cancelled.
-        if let Some(flag) = &self.cancel_flag {
-            if flag.load(Ordering::Relaxed) {
-                return Err(ExtCallError::failed(
-                    parsed.name.clone(),
-                    ctx.function_name,
-                    "run cancelled before connector dispatch",
-                ));
-            }
+        // Phase C C.6 c90/c94 — short-circuit if the run was
+        // cancelled OR timed out while the VM was preparing
+        // this ExtCall. Returning Failed here lets execute_run
+        // see the abort; the post-VM mapping promotes to
+        // Cancelled (user cancel) or TimedOut (wall-clock).
+        let cancelled = self
+            .cancel_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed));
+        let timed_out = self
+            .timeout_flag
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed));
+        if cancelled || timed_out {
+            return Err(ExtCallError::failed(
+                parsed.name.clone(),
+                ctx.function_name,
+                if cancelled {
+                    "run cancelled before connector dispatch"
+                } else {
+                    "run timed out before connector dispatch"
+                },
+            ));
         }
 
         // Emit ExtCallStarted (fire-and-forget so the VM doesn't
@@ -420,11 +532,52 @@ impl ExtCallHandler for ControllerExtCallHandler {
         let args_json = serde_json::Value::Array(
             ctx.args.iter().map(extcall_value_to_json).collect(),
         );
+        // Phase C C.6 c94 — combined user-cancel + timeout flag
+        // for the connector to race against in-flight I/O.
+        // Build a small atomic that mirrors either bit; the
+        // HttpConnector polls this between retries + via
+        // select! during one attempt so a slow request doesn't
+        // pin the run.
+        let combined_flag = match (&self.cancel_flag, &self.timeout_flag) {
+            (Some(c), Some(t)) => {
+                let combined = Arc::new(AtomicBool::new(false));
+                let cc = c.clone();
+                let tt = t.clone();
+                let cb = combined.clone();
+                // Spawn a tiny watcher that flips `combined`
+                // when either source flips. Watch period 50ms —
+                // tighter than typical HTTP latency, loose
+                // enough to be cheap.
+                self.tokio_handle.spawn(async move {
+                    loop {
+                        if cc.load(Ordering::Relaxed)
+                            || tt.load(Ordering::Relaxed)
+                        {
+                            cb.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                        // Self-shutdown when the combined flag
+                        // is already set OR when the executor's
+                        // arcs are dropped — Arc::strong_count
+                        // catches the latter.
+                        if Arc::strong_count(&cc) == 1
+                            && Arc::strong_count(&tt) == 1
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                });
+                Some(combined)
+            }
+            _ => None,
+        };
         let invocation = crate::connector::ConnectorInvocation {
             fn_name: ctx.function_name.to_string(),
             url_params: parsed.params,
             args: args_json,
             policy: connector.meta().default_policy,
+            cancel_flag: combined_flag,
         };
 
         // Block on the async invocation from this blocking thread.
@@ -662,6 +815,132 @@ mod tests {
         let seqs: Vec<u64> = events.iter().map(|e| e.seq()).collect();
         for w in seqs.windows(2) {
             assert!(w[0] < w[1], "seq must strictly increase: {seqs:?}");
+        }
+    }
+
+    /// Phase C C.6 c94 — wall-clock timeout lands as TimedOut
+    /// (not Failed) when the VM's loop runs past the policy
+    /// budget. The combined cancel-callback fires; the VM exits
+    /// with Cancelled; the executor promotes to TimedOut.
+    #[tokio::test]
+    async fn execute_run_wall_clock_timeout_lands_timed_out() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let wf = submit_test_workflow(
+            &p,
+            // Long counting loop — plenty more than 100ms of
+            // VM steps.
+            r#"
+                function start() -> int {
+                    let i: int = 0;
+                    while (i < 5000000) {
+                        i = i + 1;
+                    }
+                    return i;
+                }
+            "#,
+        )
+        .await;
+        let record = RunRecord {
+            id: format!("run_{}", uuid::Uuid::new_v4()),
+            workflow_id: wf,
+            status: RunStatus::Queued,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: now_ms(),
+            started_at: None,
+            completed_at: None,
+        };
+        let policy = RunPolicy {
+            step_limit: 1_000_000_000,
+            // Short wall-clock so the test runs fast — guaranteed
+            // shorter than the workflow's natural completion time.
+            wall_clock_timeout: std::time::Duration::from_millis(100),
+            max_output_lines: 100_000,
+            max_events_per_run: 1_000_000,
+        };
+        let run_id = record.id.clone();
+        execute_run(p.clone(), record, policy, None, None, None).await;
+        let got = p.get_run(&run_id).await.unwrap();
+        assert_eq!(
+            got.status,
+            RunStatus::TimedOut,
+            "wall-clock timeout should land TimedOut",
+        );
+    }
+
+    /// Phase C C.6 c94 — the per-run event cap fires a single
+    /// terminal ResourceLimit event and suppresses subsequent
+    /// emits. Verified at the sink level so we don't have to
+    /// race a real VM.
+    #[tokio::test]
+    async fn event_cap_emits_resource_limit_marker_and_drops_overflow() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let meta = serde_json::json!({
+            "name": "cap",
+            "content_hash": "h",
+            "created_at": now_ms(),
+        });
+        p.put_workflow(&"wf_cap".to_string(), b"bc", b"sp", &meta.to_string())
+            .await
+            .unwrap();
+        let record = RunRecord {
+            id: "run_cap".into(),
+            workflow_id: "wf_cap".into(),
+            status: RunStatus::Running,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: 0,
+            started_at: None,
+            completed_at: None,
+        };
+        p.put_run(&record).await.unwrap();
+
+        let sink = crate::event_sink::CapturingEventSink::default();
+        let sink_arc: Arc<dyn crate::EventSink> = Arc::new(sink.clone());
+        let ctx = crate::event_sink::RunEventCtx::new(
+            "run_cap".into(),
+            sink_arc.clone(),
+        )
+        .with_max_events(Some(3));
+
+        // Emit 5 events through the same ctx. Production
+        // emitters allocate `seq` via `ctx.next_seq()` so cap
+        // tracking works; mimic that pattern here.
+        for i in 0..5 {
+            let seq = ctx.next_seq();
+            ctx.emit(RunEvent::Print {
+                run_id: "run_cap".into(),
+                seq,
+                ts: 100 + i,
+                text: format!("line {i}"),
+                source_span: None,
+            })
+            .await;
+        }
+
+        let events = sink.events.lock().await.clone();
+        // Cap semantics: "at most N events total." With cap=3,
+        // we get 2 Prints (seqs 0, 1) before the cap fires at
+        // seq=2, then 1 ResourceLimit marker (seq=3). Subsequent
+        // emits are silently dropped via the cap_breached flag.
+        // Total persisted = 3.
+        assert_eq!(events.len(), 3, "expected 2 prints + 1 marker, got {events:#?}");
+        let kinds: Vec<&str> = events.iter().map(|e| e.kind()).collect();
+        assert_eq!(kinds, vec!["Print", "Print", "Failed"]);
+        // The marker carries the cap as the limit field.
+        match &events[2] {
+            RunEvent::Failed {
+                error: solflow_host_spec::RuntimeErrorView::ResourceLimit { resource, limit },
+                ..
+            } => {
+                assert_eq!(resource, "events");
+                assert_eq!(*limit, 3);
+            }
+            other => panic!("expected ResourceLimit marker, got {other:?}"),
         }
     }
 

@@ -161,8 +161,6 @@ pub struct RunManager {
     queue_depth: Arc<AtomicUsize>,
     active: Arc<Mutex<HashMap<RunId, Arc<ActiveRunEntry>>>>,
     permits: Arc<Semaphore>,
-    /// Set by `start()`; subsequent calls are no-ops.
-    started: Arc<AtomicBool>,
 }
 
 impl RunManager {
@@ -193,7 +191,6 @@ impl RunManager {
             queue_depth: Arc::new(AtomicUsize::new(0)),
             active: Arc::new(Mutex::new(HashMap::new())),
             permits,
-            started: Arc::new(AtomicBool::new(true)),
         };
         let dispatcher = me.clone();
         tokio::spawn(async move { dispatcher.dispatcher_loop(rx).await });
@@ -492,20 +489,30 @@ impl RunManager {
         self.reconcile_post_execution(&run_id, &cancel_flag).await;
     }
 
-    /// If cancel arrived while the VM was inside an ExtCall (or
-    /// any path that produced a `Failed` terminal), promote the
-    /// terminal to `Cancelled` so the final RunRecord reflects
-    /// user intent. Also clears the cancel_requested bit so a
-    /// subsequent re-run of the same record (unlikely but
-    /// possible) starts clean.
+    /// If user cancel arrived while the VM was inside an ExtCall
+    /// (or any path that produced a `Failed` / `Succeeded`
+    /// terminal), promote the terminal to `Cancelled` so the
+    /// final RunRecord reflects user intent. Also clears the
+    /// cancel_requested bit so a subsequent re-run of the same
+    /// record starts clean.
+    ///
+    /// Phase C C.6 c94 — TimedOut is NOT promoted to Cancelled.
+    /// The executor sets the persisted status to TimedOut when
+    /// wall-clock fires (using its own internal timeout flag,
+    /// distinct from user cancel_flag). If both timeout AND
+    /// user cancel fired, the user cancel wins for clarity:
+    /// the user explicitly asked, and TimedOut would otherwise
+    /// occlude that intent.
     async fn reconcile_post_execution(
         &self,
         run_id: &RunId,
         cancel_flag: &Arc<AtomicBool>,
     ) {
         if !cancel_flag.load(Ordering::Relaxed) {
-            // No cancel was requested; nothing to reconcile.
-            // Clear cancel_requested defensively.
+            // No user cancel was requested; nothing to reconcile.
+            // Clear cancel_requested defensively (a stale bit
+            // from a prior run with the same id would otherwise
+            // re-trigger).
             let _ = self.persistence.set_cancel_requested(run_id, false).await;
             return;
         }
@@ -513,9 +520,14 @@ impl RunManager {
             Ok(r) => r,
             Err(_) => return,
         };
+        // Promote any non-Cancelled terminal to Cancelled when
+        // user cancel was set. TimedOut + Succeeded + Failed all
+        // get overridden — user intent is the source of truth.
         let needs_override = matches!(
             rec.status,
-            RunStatus::Failed | RunStatus::Succeeded | RunStatus::TimedOut
+            RunStatus::Failed
+                | RunStatus::Succeeded
+                | RunStatus::TimedOut
         );
         if needs_override {
             let mut overridden = rec.clone();

@@ -40,6 +40,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -58,7 +59,7 @@ pub mod http;
 /// HTTP connector it isn't load-bearing; for connectors that
 /// dispatch (e.g. `slack`'s `slack:post_message`) the name is
 /// the dispatch key.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConnectorInvocation {
     pub fn_name: String,
     pub url_params: HashMap<String, String>,
@@ -66,6 +67,27 @@ pub struct ConnectorInvocation {
     /// decide how to consume it (HTTP: body / query string).
     pub args: serde_json::Value,
     pub policy: InvocationPolicy,
+    /// Phase C C.6 c94 — orchestration cancel/timeout flag.
+    /// Connectors check this before each retry attempt + during
+    /// in-flight I/O (via `tokio::select!` race against the call
+    /// future) so a long HTTP call doesn't block cancellation.
+    /// `None` when the connector is invoked outside an
+    /// orchestrated run (e.g. a future "test connector"
+    /// affordance).
+    pub cancel_flag: Option<Arc<AtomicBool>>,
+}
+
+impl std::fmt::Debug for ConnectorInvocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // AtomicBool doesn't impl Debug — skip the flag.
+        f.debug_struct("ConnectorInvocation")
+            .field("fn_name", &self.fn_name)
+            .field("url_params", &self.url_params)
+            .field("args", &self.args)
+            .field("policy", &self.policy)
+            .field("cancel_flag", &self.cancel_flag.as_ref().map(|_| "<flag>"))
+            .finish()
+    }
 }
 
 /// The result of a connector invocation.

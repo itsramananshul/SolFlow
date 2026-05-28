@@ -159,6 +159,17 @@ impl Connector for HttpConnector {
         // Retry loop with per-attempt and overall timeout.
         let mut attempt: u32 = 0;
         loop {
+            // Phase C C.6 c94 — orchestration cancel check
+            // BEFORE each attempt. A cancel arriving between
+            // retries short-circuits cleanly without firing
+            // another request.
+            if let Some(flag) = &invocation.cancel_flag {
+                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(ConnectorError::Cancelled {
+                        connector: "http".into(),
+                    });
+                }
+            }
             let elapsed = started.elapsed().as_millis() as u64;
             if elapsed >= invocation.policy.timeout_ms {
                 return Err(ConnectorError::Timeout {
@@ -176,7 +187,35 @@ impl Connector for HttpConnector {
                 .unwrap_or(remaining)
                 .min(remaining);
 
-            match self.send_once(&request, per_attempt_timeout).await {
+            // c94 — race the in-flight call against the cancel
+            // flag so a slow server doesn't block cancellation.
+            // Polls every 50ms; tight enough to feel immediate,
+            // loose enough that idle connectors don't burn CPU.
+            let send_fut = self.send_once(&request, per_attempt_timeout);
+            let attempt_result = match &invocation.cancel_flag {
+                Some(flag) => {
+                    let cancel_watch = async {
+                        loop {
+                            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                    };
+                    tokio::select! {
+                        biased;
+                        res = send_fut => res,
+                        _ = cancel_watch => {
+                            return Err(ConnectorError::Cancelled {
+                                connector: "http".into(),
+                            });
+                        }
+                    }
+                }
+                None => send_fut.await,
+            };
+
+            match attempt_result {
                 Ok(outcome) => {
                     let duration = started.elapsed().as_millis() as u64;
                     return Ok(ConnectorOutcome {
@@ -533,6 +572,7 @@ mod tests {
             },
             args,
             policy: InvocationPolicy::default(),
+            cancel_flag: None,
         }
     }
 
@@ -637,6 +677,7 @@ mod tests {
                 url_params: HashMap::new(),
                 args: json!({}),
                 policy: InvocationPolicy::default(),
+                cancel_flag: None,
             })
             .await;
         assert!(matches!(
