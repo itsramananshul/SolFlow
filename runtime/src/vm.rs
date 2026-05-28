@@ -14,8 +14,15 @@ use crate::extcall::{
 use solflow_compiler::bytecode::Inst;
 use solflow_compiler::parser::{Ast, Type};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const DEFAULT_STEP_LIMIT: usize = 1_000_000;
+
+/// Type alias for the `Inst::Print*` callback. Receives the line
+/// just pushed to `self.output` plus the `inst_ptr` of the
+/// Print instruction (so the host can look up the source span
+/// via its `instruction_spans` sidecar).
+pub type PrintCallback = Arc<dyn Fn(&str, usize) + Send + Sync>;
 /// Default cap on captured trace entries when tracing is enabled.
 /// SOL programs can run millions of instructions; bounded memory
 /// matters more than full history for the editor UX (truncated
@@ -91,6 +98,19 @@ pub struct VM {
     /// has since C.1. When `Some`, the VM marshals args + invokes
     /// the handler + pushes the typed return value.
     pub ext_call_handler: Option<ExtCallHandlerArc>,
+
+    /// Optional callback fired EVERY time a Print-family
+    /// instruction (`PrintInt` / `PrintFloat` / `PrintChar` /
+    /// `PrintString`) appends a line to `self.output`. The
+    /// callback receives the line that was just pushed plus the
+    /// `inst_ptr` of the Print instruction (lets the controller
+    /// look up the source span via `instruction_spans`).
+    ///
+    /// When `None` (browser-sim path), no overhead per print.
+    /// When `Some`, the controller installs a callback that
+    /// turns each line into a real-time `RunEvent::Print`
+    /// (Phase C C.5 c82).
+    pub print_callback: Option<Arc<dyn Fn(&str, usize) + Send + Sync>>,
 }
 
 impl Default for VM {
@@ -118,6 +138,7 @@ impl VM {
             trace_limit: None,
             error_inst_ptr: None,
             ext_call_handler: None,
+            print_callback: None,
         }
     }
 
@@ -142,6 +163,15 @@ impl VM {
         // Best-effort reserve so trace pushes don't realloc.
         self.trace.reserve(self.trace_limit.unwrap_or(0));
         self
+    }
+
+    /// Fire the print callback if installed. Called by every
+    /// Print-family instruction just before appending the line
+    /// to `self.output`. Cheap when no callback is installed.
+    fn emit_print(&self, line: &str) {
+        if let Some(cb) = &self.print_callback {
+            cb(line, self.inst_ptr);
+        }
     }
 
     pub fn heap_push_string(&mut self, s: String) -> u64 {
@@ -512,26 +542,35 @@ impl VM {
             // surfaces the buffer back to the user.
             Inst::PrintInt => {
                 let v = self.pop()? as i64;
-                self.output.push(format!("{v}"));
+                let line = format!("{v}");
+                self.emit_print(&line);
+                self.output.push(line);
                 self.push(0);
             }
             Inst::PrintFloat => {
                 let v = f64::from_bits(self.pop()?);
-                self.output.push(format!("{v}"));
+                let line = format!("{v}");
+                self.emit_print(&line);
+                self.output.push(line);
                 self.push(0);
             }
             Inst::PrintChar => {
                 let c = char::from_u32(self.pop()? as u32).unwrap_or('?');
-                self.output.push(format!("{c}"));
+                let line = format!("{c}");
+                self.emit_print(&line);
+                self.output.push(line);
                 self.push(0);
             }
             Inst::PrintString => {
                 let idx = self.pop()? as usize;
-                if let Some(HeapObject::String(s)) = self.heap.get(idx) {
-                    self.output.push(s.clone());
-                } else {
-                    return Err(RunError::HeapShapeMismatch { expected: "String", got: "other" });
-                }
+                let line = match self.heap.get(idx) {
+                    Some(HeapObject::String(s)) => s.clone(),
+                    _ => {
+                        return Err(RunError::HeapShapeMismatch { expected: "String", got: "other" });
+                    }
+                };
+                self.emit_print(&line);
+                self.output.push(line);
                 self.push(0);
             }
 

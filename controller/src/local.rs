@@ -10,9 +10,10 @@
 //! apply via the `RunPolicy` builder.
 
 use crate::connector::{http::HttpConnector, ConnectorMeta, ConnectorRegistry};
+use crate::event_sink::PersistentEventSink;
 use crate::executor::{execute_run, now_ms, RunPolicy};
 use crate::scheduler::TokioScheduler;
-use crate::{Connector, Controller, ControllerError, ControllerResult, Persistence, SqlitePersistence};
+use crate::{Connector, Controller, ControllerError, ControllerResult, EventSink, Persistence, SqlitePersistence};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use solflow_host_spec::{
@@ -36,6 +37,11 @@ pub struct LocalController {
     policy: RunPolicy,
     scheduler: TokioScheduler,
     connectors: ConnectorRegistry,
+    /// Phase C C.5: every run emits RunEvents through this sink.
+    /// The sink fan-outs to SQLite persistence (run_events table)
+    /// AND to an in-process broadcast channel the SSE endpoint
+    /// subscribes to.
+    event_sink: PersistentEventSink,
 }
 
 impl LocalController {
@@ -50,13 +56,16 @@ impl LocalController {
     pub fn new(persistence: SqlitePersistence) -> Self {
         let policy = RunPolicy::default();
         let connectors = default_connector_registry();
+        let event_sink = PersistentEventSink::new(persistence.clone());
         let scheduler = TokioScheduler::new(persistence.clone(), policy)
-            .with_connectors(connectors.clone());
+            .with_connectors(connectors.clone())
+            .with_event_sink(event_sink.clone());
         Self {
             persistence: Arc::new(persistence),
             policy,
             scheduler,
             connectors,
+            event_sink,
         }
     }
 
@@ -71,7 +80,8 @@ impl LocalController {
             (*self.persistence).clone(),
             self.policy,
         )
-        .with_connectors(self.connectors.clone());
+        .with_connectors(self.connectors.clone())
+        .with_event_sink(self.event_sink.clone());
         self
     }
 
@@ -83,7 +93,8 @@ impl LocalController {
         // Rebuild scheduler so its handler sees the new registry.
         self.scheduler =
             TokioScheduler::new((*self.persistence).clone(), self.policy)
-                .with_connectors(connectors);
+                .with_connectors(connectors)
+                .with_event_sink(self.event_sink.clone());
         self
     }
 
@@ -134,6 +145,12 @@ impl LocalController {
     /// List registered-connector metadata.
     pub fn list_connectors(&self) -> Vec<ConnectorMeta> {
         self.connectors.list_meta()
+    }
+
+    /// Expose the event sink so the HTTP layer's SSE endpoint
+    /// can subscribe to the in-process broadcast (Phase C C.5).
+    pub fn event_sink(&self) -> &PersistentEventSink {
+        &self.event_sink
     }
 }
 
@@ -217,13 +234,15 @@ impl Controller for LocalController {
 
         // Spawn execution in the background. Caller's response
         // returns immediately; client polls GET /runs/:id for
-        // completion. (Event stream lands in C.5.)
+        // completion OR subscribes to /runs/:id/events for the
+        // live stream (Phase C C.5).
         let p = (*self.persistence).clone();
         let r = record.clone();
         let policy = self.policy;
         let connectors = self.connectors.clone();
+        let event_sink: Arc<dyn EventSink> = Arc::new(self.event_sink.clone());
         tokio::spawn(async move {
-            execute_run(p, r, policy, Some(connectors)).await;
+            execute_run(p, r, policy, Some(connectors), Some(event_sink)).await;
         });
 
         Ok(RunCreated {

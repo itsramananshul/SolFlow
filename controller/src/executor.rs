@@ -13,14 +13,19 @@
 //! returns `NotImplemented` for now.
 
 use crate::connector::ConnectorRegistry;
+use crate::event_sink::{
+    completed_event, failed_event, queued_event, started_event,
+    EventSink, RunEventCtx,
+};
 use crate::{Persistence, SqlitePersistence};
 use solflow_host_spec::{
-    decode_bytecode, RunOutput, RunRecord, RunStatus,
+    decode_bytecode, RunEvent, RunOutput, RunRecord, RunStatus, RuntimeErrorView,
 };
 use solflow_runtime::{
     run_program_with, ExtCallContext, ExtCallError, ExtCallHandler,
-    ExtCallHandlerArc, ExtCallValue, RunOptions,
+    ExtCallHandlerArc, ExtCallValue, PrintCallback, RunError, RunOptions,
 };
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,26 +50,39 @@ impl Default for RunPolicy {
 /// Caller spawns this on a tokio task. Persists the final
 /// RunRecord state through `persistence`.
 ///
-/// Phase C C.4 (c76): now accepts an optional `ConnectorRegistry`.
-/// When `Some`, the VM's `ExtCall` instruction dispatches through
-/// the registry; when `None`, ExtCall returns the existing
-/// `ExtCallBlocked` error (matches browser-sim).
+/// Phase C C.4 (c76): accepts an optional `ConnectorRegistry`.
+/// Phase C C.5 (c82): accepts an optional `EventSink` — when
+/// `Some`, emits Queued / Started / Print / ExtCallStarted /
+/// ExtCallCompleted / Completed / Failed events the SSE endpoint
+/// can stream to clients in real time.
 pub async fn execute_run(
     persistence: SqlitePersistence,
     mut record: RunRecord,
     policy: RunPolicy,
     connectors: Option<ConnectorRegistry>,
+    event_sink: Option<Arc<dyn EventSink>>,
 ) {
+    // Per-run event context (shared with the VM print hook + the
+    // ExtCallHandler so all three sources of events share the
+    // same monotonic seq counter).
+    let ctx = event_sink
+        .as_ref()
+        .map(|s| Arc::new(RunEventCtx::new(record.id.clone(), s.clone())));
+
+    if let Some(c) = &ctx {
+        c.emit(queued_event(c)).await;
+    }
+
     // Mark Running + persist before the VM starts so callers
     // polling GET /runs/:id see the transition.
     record.status = RunStatus::Running;
     record.started_at = Some(now_ms());
     if let Err(e) = persistence.put_run(&record).await {
-        // If persistence is broken we can't even record the
-        // run; log + bail. Tracing only — caller already
-        // got their HTTP 202.
         tracing::error!("execute_run persistence put_run (Running) failed: {e}");
         return;
+    }
+    if let Some(c) = &ctx {
+        c.emit(started_event(c)).await;
     }
 
     // Load + decode bytecode.
@@ -73,7 +91,7 @@ pub async fn execute_run(
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("execute_run get_workflow_bytecode failed: {e}");
-                finalize_failed(persistence, record, format!("{e}")).await;
+                finalize_failed(persistence, record, format!("{e}"), ctx.clone()).await;
                 return;
             }
         };
@@ -85,27 +103,44 @@ pub async fn execute_run(
                 persistence,
                 record,
                 format!("bytecode decode failed: {e}"),
+                ctx.clone(),
             )
             .await;
             return;
         }
     };
 
-    // Run through the canonical VM. Bounded by tokio timeout so
-    // wall-clock limits actually fire (the VM's own step_limit
-    // bounds CPU but not real time).
-    //
-    // run_program_with is synchronous; wrap in spawn_blocking so
-    // the tokio runtime stays responsive to other tasks.
+    // Build VM options. PrintCallback + ExtCallHandler both
+    // emit events through the shared ctx so the seq stream
+    // stays monotonic across sources.
+    let print_callback: Option<PrintCallback> = ctx.as_ref().map(|c| {
+        let (seq, sink, handle, run_id) = c.split_for_print();
+        Arc::new(move |line: &str, _inst_ptr: usize| {
+            let event = RunEvent::Print {
+                run_id: run_id.clone(),
+                seq: seq.fetch_add(1, Ordering::Relaxed),
+                ts: now_ms(),
+                text: line.to_string(),
+                // c85 will plumb source_span via the
+                // instruction_spans sidecar; for now None.
+                source_span: None,
+            };
+            let sink_clone = sink.clone();
+            handle.spawn(async move { sink_clone.emit(event).await });
+        }) as PrintCallback
+    });
+
     let opts = RunOptions {
         step_limit: Some(policy.step_limit),
-        trace: false, // C.5 will enable + persist trace via events.
+        trace: false, // C.5 trace streaming via events lands here too eventually
         ext_call_handler: connectors.map(|registry| {
             Arc::new(ControllerExtCallHandler {
                 registry,
                 tokio_handle: tokio::runtime::Handle::current(),
+                ctx: ctx.clone(),
             }) as ExtCallHandlerArc
         }),
+        print_callback,
     };
     let bytecode_for_task = bytecode.clone();
     let vm_future = tokio::task::spawn_blocking(move || {
@@ -119,6 +154,7 @@ pub async fn execute_run(
                 persistence,
                 record,
                 format!("VM task panicked: {join_err}"),
+                ctx.clone(),
             )
             .await;
             return;
@@ -132,6 +168,7 @@ pub async fn execute_run(
                     "wall-clock timeout: {}s",
                     policy.wall_clock_timeout.as_secs()
                 ),
+                ctx.clone(),
             )
             .await;
             return;
@@ -140,25 +177,70 @@ pub async fn execute_run(
 
     // Translate VM outcome to RunRecord.
     record.completed_at = Some(now_ms());
-    if let Some(_err) = outcome.error {
+    let vm_error = outcome.error.clone();
+    let final_output = RunOutput {
+        return_value: if vm_error.is_some() {
+            None
+        } else {
+            Some(outcome.return_value as i64)
+        },
+        output: outcome.output.clone(),
+        steps: outcome.steps,
+    };
+    if vm_error.is_some() {
         record.status = RunStatus::Failed;
-        // C.2: we capture the runtime-error message on the
-        // record. Structured runtime errors land in events in C.5.
-        record.output = Some(RunOutput {
-            return_value: None,
-            output: outcome.output.clone(),
-            steps: outcome.steps,
-        });
     } else {
         record.status = RunStatus::Succeeded;
-        record.output = Some(RunOutput {
-            return_value: Some(outcome.return_value as i64),
-            output: outcome.output,
-            steps: outcome.steps,
-        });
     }
+    record.output = Some(final_output.clone());
     if let Err(e) = persistence.put_run(&record).await {
         tracing::error!("execute_run persistence put_run (final) failed: {e}");
+    }
+
+    // Emit terminal event AFTER the final RunRecord write so any
+    // subscriber that immediately fetches the record on Completed
+    // sees the final state.
+    if let Some(c) = &ctx {
+        match vm_error {
+            Some(err) => {
+                c.emit(failed_event(c, run_error_to_view(&err), None)).await;
+            }
+            None => c.emit(completed_event(c, final_output)).await,
+        }
+    }
+}
+
+/// Map the runtime's `RunError` to the wire-stable
+/// `RuntimeErrorView` used in run events. Mirrors the mapping in
+/// compiler-wasm's RunResultView so the editor's discriminator
+/// stays uniform across browser-sim + controller paths.
+fn run_error_to_view(e: &RunError) -> RuntimeErrorView {
+    match e {
+        RunError::DivByZero => RuntimeErrorView::DivByZero,
+        RunError::IndexOutOfBounds { index, length } => {
+            RuntimeErrorView::IndexOutOfBounds { index: *index, length: *length }
+        }
+        RunError::StackUnderflow => RuntimeErrorView::StackUnderflow,
+        RunError::StepLimit { limit } => RuntimeErrorView::StepLimit { limit: *limit },
+        RunError::ExtCallBlocked { function_name, url } => {
+            RuntimeErrorView::ExtCallBlocked {
+                function_name: function_name.clone(),
+                url: url.clone(),
+            }
+        }
+        RunError::ExtCallFailed { connector, function_name, message } => {
+            RuntimeErrorView::ExtCallFailed {
+                connector: connector.clone(),
+                function_name: function_name.clone(),
+                message: message.clone(),
+            }
+        }
+        RunError::HeapShapeMismatch { expected, got } => {
+            RuntimeErrorView::HeapShapeMismatch {
+                expected: (*expected).to_string(),
+                got: (*got).to_string(),
+            }
+        }
     }
 }
 
@@ -166,6 +248,7 @@ async fn finalize_failed(
     persistence: SqlitePersistence,
     mut record: RunRecord,
     reason: String,
+    ctx: Option<Arc<RunEventCtx>>,
 ) {
     record.status = RunStatus::Failed;
     record.completed_at = Some(now_ms());
@@ -176,6 +259,22 @@ async fn finalize_failed(
     });
     if let Err(e) = persistence.put_run(&record).await {
         tracing::error!("finalize_failed persistence put_run failed: {e}");
+    }
+    if let Some(c) = ctx {
+        // Use a synthetic ExtCallFailed-like view for controller-
+        // pre-VM errors; downstream renderers handle the unified
+        // shape. We use ExtCallFailed since that variant already
+        // carries a free-form message.
+        c.emit(failed_event(
+            &c,
+            RuntimeErrorView::ExtCallFailed {
+                connector: "(controller)".into(),
+                function_name: "(pre-vm)".into(),
+                message: reason,
+            },
+            None,
+        ))
+        .await;
     }
 }
 
@@ -203,6 +302,10 @@ pub fn now_ms() -> i64 {
 struct ControllerExtCallHandler {
     registry: ConnectorRegistry,
     tokio_handle: tokio::runtime::Handle,
+    /// Optional event ctx; when present, emit ExtCallStarted +
+    /// ExtCallCompleted around every dispatch. The seq counter
+    /// is shared with the rest of execute_run via Arc.
+    ctx: Option<Arc<RunEventCtx>>,
 }
 
 impl ExtCallHandler for ControllerExtCallHandler {
@@ -223,6 +326,19 @@ impl ExtCallHandler for ControllerExtCallHandler {
             ExtCallError::failed("(unresolved)", ctx.function_name, e.to_string())
         })?;
 
+        // Emit ExtCallStarted (fire-and-forget so the VM doesn't
+        // pace on persistence latency).
+        if let Some(ec) = &self.ctx {
+            let event = RunEvent::ExtCallStarted {
+                run_id: ec.run_id.clone(),
+                seq: ec.next_seq(),
+                ts: now_ms(),
+                connector: parsed.name.clone(),
+                fn_name: ctx.function_name.to_string(),
+            };
+            ec.spawn_emit(event);
+        }
+
         // Marshal args + return-type hint into the invocation
         // payload. C.4: positional primitive args become a JSON
         // array (`[arg0, arg1, ...]`). The HTTP connector then
@@ -240,12 +356,26 @@ impl ExtCallHandler for ControllerExtCallHandler {
         };
 
         // Block on the async invocation from this blocking thread.
-        let outcome = self
-            .tokio_handle
-            .block_on(connector.invoke(invocation))
-            .map_err(|e| {
-                ExtCallError::failed(parsed.name.clone(), ctx.function_name, e.to_string())
-            })?;
+        let outcome_result = self.tokio_handle.block_on(connector.invoke(invocation));
+
+        // Emit ExtCallCompleted with ok=true/false BEFORE we
+        // propagate the error so the event stream stays
+        // chronological even on failure.
+        if let Some(ec) = &self.ctx {
+            let event = RunEvent::ExtCallCompleted {
+                run_id: ec.run_id.clone(),
+                seq: ec.next_seq(),
+                ts: now_ms(),
+                connector: parsed.name.clone(),
+                fn_name: ctx.function_name.to_string(),
+                ok: outcome_result.is_ok(),
+            };
+            ec.spawn_emit(event);
+        }
+
+        let outcome = outcome_result.map_err(|e| {
+            ExtCallError::failed(parsed.name.clone(), ctx.function_name, e.to_string())
+        })?;
 
         // Decode the JSON-shaped outcome value back into the
         // SOL return type the VM is expecting.
@@ -364,7 +494,7 @@ mod tests {
             completed_at: None,
         };
         let run_id = record.id.clone();
-        execute_run(p.clone(), record, RunPolicy::default(), None).await;
+        execute_run(p.clone(), record, RunPolicy::default(), None, None).await;
         let got = p.get_run(&run_id).await.unwrap();
         assert_eq!(got.status, RunStatus::Succeeded);
         let out = got.output.unwrap();
@@ -393,10 +523,73 @@ mod tests {
             completed_at: None,
         };
         let run_id = record.id.clone();
-        execute_run(p.clone(), record, RunPolicy::default(), None).await;
+        execute_run(p.clone(), record, RunPolicy::default(), None, None).await;
         let got = p.get_run(&run_id).await.unwrap();
         assert_eq!(got.status, RunStatus::Failed);
         assert!(got.output.unwrap().return_value.is_none());
+    }
+
+    /// Phase C C.5 c82 — execute_run with an event sink installed
+    /// fans the lifecycle out as RunEvents AND streams Print
+    /// events as the VM emits them.
+    #[tokio::test]
+    async fn execute_run_emits_events_through_sink() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let wf = submit_test_workflow(
+            &p,
+            r#"function start() -> int {
+                 print("alpha");
+                 print("beta");
+                 return 7;
+               }"#,
+        )
+        .await;
+        let run_id = format!("run_{}", uuid::Uuid::new_v4());
+        let record = RunRecord {
+            id: run_id.clone(),
+            workflow_id: wf,
+            status: RunStatus::Queued,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: now_ms(),
+            started_at: None,
+            completed_at: None,
+        };
+        let sink = crate::event_sink::CapturingEventSink::default();
+        let sink_arc: Arc<dyn crate::EventSink> = Arc::new(sink.clone());
+        execute_run(
+            p.clone(),
+            record,
+            RunPolicy::default(),
+            None,
+            Some(sink_arc),
+        )
+        .await;
+
+        // Allow fire-and-forget print emits to drain.
+        for _ in 0..50 {
+            if sink.events.lock().await.len() >= 5 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let events = sink.events.lock().await.clone();
+        let kinds: Vec<&'static str> = events.iter().map(|e| e.kind()).collect();
+        // Order: Queued, Started, then 2 Prints (possibly interleaved-
+        // ordered after Started but before Completed), then Completed.
+        assert_eq!(kinds.first(), Some(&"Queued"));
+        assert!(kinds.contains(&"Started"));
+        assert_eq!(kinds.iter().filter(|k| **k == "Print").count(), 2);
+        assert_eq!(kinds.last(), Some(&"Completed"));
+
+        // Seqs are monotonic (allocated by the shared atomic).
+        let seqs: Vec<u64> = events.iter().map(|e| e.seq()).collect();
+        for w in seqs.windows(2) {
+            assert!(w[0] < w[1], "seq must strictly increase: {seqs:?}");
+        }
     }
 
     #[tokio::test]
@@ -424,7 +617,7 @@ mod tests {
             step_limit: 1000, // tiny limit for the test
             wall_clock_timeout: Duration::from_secs(10),
         };
-        execute_run(p.clone(), record, policy, None).await;
+        execute_run(p.clone(), record, policy, None, None).await;
         let got = p.get_run(&run_id).await.unwrap();
         assert_eq!(got.status, RunStatus::Failed);
     }

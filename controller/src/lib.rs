@@ -30,12 +30,14 @@
                               // reference impls do.
 
 pub mod connector;
+pub mod event_sink;
 pub mod executor;
 pub mod local;
 pub mod persistence;
 pub mod scheduler;
 pub mod server;
 
+pub use event_sink::{EventSink, PersistentEventSink, RunEventCtx};
 pub use local::LocalController;
 pub use persistence::SqlitePersistence;
 pub use scheduler::TokioScheduler;

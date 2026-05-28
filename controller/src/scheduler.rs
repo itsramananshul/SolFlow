@@ -35,8 +35,9 @@
 //!   user fixes it.
 
 use crate::connector::ConnectorRegistry;
+use crate::event_sink::PersistentEventSink;
 use crate::executor::{execute_run, now_ms, RunPolicy};
-use crate::{ControllerError, ControllerResult, Persistence, SqlitePersistence};
+use crate::{ControllerError, ControllerResult, EventSink, Persistence, SqlitePersistence};
 use chrono::{TimeZone, Utc};
 use cron::Schedule as CronSchedule;
 use solflow_host_spec::{
@@ -67,6 +68,10 @@ pub struct TokioScheduler {
     /// through this registry — matching what `LocalController`
     /// does for Manual runs.
     connectors: Option<ConnectorRegistry>,
+    /// Optional event sink. When `Some`, scheduler-spawned runs
+    /// emit RunEvents (Phase C C.5). Same fan-out as Manual
+    /// runs from `LocalController`.
+    event_sink: Option<PersistentEventSink>,
 }
 
 impl TokioScheduler {
@@ -77,6 +82,7 @@ impl TokioScheduler {
             tick_interval: DEFAULT_TICK_INTERVAL,
             started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             connectors: None,
+            event_sink: None,
         }
     }
 
@@ -91,6 +97,13 @@ impl TokioScheduler {
     /// also dispatch ExtCall through it (Phase C C.4 c77).
     pub fn with_connectors(mut self, connectors: ConnectorRegistry) -> Self {
         self.connectors = Some(connectors);
+        self
+    }
+
+    /// Plug an event sink in so scheduler-spawned runs emit
+    /// RunEvents (Phase C C.5 c82).
+    pub fn with_event_sink(mut self, sink: PersistentEventSink) -> Self {
+        self.event_sink = Some(sink);
         self
     }
 
@@ -235,8 +248,12 @@ impl TokioScheduler {
         let r = record.clone();
         let policy = self.policy;
         let connectors = self.connectors.clone();
+        let event_sink: Option<Arc<dyn EventSink>> = self
+            .event_sink
+            .clone()
+            .map(|s| Arc::new(s) as Arc<dyn EventSink>);
         tokio::spawn(async move {
-            execute_run(p, r, policy, connectors).await;
+            execute_run(p, r, policy, connectors, event_sink).await;
         });
         Ok(record)
     }

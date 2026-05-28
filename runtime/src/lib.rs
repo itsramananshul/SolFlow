@@ -12,7 +12,7 @@ pub use extcall::{
     ExtCallContext, ExtCallError, ExtCallHandler, ExtCallHandlerArc, ExtCallType,
     ExtCallValue,
 };
-pub use vm::{HeapObject, VM};
+pub use vm::{HeapObject, PrintCallback, VM};
 
 use solflow_compiler::bytecode::Inst;
 
@@ -72,6 +72,14 @@ pub struct RunOptions {
     /// materializes args + invokes the handler synchronously
     /// and pushes its returned value back onto the stack.
     pub ext_call_handler: Option<ExtCallHandlerArc>,
+    /// Optional print callback fired on every `print(...)` call.
+    /// `None` keeps the existing browser-sim behavior (output
+    /// captured only in `RunOutcome.output`). `Some` lets the
+    /// controller stream `RunEvent::Print` events in real time
+    /// (Phase C C.5 c82). The callback receives `(line,
+    /// inst_ptr)` so the controller can look up the source
+    /// span via `instruction_spans`.
+    pub print_callback: Option<PrintCallback>,
 }
 
 /// Run a compiled program to completion (or to first runtime
@@ -86,6 +94,7 @@ pub fn run_program(program: &[Inst], step_limit: Option<usize>) -> RunOutcome {
             step_limit,
             trace: false,
             ext_call_handler: None,
+            print_callback: None,
         },
     )
 }
@@ -101,6 +110,7 @@ pub fn run_program_with(program: &[Inst], opts: RunOptions) -> RunOutcome {
         vm = vm.with_trace(None);
     }
     vm.ext_call_handler = opts.ext_call_handler;
+    vm.print_callback = opts.print_callback;
     match vm.run() {
         Ok(return_value) => RunOutcome {
             return_value,
