@@ -14,6 +14,7 @@ import StatusBar from '@/components/StatusBar.vue';
 import HelpModal from '@/components/HelpModal.vue';
 import ControllerSettingsModal from '@/components/ControllerSettingsModal.vue';
 import SchedulesModal from '@/components/SchedulesModal.vue';
+import RunHistoryModal from '@/components/RunHistoryModal.vue';
 import Splitter from '@/components/Splitter.vue';
 import SolManModal from '@/components/SolManModal.vue';
 import WelcomeScreen from '@/components/WelcomeScreen.vue';
@@ -33,6 +34,7 @@ const runOpen = ref(false);
 const helpOpen = ref(false);
 const controllerSettingsOpen = ref(false);
 const schedulesOpen = ref(false);
+const runHistoryOpen = ref(false);
 const solManOpen = ref(false);
 const welcomeOpen = ref(false);
 
@@ -320,6 +322,7 @@ function downloadSol() {
       @open-help="helpOpen = true"
       @open-controller-settings="controllerSettingsOpen = true"
       @open-schedules="schedulesOpen = true"
+      @open-run-history="runHistoryOpen = true"
       @open-sol-man="solManOpen = true"
       @open-welcome="welcomeOpen = true"
       @toggle-presentation="togglePresentation"
@@ -414,6 +417,10 @@ function downloadSol() {
     <SchedulesModal
       :open="schedulesOpen"
       @close="schedulesOpen = false"
+    />
+    <RunHistoryModal
+      :open="runHistoryOpen"
+      @close="runHistoryOpen = false"
     />
     <SolManModal :open="solManOpen" @close="solManOpen = false" />
     <WelcomeScreen

@@ -12,6 +12,7 @@ const emit = defineEmits<{
   (e: 'open-help'): void;
   (e: 'open-controller-settings'): void;
   (e: 'open-schedules'): void;
+  (e: 'open-run-history'): void;
   (e: 'open-sol-man'): void;
   (e: 'open-welcome'): void;
   (e: 'toggle-presentation'): void;
@@ -100,6 +101,9 @@ function openControllerSettings() {
 }
 function openSchedules() {
   emit('open-schedules');
+}
+function openRunHistory() {
+  emit('open-run-history');
 }
 function openSolMan() {
   emit('open-sol-man');
@@ -370,6 +374,18 @@ function toggleSampleMenu() {
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
           <circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.4" />
           <path d="M8 5v3l2 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+      </button>
+      <button
+        class="ghost icon-btn run-history-btn"
+        @click="openRunHistory"
+        title="Run history (past runs + event replay)"
+        aria-label="Run history"
+      >
+        <!-- list-with-arrow: past runs -->
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true">
+          <path d="M3 4h10M3 8h7M3 12h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          <path d="M12 10l2 2-2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </button>
       <button class="ghost icon-btn help-btn" @click="openHelp" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
