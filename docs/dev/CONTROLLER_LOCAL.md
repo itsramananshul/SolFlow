@@ -24,11 +24,11 @@ What it **doesn't** give you yet (deferred to later C milestones):
 
 | Capability | Lands in |
 |---|---|
-| Real external HTTP calls (ExtCall) | C.4 |
-| Live event stream + execution-trace from controller | C.5 |
-| Run cancellation (DELETE /runs/:id returns 501) | C.6 |
-| Schedules / cron triggers / webhook ingestion | C.3 |
-| Remote (TLS) controller mode | C.7 |
+| Real external HTTP calls (ExtCall) | C.4 (shipped) |
+| Live event stream + execution-trace from controller | C.5 (shipped) |
+| Run cancellation (DELETE /runs/:id) | C.6 (shipped) |
+| Schedules / cron triggers / webhook ingestion | C.3 (shipped) |
+| TLS + bearer-token auth + remote operation | C.7 (shipped — see [REMOTE_CONTROLLER.md](./REMOTE_CONTROLLER.md)) |
 
 ## One-time setup
 

@@ -24,6 +24,12 @@ compiler, or runtime.
 - **[Run Lifecycle](./RUN_LIFECYCLE.md)** — Phase C C.6 state
   machine, concurrency policy, cancellation, timeout, queue
   saturation, boot recovery, operational troubleshooting
+- **[Remote Controller](./REMOTE_CONTROLLER.md)** — Phase C C.7
+  TLS + bearer-token auth, URL classification, editor remote UX,
+  smoke recipes
+- **[Controller Operations](./CONTROLLER_OPERATIONS.md)** — Phase
+  C C.8 operator reference: full env-var table, startup logs,
+  request lifecycle, failure-mode catalog, backup guidance
 - **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — code style + test discipline
 
 ## Deep dives
