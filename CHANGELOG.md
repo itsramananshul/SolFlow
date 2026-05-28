@@ -7,6 +7,49 @@ SolFlow uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Phase C C.5 (event log + observability)
+
+- **Real-time run event stream.** Every run on the controller
+  emits structured events (Queued / Started / Print /
+  ExtCallStarted / ExtCallCompleted / Completed / Failed)
+  persisted in SQLite + broadcast over an SSE endpoint
+  (`GET /runs/:id/events`). Long-running workflows show live
+  output in the editor without polling.
+- **`Live` tab in the Run modal** — for controller-local runs,
+  every event the controller emits renders as it arrives.
+  Print rows carry source spans (looked up via the workflow's
+  instruction_spans sidecar) so users can click straight to
+  the source line or canvas node.
+- **Run History modal** (Toolbar list-with-arrow icon) — past
+  runs queryable by workflow / status / limit. Clicking any
+  row opens an inline event replay panel that streams the
+  full persisted event log via SSE.
+- **`docs/dev/EVENTS.md`** — event-type reference, architecture
+  diagram, HTTP API + lifecycle, TS client examples, "add a
+  new event kind" recipe, failure-mode troubleshooting.
+
+### Internal
+
+- `migrations/0003_run_events.sql` with `(run_id, seq)`
+  composite PK; `Persistence::append_event` + `list_events`
+  go from no-ops (C.2 stubs) to real implementations plus
+  a non-trait `list_all_events` for SSE replay-from-start.
+- VM gains optional `print_callback: PrintCallback` —
+  browser-safe (no callback installed by compiler-wasm) but
+  lets the controller fire `RunEvent::Print` per print
+  instruction with the line + inst_ptr.
+- New `controller::event_sink` module with the `EventSink`
+  trait, `PersistentEventSink` (SQLite + 1024-event tokio
+  broadcast), and `RunEventCtx` per-run helper sharing an
+  `Arc<AtomicU64>` seq counter across sources.
+- SSE handler in axum recovers from broadcast `Lagged` by
+  re-querying the persistent log + emits 15s keep-alive
+  heartbeats for reverse-proxy compatibility.
+- New TS `openRunEventStream(...)` wrapping the browser
+  `EventSource` API with `onDone('terminal' | 'closed')`
+  discrimination and a `eventSourceCtor` test seam.
+- +7 Rust tests, +7 vitest. Totals: 137 rust + 134 vitest.
+
 ### Added — Phase C C.4 (connector framework)
 
 - **`ext function` works for real now.** When a workflow runs

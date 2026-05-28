@@ -276,23 +276,86 @@ SOL VM.
 
 ---
 
-### C.5 — Event log + observability UI
+### C.5 — Event log + observability UI ✅ SHIPPED
 
 **Goal.** Real-time + persistent execution visibility.
 
-**Deliverables.**
-- WebSocket endpoint `/runs/:id/events`
-- `run_events` table populated for every run
-- Editor "Run Log" panel listening to the stream
-- Editor "Run history" panel querying past runs
-- Existing source-span / node-mapping (c42 / c43 / c44) plumbs
-  through controller events; click-to-source + click-to-node
-  works in the Run Log
+**Delivered (c81 – c88).**
+- `migrations/0003_run_events.sql` — `(run_id, seq)` composite
+  PK + denormalized `payload_json`; per-arch §6.1.
+- `Persistence::append_event` + `list_events` are no longer
+  no-ops (C.2 left them stubbed); plus a non-trait
+  `list_all_events` for the SSE "from start" replay path.
+- `host-spec::RunEvent` gains `run_id()` / `seq()` / `ts()` /
+  `kind()` / `is_terminal()` helpers so persistence + SSE
+  don't pattern-match every variant.
+- New `runtime::extcall::PrintCallback` hook on the VM —
+  browser-safe (no callback installed by compiler-wasm) but
+  lets the controller emit real-time `RunEvent::Print` on
+  every print instruction with the line + inst_ptr.
+- New `controller::event_sink::EventSink` trait with
+  `PersistentEventSink` (SQLite + 1024-event tokio
+  broadcast) and `RunEventCtx` per-run helper carrying the
+  shared `Arc<AtomicU64>` seq counter.
+- `execute_run` emits Queued / Started / Print* / ExtCallStarted /
+  ExtCallCompleted / Completed | Failed in monotonic seq
+  order. Print events carry source spans decoded from the
+  workflow's `instruction_spans` sidecar so the editor can
+  click-to-source on each print line.
+- SSE endpoint `GET /runs/:id/events?after=N` combining
+  persistent replay (strict `seq > N`, or all when omitted)
+  with the in-process broadcast subscription. Handles
+  broadcast `Lagged` by re-querying the persistent log so no
+  event is silently missed. 15s keep-alive heartbeat for
+  reverse-proxy-friendliness. Terminal-event auto-close.
+- TS `openRunEventStream(...)` client wrapping browser
+  EventSource — per-kind `addEventListener` registration,
+  `onDone` discriminator (`'terminal'` vs `'closed'`),
+  testable seam via `eventSourceCtor` injection.
+- RunModal gains a "Live" tab streaming events as they
+  arrive in controller-local mode; Print rows with source
+  spans get a show-source affordance using the existing
+  `findNodeForSpan` / `jumpToNode` machinery.
+- New `RunHistoryModal` (Toolbar list-with-arrow icon)
+  filters past runs by workflow + status + limit; clicking
+  any row opens an inline event-replay panel.
+- `docs/dev/EVENTS.md` — event-type table, architecture
+  diagram, HTTP API + lifecycle, TS client examples, editor
+  UX overview, "add a new event kind" recipe, failure-mode
+  troubleshooting.
 
-**Success criteria.**
-- Long-running workflows show live output streaming in the
-  editor without polling
-- Past runs queryable by status / time range / workflow
+**Success criteria — met.**
+- ✅ Long-running workflows show live output streaming
+  without polling — live smoke (binary on :13943): submit
+  `print("hello"); print("world")` workflow, curl SSE → 5
+  events arrive in seq order (Queued / Started / Print "hello"
+  / Print "world" / Completed) with correct timestamps.
+  Editor's Live tab in RunModal renders the same stream
+  client-side.
+- ✅ Past runs queryable by status / time / workflow —
+  RunHistoryModal filters via `GET /workflows/:id/runs?status=&limit=`;
+  clicking any row replays the full event log via SSE.
+
+**Test coverage.**
+- Rust: 78 controller (+7 from C.4) — 2 persistence
+  (append_event round-trip, every-variant round-trip), 2
+  event_sink (PersistentEventSink + CapturingEventSink),
+  1 executor (end-to-end emit), 2 server (SSE replay, after=N).
+  Total Rust workspace: 137.
+- TS: 134 vitest (+7) — full event-stream client coverage
+  with FakeEventSource (URL, ?after=N, terminal close,
+  explicit close, bad-JSON onError, no-EventSource error).
+
+**Non-goals (deferred as planned).**
+- WebSocket not used — SSE is the better fit (one-way,
+  built-in browser auto-reconnect via Last-Event-ID, no
+  framing overhead). WebSocket can return in C.7 if needed
+  for bidirectional streams.
+- No backpressure to the VM. If the broadcast lags, the
+  SSE handler recovers via the persistent log; the VM keeps
+  emitting at full speed.
+- No metric aggregation (events-per-second, p99 latency,
+  etc.). That's a C.8 stabilization concern.
 
 ---
 
@@ -407,8 +470,17 @@ These belong to Phase D or later:
   - c78 TS client connector surface + editor error mapping
   - c79 CONNECTORS.md + roadmap + CHANGELOG
   - c80 final polish + close
-- **C.5 — Event log + observability UI** — next milestone
-- C.6 / C.7 / C.8 — not started
+- **C.5 — Event log + observability UI** — ✅ complete (c81–c88)
+  - c81 run_events table + Persistence trait real impl
+  - c82 EventSink + VM print hook + executor emit wiring
+  - c83 SSE /runs/:id/events endpoint (replay + live + Lagged recovery)
+  - c84 TS event-stream client using EventSource
+  - c85 RunModal Live tab + click-to-source/node
+  - c86 RunHistoryModal — past runs queryable by status/workflow
+  - c87 EVENTS.md + roadmap + CHANGELOG
+  - c88 final polish + close
+- **C.6 — Multi-run management** — next milestone
+- C.7 / C.8 — not started
 
 ## How to contribute to Phase C
 

@@ -19,6 +19,8 @@ compiler, or runtime.
 - **[Connectors](./CONNECTORS.md)** — Phase C C.4 connector
   framework, HTTP reference connector, URL grammar, ExtCall
   semantics, security boundaries
+- **[Events](./EVENTS.md)** — Phase C C.5 run-event log,
+  SSE streaming, replay semantics, editor live-log UX
 - **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — code style + test discipline
 
 ## Deep dives
