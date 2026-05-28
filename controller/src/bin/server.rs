@@ -11,13 +11,14 @@
 //!   SOLFLOW_CONTROLLER_DB       SQLite path (default ./solflow.db)
 //!   SOLFLOW_CONTROLLER_STEP_LIMIT     per-run step cap (default 10_000_000)
 //!   SOLFLOW_CONTROLLER_TIMEOUT_SECS   per-run wall-clock cap (default 600)
+//!   SOLFLOW_CONTROLLER_AUTH_TOKEN     bearer token (default unset → no auth)
 //!   RUST_LOG                    tracing filter (default info)
 //!
 //! Graceful shutdown on Ctrl+C (SIGINT) — in-flight requests
 //! drain before exit.
 
 use solflow_controller::executor::RunPolicy;
-use solflow_controller::{server, LocalController, SqlitePersistence};
+use solflow_controller::{server, AuthConfig, LocalController, SqlitePersistence};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -38,15 +39,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_events_per_run: env_u64("SOLFLOW_CONTROLLER_MAX_EVENTS_PER_RUN", 1_000_000),
     };
 
+    // Phase C C.7 c98 — read auth token from env. Empty / unset =
+    // disabled (default). Non-empty = required on every protected
+    // endpoint.
+    let auth = AuthConfig::from_env_token(
+        std::env::var("SOLFLOW_CONTROLLER_AUTH_TOKEN").ok(),
+    );
+
     tracing::info!(%bind, %db_path, "starting solflow-controller");
     tracing::info!(
         step_limit = policy.step_limit,
         wall_clock_secs = policy.wall_clock_timeout.as_secs(),
         "run policy",
     );
+    match &auth {
+        AuthConfig::Bearer { .. } => tracing::info!(
+            "auth: bearer-token required on protected endpoints"
+        ),
+        AuthConfig::Disabled => tracing::info!(
+            "auth: disabled (set SOLFLOW_CONTROLLER_AUTH_TOKEN to enable)"
+        ),
+    }
 
     let persistence = SqlitePersistence::open(&db_path).await?;
-    let controller = LocalController::new(persistence).with_policy(policy);
+    let controller = LocalController::new(persistence)
+        .with_policy(policy)
+        .with_auth(auth);
     // Phase C C.6 c91 — boot recovery: re-enqueue any run row
     // the previous controller process left in a non-terminal
     // status (Queued / Starting / Running / Cancelling). At

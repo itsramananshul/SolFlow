@@ -84,6 +84,139 @@ pub enum ControllerError {
     /// a "controller busy" UX distinct from generic 5xx.
     #[error("queue full: {current_depth}/{capacity}; retry shortly")]
     QueueFull { current_depth: usize, capacity: usize },
+    /// Phase C C.7 c98 — request rejected by the auth middleware.
+    /// Surfaces as HTTP 401 with a structured `code` so clients
+    /// can render "controller requires token" distinctly from
+    /// a real 4xx in the protected handler.
+    #[error("unauthorized: {reason}")]
+    Unauthorized { reason: &'static str },
+}
+
+// =============================================================
+//  Phase C C.7 c98 — auth configuration
+// =============================================================
+
+/// Controller authentication policy.
+///
+/// `Disabled` is the default + the local-dev shape. `Bearer` adds
+/// a single shared bearer token; every mutating endpoint requires
+/// `Authorization: Bearer <token>` and rejects with 401 otherwise.
+/// `/healthz` is ALWAYS open so editors can probe the controller
+/// before sending credentials, and CORS preflight (`OPTIONS`)
+/// stays open so browsers can establish cross-origin sessions.
+///
+/// This is intentionally NOT enterprise auth — no per-user
+/// principals, no RBAC, no rotating tokens. It's the
+/// "remote-controller safety scaffold" the roadmap names: enough
+/// to keep a public HTTPS controller from being world-writable,
+/// not enough to claim multi-tenant safety. Phase D is where the
+/// full identity model lands.
+#[derive(Debug, Clone)]
+pub enum AuthConfig {
+    /// No authentication enforced. Default; matches pre-C.7 builds.
+    Disabled,
+    /// Single shared bearer token. Clients send
+    /// `Authorization: Bearer <token>` on every protected endpoint.
+    /// The token is compared in **constant time** to defeat
+    /// timing-side-channel guessing.
+    Bearer { token: String },
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        AuthConfig::Disabled
+    }
+}
+
+impl AuthConfig {
+    /// Construct from an optional token. `None` (or `Some("")`)
+    /// disables auth; any non-empty string enables it. Binaries
+    /// call this with the value of `SOLFLOW_CONTROLLER_AUTH_TOKEN`
+    /// so empty env → disabled, set env → enabled.
+    pub fn from_env_token(token: Option<String>) -> Self {
+        match token {
+            Some(t) if !t.is_empty() => AuthConfig::Bearer { token: t },
+            _ => AuthConfig::Disabled,
+        }
+    }
+
+    /// True iff a token is required to call protected endpoints.
+    pub fn is_required(&self) -> bool {
+        matches!(self, AuthConfig::Bearer { .. })
+    }
+
+    /// Constant-time bearer-token comparison. Returns Ok(()) when
+    /// the supplied `presented` matches the configured token, or
+    /// `Err` describing whether the header was missing /
+    /// malformed / mismatched. `Disabled` always returns Ok(()).
+    ///
+    /// We compare every byte regardless of mismatch position so
+    /// the response latency leaks nothing about how close a guess
+    /// got. Length difference still leaks (it can't be helped
+    /// without padding the comparison), but bearer tokens are
+    /// fixed-length per deployment.
+    pub fn verify(&self, presented: Option<&str>) -> Result<(), AuthFailure> {
+        match self {
+            AuthConfig::Disabled => Ok(()),
+            AuthConfig::Bearer { token } => {
+                let raw = presented.ok_or(AuthFailure::Missing)?;
+                let stripped = raw
+                    .strip_prefix("Bearer ")
+                    .or_else(|| raw.strip_prefix("bearer "))
+                    .ok_or(AuthFailure::Malformed)?;
+                if constant_time_eq(stripped.as_bytes(), token.as_bytes()) {
+                    Ok(())
+                } else {
+                    Err(AuthFailure::Mismatch)
+                }
+            }
+        }
+    }
+}
+
+/// Reason an auth check failed. Mapped by the middleware into a
+/// structured 401 + a discriminating `code` (`auth_missing` /
+/// `auth_malformed` / `auth_mismatch`) so the editor can render
+/// distinct UX per case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthFailure {
+    /// No `Authorization` header on the request.
+    Missing,
+    /// Header present but doesn't start with `Bearer `.
+    Malformed,
+    /// Header present, scheme correct, but token doesn't match.
+    Mismatch,
+}
+
+impl AuthFailure {
+    pub fn code(self) -> &'static str {
+        match self {
+            AuthFailure::Missing => "auth_missing",
+            AuthFailure::Malformed => "auth_malformed",
+            AuthFailure::Mismatch => "auth_mismatch",
+        }
+    }
+
+    pub fn reason(self) -> &'static str {
+        match self {
+            AuthFailure::Missing => "missing Authorization header",
+            AuthFailure::Malformed => "malformed Authorization header",
+            AuthFailure::Mismatch => "bearer token mismatch",
+        }
+    }
+}
+
+/// Constant-time byte comparison. Stdlib lacks one and pulling a
+/// crate for ~6 lines is more dependency than this needs.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
 }
 
 /// Result alias shared across trait surfaces.
@@ -457,5 +590,57 @@ mod tests {
     // type-checks fail at compile time.
     fn _assert_controller_object_safe() {
         let _c: Box<dyn Controller> = Box::new(StubController::new());
+    }
+
+    // ----- Phase C C.7 c98 — AuthConfig -----
+
+    #[test]
+    fn auth_config_default_is_disabled() {
+        assert!(matches!(AuthConfig::default(), AuthConfig::Disabled));
+        assert!(!AuthConfig::default().is_required());
+    }
+
+    #[test]
+    fn auth_config_from_env_token_handles_all_shapes() {
+        assert!(!AuthConfig::from_env_token(None).is_required());
+        assert!(!AuthConfig::from_env_token(Some(String::new())).is_required());
+        assert!(AuthConfig::from_env_token(Some("s3cret".into())).is_required());
+    }
+
+    #[test]
+    fn auth_disabled_accepts_anything() {
+        let cfg = AuthConfig::Disabled;
+        assert!(cfg.verify(None).is_ok());
+        assert!(cfg.verify(Some("anything")).is_ok());
+        assert!(cfg.verify(Some("Bearer bogus")).is_ok());
+    }
+
+    #[test]
+    fn auth_bearer_verify_missing_malformed_mismatch_match() {
+        let cfg = AuthConfig::Bearer { token: "abc123".into() };
+        assert_eq!(cfg.verify(None), Err(AuthFailure::Missing));
+        assert_eq!(
+            cfg.verify(Some("Token abc123")),
+            Err(AuthFailure::Malformed),
+        );
+        assert_eq!(
+            cfg.verify(Some("Bearer wrong")),
+            Err(AuthFailure::Mismatch),
+        );
+        assert!(cfg.verify(Some("Bearer abc123")).is_ok());
+        // Case-insensitive scheme keyword.
+        assert!(cfg.verify(Some("bearer abc123")).is_ok());
+    }
+
+    #[test]
+    fn auth_failure_codes_and_reasons_distinct() {
+        assert_ne!(
+            AuthFailure::Missing.code(),
+            AuthFailure::Mismatch.code(),
+        );
+        assert_ne!(
+            AuthFailure::Malformed.code(),
+            AuthFailure::Mismatch.code(),
+        );
     }
 }

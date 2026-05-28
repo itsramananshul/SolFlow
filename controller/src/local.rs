@@ -14,7 +14,10 @@ use crate::event_sink::PersistentEventSink;
 use crate::executor::{now_ms, RunPolicy};
 use crate::run_manager::{ConcurrencyPolicy, RunManager};
 use crate::scheduler::TokioScheduler;
-use crate::{Connector, Controller, ControllerError, ControllerResult, Persistence, SqlitePersistence};
+use crate::{
+    AuthConfig, Connector, Controller, ControllerError, ControllerResult,
+    Persistence, SqlitePersistence,
+};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use solflow_host_spec::{
@@ -52,6 +55,11 @@ pub struct LocalController {
     /// Cached concurrency policy so the HTTP layer can surface
     /// it without poking through the manager.
     concurrency: ConcurrencyPolicy,
+    /// Phase C C.7 c98 — auth policy. `Disabled` by default;
+    /// when set to `Bearer`, the HTTP middleware enforces the
+    /// token and `Health::auth_required` flips to `true` so
+    /// editors can probe before connecting.
+    auth: AuthConfig,
 }
 
 impl LocalController {
@@ -87,7 +95,22 @@ impl LocalController {
             event_sink,
             run_manager,
             concurrency,
+            auth: AuthConfig::default(),
         }
+    }
+
+    /// Phase C C.7 c98 — install an auth policy. Builder-style;
+    /// chain before `start_scheduler()`. Passing `AuthConfig::
+    /// Disabled` reverts to the default open-controller behavior.
+    pub fn with_auth(mut self, auth: AuthConfig) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    /// Access the configured auth policy. The server router clones
+    /// this into its auth middleware closure on construction.
+    pub fn auth(&self) -> &AuthConfig {
+        &self.auth
     }
 
     /// Replace the run policy. Builder-style; safe to chain
@@ -263,12 +286,12 @@ impl LocalController {
         &self.run_manager
     }
 
-    /// Phase C C.7 c97 — whether protected endpoints require a
+    /// Phase C C.7 — whether protected endpoints require a
     /// bearer token. Surfaced in `/healthz` so editors can probe
-    /// a controller before connecting. c97 ships the surface only;
-    /// the auth middleware that enforces this lands in c98.
+    /// a controller before connecting. Reads through the
+    /// configured `AuthConfig` (c98).
     pub fn auth_required(&self) -> bool {
-        false
+        self.auth.is_required()
     }
 }
 

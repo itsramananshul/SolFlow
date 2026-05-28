@@ -13,10 +13,14 @@
 //! served from a different origin. In production we'd lock this
 //! down per environment; this is a developer-experience MVP.
 
-use crate::{Controller, ControllerError, LocalController, Persistence};
+use crate::{
+    AuthConfig, AuthFailure, Controller, ControllerError, LocalController,
+    Persistence,
+};
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{Method, Request, StatusCode},
+    middleware::{self, Next},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
         IntoResponse, Json, Response,
@@ -46,6 +50,7 @@ pub struct AppState {
 
 /// Build the axum router with all C.2 endpoints wired up.
 pub fn router(controller: LocalController) -> Router {
+    let auth_cfg = controller.auth().clone();
     let state = AppState {
         controller: Arc::new(controller),
     };
@@ -53,8 +58,20 @@ pub fn router(controller: LocalController) -> Router {
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
-    Router::new()
+
+    // Phase C C.7 c98 — split protected vs open routes so the
+    // auth middleware only wraps mutating + sensitive endpoints.
+    //
+    // OPEN (no auth): `/healthz`. Everything else requires the
+    // bearer token when AuthConfig::Bearer is configured.
+    // CORS preflight (OPTIONS) bypasses auth inside the middleware
+    // so browsers can still establish cross-origin sessions; the
+    // CORS layer handles the actual response.
+    let open = Router::new()
         .route("/healthz", get(get_healthz))
+        .with_state(state.clone());
+
+    let protected = Router::new()
         .route("/workflows", post(post_workflows))
         .route("/workflows/:id/runs", get(get_workflow_runs))
         .route("/runs", post(post_runs))
@@ -78,8 +95,54 @@ pub fn router(controller: LocalController) -> Router {
         .route("/runs/active", get(get_active_runs))
         .route("/controller/concurrency", get(get_concurrency))
         .with_state(state)
+        .layer(middleware::from_fn_with_state(
+            Arc::new(auth_cfg),
+            require_bearer_token,
+        ));
+
+    open.merge(protected)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+// =============================================================
+//  Phase C C.7 c98 — auth middleware
+// =============================================================
+
+/// Axum middleware that enforces `Authorization: Bearer <token>`
+/// when the controller is configured with `AuthConfig::Bearer`.
+///
+/// Rules:
+///   - When `AuthConfig::Disabled` (default), every request passes
+///     through unchanged. No behavior regression vs pre-C.7 builds.
+///   - When `AuthConfig::Bearer`, `OPTIONS` requests pass through
+///     so CORS preflight still works without credentials. (The
+///     CORS layer downstream sets the headers; sending 401 on the
+///     preflight itself breaks the browser's cross-origin flow.)
+///   - Every other method requires the header. Missing / malformed
+///     / mismatched → structured 401 JSON with a distinguishing
+///     `code` and the same `error: { code, message }` envelope as
+///     every other API error so the TS client decoder is uniform.
+async fn require_bearer_token(
+    State(auth): State<Arc<AuthConfig>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if !auth.is_required() || req.method() == Method::OPTIONS {
+        return Ok(next.run(req).await);
+    }
+    let header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    match auth.verify(header) {
+        Ok(()) => Ok(next.run(req).await),
+        Err(fail) => Err(ApiError(
+            ControllerError::Unauthorized { reason: fail.reason() },
+            None,
+        )
+        .with_auth_failure(fail)),
+    }
 }
 
 async fn get_healthz(State(s): State<AppState>) -> Result<Json<Health>, ApiError> {
@@ -392,11 +455,25 @@ fn parse_status(s: &str) -> Option<RunStatus> {
 // =============================================================
 
 #[derive(Debug)]
-pub struct ApiError(pub ControllerError);
+pub struct ApiError(
+    pub ControllerError,
+    /// Phase C C.7 c98 — populated when the auth middleware
+    /// rejects a request, so the 401 body discriminates between
+    /// missing / malformed / mismatched headers. None for every
+    /// other error path.
+    pub Option<AuthFailure>,
+);
+
+impl ApiError {
+    pub(crate) fn with_auth_failure(mut self, f: AuthFailure) -> Self {
+        self.1 = Some(f);
+        self
+    }
+}
 
 impl From<ControllerError> for ApiError {
     fn from(e: ControllerError) -> Self {
-        ApiError(e)
+        ApiError(e, None)
     }
 }
 
@@ -415,6 +492,11 @@ impl IntoResponse for ApiError {
             // distinct code lets editors render "controller busy"
             // distinctly from generic 5xx + retry sanely.
             QueueFull { .. } => (StatusCode::SERVICE_UNAVAILABLE, "queue_full"),
+            // Phase C C.7 c98 — auth middleware rejection.
+            Unauthorized { .. } => {
+                let code = self.1.map(|f| f.code()).unwrap_or("unauthorized");
+                (StatusCode::UNAUTHORIZED, code)
+            }
         };
         let body = serde_json::json!({
             "error": {
@@ -441,6 +523,13 @@ mod tests {
     async fn test_app() -> Router {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let c = LocalController::new(p);
+        router(c)
+    }
+
+    async fn auth_app(token: &str) -> Router {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let c = LocalController::new(p)
+            .with_auth(AuthConfig::Bearer { token: token.into() });
         router(c)
     }
 
@@ -1051,5 +1140,146 @@ mod tests {
         assert_eq!(rec["inputs"]["ref"], "main");
         assert_eq!(rec["trigger"]["kind"], "Event");
         assert_eq!(rec["trigger"]["source"], "ci/build");
+    }
+
+    // =============================================================
+    //  Phase C C.7 c98 — bearer-token auth middleware
+    // =============================================================
+
+    #[tokio::test]
+    async fn auth_healthz_remains_open_even_when_token_required() {
+        // The whole point of leaving /healthz unauthenticated is so
+        // clients can probe `auth_required` BEFORE sending credentials.
+        let app = auth_app("s3cret").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let h: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert_eq!(h["auth_required"], true, "/healthz advertises auth need");
+        assert_eq!(h["name"], "solflow-controller");
+    }
+
+    #[tokio::test]
+    async fn auth_protected_route_rejects_missing_token() {
+        let app = auth_app("s3cret").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/controller/concurrency")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert_eq!(body["error"]["code"], "auth_missing");
+    }
+
+    #[tokio::test]
+    async fn auth_protected_route_rejects_wrong_token() {
+        let app = auth_app("s3cret").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/controller/concurrency")
+                    .header("authorization", "Bearer wrong-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert_eq!(body["error"]["code"], "auth_mismatch");
+    }
+
+    #[tokio::test]
+    async fn auth_protected_route_rejects_malformed_header() {
+        let app = auth_app("s3cret").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/controller/concurrency")
+                    .header("authorization", "Token s3cret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert_eq!(body["error"]["code"], "auth_malformed");
+    }
+
+    #[tokio::test]
+    async fn auth_protected_route_accepts_correct_token() {
+        let app = auth_app("s3cret").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/controller/concurrency")
+                    .header("authorization", "Bearer s3cret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let metrics: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert_eq!(metrics["max_concurrent_runs"], 8);
+    }
+
+    #[tokio::test]
+    async fn auth_disabled_passes_unauthenticated_requests_through() {
+        // Default `LocalController::new` → AuthConfig::Disabled.
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/controller/concurrency")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_options_preflight_bypasses_token_requirement() {
+        // CORS preflight (no body, no Authorization header) must
+        // succeed so browsers can establish cross-origin sessions.
+        let app = auth_app("s3cret").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/workflows")
+                    .header("origin", "https://editor.example")
+                    .header("access-control-request-method", "POST")
+                    .header("access-control-request-headers", "authorization,content-type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success() || resp.status() == StatusCode::NO_CONTENT,
+            "OPTIONS should bypass the auth middleware (got {})",
+            resp.status(),
+        );
     }
 }
