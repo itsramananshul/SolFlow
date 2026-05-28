@@ -308,6 +308,34 @@ log.
 | SSE stream shows `Failed { ResourceLimit: "events" }` mid-run | `max_events_per_run` cap hit. Run kept executing but events were dropped to protect the log + stream | Raise `SOLFLOW_CONTROLLER_MAX_EVENTS_PER_RUN` if legitimate; otherwise reduce event spam in workflow |
 | Recovered run shows duplicate ExtCall events in history | At-least-once recovery: the ExtCall fired pre-crash; re-execution fires it again | Document idempotency requirements; long-term: exactly-once needs C.7's distributed coordination |
 
+## Validation snapshot
+
+Live smoke run at C.6 close (binary `solflow-controller` on
+`127.0.0.1:13948`, default 8-worker / 64-queue policy unless
+noted):
+
+```
+# Concurrent execution (12 runs, default policy)
+POST /runs ×12 (slow workflow: 800k-iter loop)
+GET  /controller/concurrency (mid-run)
+  → {"max_concurrent_runs":8,"max_queued_runs":64,
+     "active_runs":8,"queued_runs":3,"saturation_policy":"Queue"}
+GET  /workflows/<id>/runs?limit=100 (after settle)
+  → 12 runs, all Succeeded
+
+# Real cancellation
+POST /runs (slow workflow); 50ms later DELETE /runs/<id>
+  → HTTP 204
+GET  /runs/<id> (300ms later)
+  → status: Cancelled
+
+# Wall-clock timeout (SOLFLOW_CONTROLLER_TIMEOUT_SECS=1)
+POST /runs (20M-iter loop)
+GET  /runs/<id> (2s later)
+  → status: TimedOut
+     output.steps: 37,417,086  (VM ran for ~1s before cancel propagated)
+```
+
 ## Related docs
 
 - [Local Controller](./CONTROLLER_LOCAL.md) — boot + env vars
