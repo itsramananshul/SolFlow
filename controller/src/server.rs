@@ -29,6 +29,7 @@ use solflow_host_spec::RunEvent;
 use std::convert::Infallible;
 use std::time::Duration;
 use crate::connector::ConnectorMeta;
+use crate::run_manager::{ActiveRunSummary, ConcurrencyMetrics};
 use solflow_host_spec::{
     Health, RunCreated, RunRecord, RunRequest, RunStatus,
     ScheduleCreate, ScheduleRecord,
@@ -73,6 +74,9 @@ pub fn router(controller: LocalController) -> Router {
         .route("/connectors", get(get_connectors))
         // Phase C C.5 — SSE run-event stream
         .route("/runs/:id/events", get(get_run_events))
+        // Phase C C.6 — orchestration introspection
+        .route("/runs/active", get(get_active_runs))
+        .route("/controller/concurrency", get(get_concurrency))
         .with_state(state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -195,6 +199,30 @@ async fn get_connectors(
     State(s): State<AppState>,
 ) -> Result<Json<Vec<ConnectorMeta>>, ApiError> {
     Ok(Json(s.controller.list_connectors()))
+}
+
+// =============================================================
+//  Phase C C.6 c92 — orchestration introspection
+// =============================================================
+
+/// `GET /runs/active` — snapshot of currently-executing runs
+/// from the RunManager's in-memory registry. Used by the
+/// editor's Active Runs panel for cancellation + status
+/// visibility under concurrent execution.
+async fn get_active_runs(
+    State(s): State<AppState>,
+) -> Result<Json<Vec<ActiveRunSummary>>, ApiError> {
+    Ok(Json(s.controller.run_manager().list_active()))
+}
+
+/// `GET /controller/concurrency` — current concurrency policy
+/// + live queue + active counts. Editor uses this to render the
+/// saturation banner ("running 8/8 — queued 12 — accepting new")
+/// without polling individual runs.
+async fn get_concurrency(
+    State(s): State<AppState>,
+) -> Result<Json<ConcurrencyMetrics>, ApiError> {
+    Ok(Json(s.controller.run_manager().metrics()))
 }
 
 // =============================================================
@@ -638,6 +666,145 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // =============================================================
+    //  Phase C C.6 c92 — orchestration HTTP routes
+    // =============================================================
+
+    #[tokio::test]
+    async fn get_active_runs_empty_by_default() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/runs/active")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        let arr = list.as_array().expect("array");
+        assert!(arr.is_empty(), "expected empty active runs on fresh app");
+    }
+
+    #[tokio::test]
+    async fn get_concurrency_returns_default_policy() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/controller/concurrency")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let metrics: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        // Defaults from ConcurrencyPolicy::default().
+        assert_eq!(metrics["max_concurrent_runs"], 8);
+        assert_eq!(metrics["max_queued_runs"], 64);
+        assert_eq!(metrics["active_runs"], 0);
+        assert_eq!(metrics["queued_runs"], 0);
+        assert_eq!(metrics["saturation_policy"], "Queue");
+    }
+
+    #[tokio::test]
+    async fn delete_run_real_end_to_end_with_active_run() {
+        // Spin up a real LocalController. Submit a slow workflow,
+        // create a run, hit DELETE /runs/:id mid-execution, then
+        // poll until the run lands on Cancelled. Exercises the
+        // full HTTP → run_manager.cancel → VM cancel_callback →
+        // reconcile path.
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let controller = LocalController::new(p);
+
+        // Compile a workflow that runs hundreds of ms.
+        let cp = compile_source(
+            r#"
+                function start() -> int {
+                    let i: int = 0;
+                    while (i < 1000000) {
+                        i = i + 1;
+                    }
+                    return i;
+                }
+            "#,
+        )
+        .value
+        .expect("clean");
+        let bc = encode_bytecode(&cp.bytecode).unwrap();
+        let host_spans: Vec<Option<solflow_host_spec::SourceSpan>> =
+            cp.instruction_spans
+                .iter()
+                .map(|s| s.map(Into::into))
+                .collect();
+        let spans = solflow_host_spec::encode_instruction_spans(&host_spans).unwrap();
+        let wf = controller
+            .submit_workflow(WorkflowSubmission {
+                name: "slow".into(),
+                description: None,
+                bytecode: bc,
+                instruction_spans: spans,
+                source: None,
+            })
+            .await
+            .unwrap()
+            .workflow_id;
+        let created = controller
+            .create_run(RunRequest {
+                workflow_id: wf,
+                trigger: solflow_host_spec::RunTrigger::Manual,
+                inputs: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+
+        let app = router(controller.clone());
+        // Give the worker a moment to start.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        // Send the DELETE.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/runs/{}", created.run_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Poll until the run reaches Cancelled. Bounded poll
+        // loop — 4 s max (overall test budget).
+        let mut landed = false;
+        for _ in 0..200 {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/runs/{}", created.run_id))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let rb = axum::body::to_bytes(resp.into_body(), 8 * 1024).await.unwrap();
+            let rec: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+            if rec["status"] == "Cancelled" {
+                landed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(landed, "DELETE /runs/:id should drive the run to Cancelled");
     }
 
     #[tokio::test]
