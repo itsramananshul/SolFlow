@@ -7,6 +7,9 @@ reference/
 node_modules/
 dist/
 build/
+# Phase C C.8 c103 — `npm run package:local` output. Per-version
+# bundles can be large + are inherently rebuildable.
+dist-release/
 .turbo/
 .cache/
 coverage/

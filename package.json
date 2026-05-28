@@ -21,6 +21,9 @@
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint . --ext .ts,.vue",
     "check": "npm run typecheck && npm run test && npm run test:rust",
+    "build:controller": "cargo build --release --bin solflow-controller",
+    "release:check": "node scripts/release-check.mjs",
+    "package:local": "node scripts/package-local.mjs",
     "regen:fixtures": "bash scripts/regenerate-ast-fixtures.sh"
   },
   "dependencies": {
