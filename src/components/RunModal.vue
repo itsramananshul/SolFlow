@@ -12,13 +12,17 @@ import {
   ControllerClientErr,
   type ControllerClientError,
 } from '@/runtime-host/client';
+import {
+  openRunEventStream,
+  type RunEventStreamHandle,
+} from '@/runtime-host/event-stream';
 import type {
   RunEnvelope,
   RuntimeError,
   SolDiagnostic,
   SourceSpan,
 } from '@/compiler/types';
-import type { RunRecord } from '@/runtime-host/types';
+import type { RunEvent, RunRecord } from '@/runtime-host/types';
 import { findNodeForSpan } from '@/graph/nodeLookup';
 
 const graph = useGraphStore();
@@ -77,8 +81,24 @@ type ControllerRunState =
 
 const controllerRun = ref<ControllerRunState>({ kind: 'idle' });
 
+/** Live RunEvents streamed from the controller via SSE (c85).
+ *  Cleared at the start of every controller-local run; populated
+ *  as Queued / Started / Print / ExtCall* / Completed / Failed
+ *  events arrive. */
+const liveEvents = ref<RunEvent[]>([]);
+
 /** Abort signal for the active controller run (poll loop). */
 let controllerAbort: AbortController | null = null;
+/** Handle for the active SSE event stream — closed on modal
+ *  close, mode-switch, or terminal event. */
+let liveStreamHandle: RunEventStreamHandle | null = null;
+
+function closeLiveStream() {
+  if (liveStreamHandle && !liveStreamHandle.isDone) {
+    liveStreamHandle.close();
+  }
+  liveStreamHandle = null;
+}
 
 function loadStoredMode(): ExecutionMode {
   try {
@@ -114,12 +134,13 @@ const trace = ref<Trace | null>(null);
 
 const isRunning = ref(false);
 
-const tabs = ['output', 'trace', 'sol'] as const;
+const tabs = ['output', 'live', 'trace', 'sol'] as const;
 type Tab = (typeof tabs)[number];
 const activeTab = ref<Tab>('output');
 
 function tabLabel(t: Tab): string {
   if (t === 'output') return 'Output';
+  if (t === 'live') return 'Live';
   if (t === 'trace') return 'Trace';
   return 'Generated SOL';
 }
@@ -219,7 +240,24 @@ async function executeControllerLocal() {
       submittedAt: submitStart,
     });
 
-    // 3. Poll until terminal.
+    // 3a. Open SSE event stream — appends events to liveEvents
+    // in real time so the UI shows Print lines / ExtCall progress
+    // before the run terminates. The stream auto-closes on the
+    // terminal event.
+    closeLiveStream();
+    liveEvents.value = [];
+    liveStreamHandle = openRunEventStream({
+      baseUrl: controller.url,
+      runId,
+      onEvent: (ev) => liveEvents.value.push(ev),
+      onError: () => {
+        // Transport errors are usually benign (server closes the
+        // connection after the terminal event); the polling path
+        // below is the real source of truth for the final record.
+      },
+    });
+
+    // 3b. Poll until terminal.
     const final = await client.pollRun(runId, {
       intervalMs: 150,
       overallTimeoutMs: 60_000,
@@ -259,6 +297,7 @@ async function executeControllerLocal() {
     }
   } finally {
     controllerAbort = null;
+    closeLiveStream();
   }
 }
 
@@ -321,6 +360,20 @@ async function reopenRun(workflowId: string, runId: string) {
     }
   } finally {
     isRunning.value = false;
+  }
+}
+
+/** Jump-to-source/canvas helper for a `RunEvent.Print` /
+ *  `RunEvent.Failed` source_span (C.5 c85). Reuses the same
+ *  spanning machinery the browser-sim Trace tab already uses. */
+function jumpFromEvent(span: SourceSpan) {
+  const source = graph.emitted.source;
+  const { line } = lineColAt(source, span.start);
+  const match = findNodeForSpan(graph.workflow, span);
+  if (match) {
+    jumpToNode(match.fn.name, match.node.id);
+  } else {
+    focusSourceLine(line);
   }
 }
 
@@ -569,6 +622,7 @@ watch(
         controllerAbort.abort();
         controllerAbort = null;
       }
+      closeLiveStream();
     }
   },
 );
@@ -974,6 +1028,75 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
                   <span class="k">duration</span><code class="v">{{ controllerMeta.durationMs }}ms</code>
                 </div>
               </div>
+            </template>
+          </section>
+
+          <!-- Live event pane (C.5 c85) — controller-local only -->
+          <section v-if="activeTab === 'live'" class="pane">
+            <template v-if="mode !== 'controller-local'">
+              <div class="empty">
+                Live events stream from the controller. Switch to
+                <strong>Controller-local</strong> mode to see them.
+              </div>
+            </template>
+            <template v-else-if="liveEvents.length === 0">
+              <div class="empty">
+                <template v-if="isRunning">Waiting for events…</template>
+                <template v-else>No events yet. Re-run to see the live stream.</template>
+              </div>
+            </template>
+            <template v-else>
+              <div class="output-toolbar">
+                <span class="output-label">
+                  {{ liveEvents.length }} event{{ liveEvents.length === 1 ? '' : 's' }}
+                </span>
+                <span class="subtle" v-if="!isRunning">
+                  stream ended
+                </span>
+              </div>
+              <ul class="live-list">
+                <li
+                  v-for="(ev, i) in liveEvents"
+                  :key="i"
+                  class="live-row"
+                  :class="`kind-${ev.kind.toLowerCase()}`"
+                >
+                  <span class="live-seq">#{{ ev.seq }}</span>
+                  <span class="live-kind">{{ ev.kind }}</span>
+                  <span class="live-detail">
+                    <template v-if="ev.kind === 'Print'">
+                      <span class="live-print">{{ ev.text }}</span>
+                      <button
+                        v-if="ev.source_span"
+                        class="link"
+                        title="Show source"
+                        @click="jumpFromEvent(ev.source_span!)"
+                      >show source</button>
+                    </template>
+                    <template v-else-if="ev.kind === 'ExtCallStarted'">
+                      connector <code>{{ ev.connector }}</code>
+                      · fn <code>{{ ev.fn_name }}</code>
+                    </template>
+                    <template v-else-if="ev.kind === 'ExtCallCompleted'">
+                      connector <code>{{ ev.connector }}</code>
+                      · fn <code>{{ ev.fn_name }}</code>
+                      <span :class="ev.ok ? 'ok-tag' : 'err-tag'">
+                        {{ ev.ok ? '✓' : '✗' }}
+                      </span>
+                    </template>
+                    <template v-else-if="ev.kind === 'Completed'">
+                      return <code>{{ ev.output.return_value }}</code>
+                      · {{ ev.output.steps }} steps
+                    </template>
+                    <template v-else-if="ev.kind === 'Failed'">
+                      <code>{{ ev.error.kind }}</code>
+                    </template>
+                    <template v-else>
+                      <span class="subtle">{{ ev.kind }}</span>
+                    </template>
+                  </span>
+                </li>
+              </ul>
             </template>
           </section>
 
@@ -1593,5 +1716,55 @@ function formatReturn(v: unknown): string {
   padding: 8px 16px;
   border-top: 1px solid var(--sf-border);
   background: var(--sf-bg-0);
+}
+
+/* Live event stream (C.5 c85) */
+.live-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.live-row {
+  display: grid;
+  grid-template-columns: 44px 110px 1fr;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 0.6875rem;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  align-items: baseline;
+}
+.live-seq {
+  font-family: var(--sf-font-mono);
+  color: var(--sf-text-3);
+  text-align: right;
+}
+.live-kind {
+  font-family: var(--sf-font-mono);
+  color: var(--sf-text-1);
+  letter-spacing: 0.3px;
+}
+.live-detail { color: var(--sf-text-0); }
+.live-print {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-2);
+  padding: 0 4px;
+  border-radius: 2px;
+  margin-right: 6px;
+}
+.live-row.kind-print .live-kind { color: var(--sf-accent, #5d8acf); }
+.live-row.kind-completed .live-kind { color: var(--sf-success); }
+.live-row.kind-failed .live-kind { color: var(--sf-error); }
+.live-row.kind-extcallstarted .live-kind,
+.live-row.kind-extcallcompleted .live-kind { color: var(--sf-warning); }
+.ok-tag { color: var(--sf-success); margin-left: 6px; }
+.err-tag { color: var(--sf-error); margin-left: 6px; }
+.live-detail code {
+  font-family: var(--sf-font-mono);
+  background: var(--sf-bg-2);
+  padding: 0 4px;
+  border-radius: 2px;
 }
 </style>

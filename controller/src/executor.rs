@@ -85,8 +85,8 @@ pub async fn execute_run(
         c.emit(started_event(c)).await;
     }
 
-    // Load + decode bytecode.
-    let (bc_bytes, _spans_bytes) =
+    // Load + decode bytecode + per-instruction span sidecar.
+    let (bc_bytes, spans_bytes) =
         match persistence.get_workflow_bytecode(&record.workflow_id).await {
             Ok(p) => p,
             Err(e) => {
@@ -109,21 +109,33 @@ pub async fn execute_run(
             return;
         }
     };
+    // Spans are best-effort — a missing/malformed sidecar means
+    // events don't get click-to-source affordances, not that the
+    // run fails. Decode into a sharable Arc so the print
+    // callback (sync, blocking thread) can look up by inst_ptr.
+    let spans: Arc<Vec<Option<solflow_host_spec::SourceSpan>>> = Arc::new(
+        solflow_host_spec::decode_instruction_spans(&spans_bytes).unwrap_or_default(),
+    );
 
     // Build VM options. PrintCallback + ExtCallHandler both
     // emit events through the shared ctx so the seq stream
     // stays monotonic across sources.
     let print_callback: Option<PrintCallback> = ctx.as_ref().map(|c| {
         let (seq, sink, handle, run_id) = c.split_for_print();
-        Arc::new(move |line: &str, _inst_ptr: usize| {
+        let spans = spans.clone();
+        Arc::new(move |line: &str, inst_ptr: usize| {
+            // Look up the source span for the Print instruction
+            // so the editor can render click-to-source on each
+            // print row.
+            let source_span = spans
+                .get(inst_ptr)
+                .and_then(|s| s.as_ref().copied());
             let event = RunEvent::Print {
                 run_id: run_id.clone(),
                 seq: seq.fetch_add(1, Ordering::Relaxed),
                 ts: now_ms(),
                 text: line.to_string(),
-                // c85 will plumb source_span via the
-                // instruction_spans sidecar; for now None.
-                source_span: None,
+                source_span,
             };
             let sink_clone = sink.clone();
             handle.spawn(async move { sink_clone.emit(event).await });
