@@ -11,9 +11,10 @@
 
 use crate::connector::{http::HttpConnector, ConnectorMeta, ConnectorRegistry};
 use crate::event_sink::PersistentEventSink;
-use crate::executor::{execute_run, now_ms, RunPolicy};
+use crate::executor::{now_ms, RunPolicy};
+use crate::run_manager::{ConcurrencyPolicy, RunManager};
 use crate::scheduler::TokioScheduler;
-use crate::{Connector, Controller, ControllerError, ControllerResult, EventSink, Persistence, SqlitePersistence};
+use crate::{Connector, Controller, ControllerError, ControllerResult, Persistence, SqlitePersistence};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use solflow_host_spec::{
@@ -42,6 +43,14 @@ pub struct LocalController {
     /// AND to an in-process broadcast channel the SSE endpoint
     /// subscribes to.
     event_sink: PersistentEventSink,
+    /// Phase C C.6 c90: real orchestration coordinator. Every
+    /// run (manual + scheduler-triggered) goes through here so
+    /// concurrency caps + saturation policy + cancellation are
+    /// honored consistently.
+    run_manager: RunManager,
+    /// Cached concurrency policy so the HTTP layer can surface
+    /// it without poking through the manager.
+    concurrency: ConcurrencyPolicy,
 }
 
 impl LocalController {
@@ -57,6 +66,14 @@ impl LocalController {
         let policy = RunPolicy::default();
         let connectors = default_connector_registry();
         let event_sink = PersistentEventSink::new(persistence.clone());
+        let concurrency = ConcurrencyPolicy::default();
+        let run_manager = RunManager::new(
+            persistence.clone(),
+            policy,
+            concurrency,
+            connectors.clone(),
+            Some(event_sink.clone()),
+        );
         let scheduler = TokioScheduler::new(persistence.clone(), policy)
             .with_connectors(connectors.clone())
             .with_event_sink(event_sink.clone());
@@ -66,6 +83,8 @@ impl LocalController {
             scheduler,
             connectors,
             event_sink,
+            run_manager,
+            concurrency,
         }
     }
 
@@ -76,6 +95,17 @@ impl LocalController {
     /// you need that.
     pub fn with_policy(mut self, policy: RunPolicy) -> Self {
         self.policy = policy;
+        // Rebuild RunManager so the new policy reaches every
+        // future run. The previous manager's dispatcher is
+        // orphaned (its mpsc sender is dropped via Self overwrite);
+        // the loop exits naturally on the next recv() returning None.
+        self.run_manager = RunManager::new(
+            (*self.persistence).clone(),
+            self.policy,
+            self.concurrency,
+            self.connectors.clone(),
+            Some(self.event_sink.clone()),
+        );
         self.scheduler = TokioScheduler::new(
             (*self.persistence).clone(),
             self.policy,
@@ -85,12 +115,31 @@ impl LocalController {
         self
     }
 
+    /// Phase C C.6 c90 — replace the concurrency policy.
+    pub fn with_concurrency_policy(mut self, concurrency: ConcurrencyPolicy) -> Self {
+        self.concurrency = concurrency;
+        self.run_manager = RunManager::new(
+            (*self.persistence).clone(),
+            self.policy,
+            self.concurrency,
+            self.connectors.clone(),
+            Some(self.event_sink.clone()),
+        );
+        self
+    }
+
     /// Replace the connector registry. Useful for tests (register
     /// a mock connector) and for production deployments that want
     /// a non-default HTTP connector (e.g. with an allowlist).
     pub fn with_connector_registry(mut self, connectors: ConnectorRegistry) -> Self {
         self.connectors = connectors.clone();
-        // Rebuild scheduler so its handler sees the new registry.
+        self.run_manager = RunManager::new(
+            (*self.persistence).clone(),
+            self.policy,
+            self.concurrency,
+            connectors.clone(),
+            Some(self.event_sink.clone()),
+        );
         self.scheduler =
             TokioScheduler::new((*self.persistence).clone(), self.policy)
                 .with_connectors(connectors)
@@ -151,6 +200,13 @@ impl LocalController {
     /// can subscribe to the in-process broadcast (Phase C C.5).
     pub fn event_sink(&self) -> &PersistentEventSink {
         &self.event_sink
+    }
+
+    /// Phase C C.6 — expose the RunManager so the HTTP layer
+    /// can serve `/runs/active` + `/controller/concurrency` and
+    /// the scheduler (c91) can enqueue through it.
+    pub fn run_manager(&self) -> &RunManager {
+        &self.run_manager
     }
 }
 
@@ -230,24 +286,40 @@ impl Controller for LocalController {
             started_at: None,
             completed_at: None,
         };
-        self.persistence.put_run(&record).await?;
 
-        // Spawn execution in the background. Caller's response
-        // returns immediately; client polls GET /runs/:id for
-        // completion OR subscribes to /runs/:id/events for the
-        // live stream (Phase C C.5).
-        let p = (*self.persistence).clone();
-        let r = record.clone();
-        let policy = self.policy;
-        let connectors = self.connectors.clone();
-        let event_sink: Arc<dyn EventSink> = Arc::new(self.event_sink.clone());
-        tokio::spawn(async move {
-            execute_run(p, r, policy, Some(connectors), Some(event_sink)).await;
-        });
-
+        // Phase C C.6 c90 — delegate to RunManager. It persists,
+        // applies concurrency policy, and spawns through the
+        // worker pool. The Controller trait's create_run returns
+        // a RunCreated regardless of enqueue outcome; for
+        // Rejected we still return the run id (client sees
+        // terminal Rejected when it polls).
+        let outcome = self.run_manager.enqueue(record).await.map_err(|e| match e {
+            crate::run_manager::RunManagerError::Persistence(ctrl_err) => ctrl_err,
+            other => ControllerError::Persistence {
+                message: other.to_string(),
+            },
+        })?;
+        let (returned_id, status) = match outcome {
+            crate::run_manager::EnqueueOutcome::Accepted { run_id } => {
+                (run_id, RunStatus::Queued)
+            }
+            crate::run_manager::EnqueueOutcome::Rejected { run_id, reason: _ } => {
+                (run_id, RunStatus::Rejected)
+            }
+            crate::run_manager::EnqueueOutcome::QueueFull {
+                current_depth,
+                capacity,
+            } => {
+                return Err(ControllerError::Persistence {
+                    message: format!(
+                        "queue full ({current_depth}/{capacity}); retry shortly",
+                    ),
+                });
+            }
+        };
         Ok(RunCreated {
-            run_id,
-            status: RunStatus::Queued,
+            run_id: returned_id,
+            status,
         })
     }
 
@@ -255,12 +327,23 @@ impl Controller for LocalController {
         self.persistence.get_run(run_id).await
     }
 
-    async fn cancel_run(&self, _run_id: &RunId) -> ControllerResult<()> {
-        // C.6 ships real cancellation. C.2 returns NotImplemented
-        // explicitly so callers don't see a silent success.
-        Err(ControllerError::NotImplemented {
-            what: "cancel_run lands in C.6",
-        })
+    async fn cancel_run(&self, run_id: &RunId) -> ControllerResult<()> {
+        // Phase C C.6 c90 — real cancellation via RunManager.
+        // RunManager handles the three cases (active / queued /
+        // already-terminal) and returns a bool indicating whether
+        // anything was cancelled. Terminal-already returns Ok(())
+        // (idempotent); other RunManager errors map to
+        // RunNotFound / Persistence.
+        match self.run_manager.cancel(run_id).await {
+            Ok(_) => Ok(()),
+            Err(crate::run_manager::RunManagerError::RunNotFound(id)) => {
+                Err(ControllerError::RunNotFound { id })
+            }
+            Err(crate::run_manager::RunManagerError::Persistence(e)) => Err(e),
+            Err(other) => Err(ControllerError::Persistence {
+                message: other.to_string(),
+            }),
+        }
     }
 
     async fn list_runs(
@@ -423,15 +506,18 @@ mod tests {
         assert_eq!(out.output, vec!["hello".to_string(), "world".to_string()]);
     }
 
+    /// Phase C C.6 c90 — cancel_run is real now. An unknown run
+    /// id returns `RunNotFound`; the cancel-an-existing-run path
+    /// is covered end-to-end in run_manager::tests.
     #[tokio::test]
-    async fn cancel_run_returns_not_implemented_in_c2() {
+    async fn cancel_run_unknown_id_returns_run_not_found() {
         let persistence = SqlitePersistence::open_in_memory().await.unwrap();
         let controller = LocalController::new(persistence);
         let err = controller
-            .cancel_run(&"run_xxx".into())
+            .cancel_run(&"run_does_not_exist".into())
             .await
-            .expect_err("c.2 stub");
-        assert!(matches!(err, ControllerError::NotImplemented { .. }));
+            .expect_err("unknown run");
+        assert!(matches!(err, ControllerError::RunNotFound { .. }));
     }
 
     #[tokio::test]

@@ -427,20 +427,22 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// Phase C C.6 c90 — DELETE /runs/:id is real now. Unknown
+    /// run id → 404 RunNotFound (no longer 501).
     #[tokio::test]
-    async fn cancel_run_returns_501_in_c2() {
+    async fn cancel_unknown_run_returns_404() {
         let app = test_app().await;
         let resp = app
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/runs/abc")
+                    .uri("/runs/run_does_not_exist")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

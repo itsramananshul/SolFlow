@@ -34,12 +34,17 @@ pub mod event_sink;
 pub mod executor;
 pub mod local;
 pub mod persistence;
+pub mod run_manager;
 pub mod scheduler;
 pub mod server;
 
 pub use event_sink::{EventSink, PersistentEventSink, RunEventCtx};
 pub use local::LocalController;
 pub use persistence::SqlitePersistence;
+pub use run_manager::{
+    ActiveRunSummary, ConcurrencyMetrics, ConcurrencyPolicy, EnqueueOutcome,
+    RunManager, RunManagerError, SaturationPolicy,
+};
 pub use scheduler::TokioScheduler;
 
 use async_trait::async_trait;

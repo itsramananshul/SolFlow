@@ -504,6 +504,113 @@ impl SqlitePersistence {
         rows.iter().map(row_to_run_record).collect()
     }
 
+    // ---- Phase C C.6 c90 — orchestration helpers ----
+
+    /// Flip a run's `cancel_requested` bit. RunManager calls this
+    /// when a cancel arrives so the bit survives a controller
+    /// restart — the boot-recovery sweep then skips re-enqueueing
+    /// or finalizes the run as Cancelled.
+    pub async fn set_cancel_requested(
+        &self,
+        run_id: &str,
+        requested: bool,
+    ) -> ControllerResult<()> {
+        sqlx::query("UPDATE runs SET cancel_requested = ? WHERE id = ?")
+            .bind(if requested { 1_i32 } else { 0 })
+            .bind(run_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("set_cancel_requested: {e}"),
+            })?;
+        Ok(())
+    }
+
+    pub async fn is_cancel_requested(&self, run_id: &str) -> ControllerResult<bool> {
+        let row = sqlx::query("SELECT cancel_requested FROM runs WHERE id = ?")
+            .bind(run_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| ControllerError::Persistence {
+                message: format!("is_cancel_requested: {e}"),
+            })?;
+        Ok(match row {
+            Some(r) => {
+                let v: i64 = r.get("cancel_requested");
+                v != 0
+            }
+            None => false,
+        })
+    }
+
+    /// Rows the boot-recovery sweep should re-enqueue: any
+    /// non-terminal status (a controller crash mid-run leaves
+    /// them as `Starting` / `Running` / `Cancelling`; legitimate
+    /// `Queued` rows that never got dispatched also qualify).
+    /// Returns runs in `created_at ASC` so dispatch order matches
+    /// submission order.
+    pub async fn list_recoverable_runs(&self) -> ControllerResult<Vec<RunRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, workflow_id, status, trigger_json,
+                    inputs_json, output_json, diagnostics_json,
+                    started_at, completed_at, created_at
+             FROM runs
+             WHERE status IN ('Queued','Starting','Running','Cancelling')
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ControllerError::Persistence {
+            message: format!("list_recoverable_runs: {e}"),
+        })?;
+        rows.iter().map(row_to_run_record).collect()
+    }
+
+    /// Reset every non-terminal run row to `Queued` so boot
+    /// recovery can re-enqueue them. Called from RunManager
+    /// startup. Sweep + enqueue happen separately so the
+    /// caller can hold the queue lock briefly per item.
+    pub async fn reset_non_terminal_to_queued(&self) -> ControllerResult<u64> {
+        let res = sqlx::query(
+            "UPDATE runs SET status = 'Queued',
+                             started_at = NULL,
+                             completed_at = NULL
+             WHERE status IN ('Starting','Running','Cancelling')",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ControllerError::Persistence {
+            message: format!("reset_non_terminal_to_queued: {e}"),
+        })?;
+        Ok(res.rows_affected())
+    }
+
+    /// Next monotonic seq for a run's event log. Used when the
+    /// RunManager needs to emit a post-execute event (e.g. cancel
+    /// override) after the per-run RunEventCtx has dropped.
+    pub async fn next_event_seq(&self, run_id: &str) -> ControllerResult<u64> {
+        let row = sqlx::query(
+            "SELECT MAX(seq) AS max_seq FROM run_events WHERE run_id = ?",
+        )
+        .bind(run_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| ControllerError::Persistence {
+            message: format!("next_event_seq: {e}"),
+        })?;
+        let next = match row {
+            Some(r) => {
+                let max: Option<i64> = r.try_get("max_seq").ok();
+                match max {
+                    Some(n) if n >= 0 => (n as u64) + 1,
+                    _ => 0,
+                }
+            }
+            None => 0,
+        };
+        Ok(next)
+    }
+
     /// All persisted events for `run_id`, ASC by seq. Unlike the
     /// trait's `list_events(after_seq)` (strict `>`), this has
     /// no lower bound — used by the SSE endpoint when the client

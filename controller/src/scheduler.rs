@@ -253,7 +253,7 @@ impl TokioScheduler {
             .clone()
             .map(|s| Arc::new(s) as Arc<dyn EventSink>);
         tokio::spawn(async move {
-            execute_run(p, r, policy, connectors, event_sink).await;
+            execute_run(p, r, policy, connectors, event_sink, None).await;
         });
         Ok(record)
     }

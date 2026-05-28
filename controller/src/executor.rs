@@ -22,10 +22,10 @@ use solflow_host_spec::{
     decode_bytecode, RunEvent, RunOutput, RunRecord, RunStatus, RuntimeErrorView,
 };
 use solflow_runtime::{
-    run_program_with, ExtCallContext, ExtCallError, ExtCallHandler,
+    run_program_with, CancelCallback, ExtCallContext, ExtCallError, ExtCallHandler,
     ExtCallHandlerArc, ExtCallValue, PrintCallback, RunError, RunOptions,
 };
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -71,12 +71,18 @@ impl Default for RunPolicy {
 /// `Some`, emits Queued / Started / Print / ExtCallStarted /
 /// ExtCallCompleted / Completed / Failed events the SSE endpoint
 /// can stream to clients in real time.
+/// Phase C C.6 (c90): accepts an optional `cancel_flag` shared
+/// with the RunManager. When set, the VM's cancel callback fires
+/// `RunError::Cancelled` between instructions and the
+/// connector handler short-circuits before invoking the next
+/// connector attempt.
 pub async fn execute_run(
     persistence: SqlitePersistence,
     mut record: RunRecord,
     policy: RunPolicy,
     connectors: Option<ConnectorRegistry>,
     event_sink: Option<Arc<dyn EventSink>>,
+    cancel_flag: Option<Arc<AtomicBool>>,
 ) {
     // Per-run event context (shared with the VM print hook + the
     // ExtCallHandler so all three sources of events share the
@@ -158,6 +164,12 @@ pub async fn execute_run(
         }) as PrintCallback
     });
 
+    // Phase C C.6 c90 — wire the cancel flag into both the VM's
+    // cancel callback (polled per instruction) and the ExtCall
+    // handler (checked before each connector attempt).
+    let cancel_callback: Option<CancelCallback> = cancel_flag.clone().map(|flag| {
+        Arc::new(move || flag.load(Ordering::Relaxed)) as CancelCallback
+    });
     let opts = RunOptions {
         step_limit: Some(policy.step_limit),
         trace: false, // C.5 trace streaming via events lands here too eventually
@@ -166,13 +178,11 @@ pub async fn execute_run(
                 registry,
                 tokio_handle: tokio::runtime::Handle::current(),
                 ctx: ctx.clone(),
+                cancel_flag: cancel_flag.clone(),
             }) as ExtCallHandlerArc
         }),
         print_callback,
-        // Phase C C.6 c89 — cancellation is plumbed end-to-end
-        // by the RunManager in c91. For now the executor passes
-        // `None` so behavior matches C.5.
-        cancel_callback: None,
+        cancel_callback,
         max_output_lines: Some(policy.max_output_lines),
         max_events_per_run: Some(policy.max_events_per_run),
     };
@@ -347,6 +357,12 @@ struct ControllerExtCallHandler {
     /// ExtCallCompleted around every dispatch. The seq counter
     /// is shared with the rest of execute_run via Arc.
     ctx: Option<Arc<RunEventCtx>>,
+    /// Phase C C.6 c90 — shared with the VM's cancel callback.
+    /// Checked before each connector dispatch; when set, the
+    /// handler short-circuits with `ExtCallError::Failed{...}`
+    /// (the post-VM cancel-detection in `RunManager` then
+    /// promotes the run's terminal status to `Cancelled`).
+    cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl ExtCallHandler for ControllerExtCallHandler {
@@ -366,6 +382,21 @@ impl ExtCallHandler for ControllerExtCallHandler {
         let connector = self.registry.lookup(&parsed.name).map_err(|e| {
             ExtCallError::failed("(unresolved)", ctx.function_name, e.to_string())
         })?;
+
+        // Phase C C.6 c90 — short-circuit if the run was
+        // cancelled while the VM was preparing this ExtCall.
+        // Returning Failed here lets execute_run see the abort;
+        // the run_manager's post-execution sweep then promotes
+        // the terminal status to Cancelled.
+        if let Some(flag) = &self.cancel_flag {
+            if flag.load(Ordering::Relaxed) {
+                return Err(ExtCallError::failed(
+                    parsed.name.clone(),
+                    ctx.function_name,
+                    "run cancelled before connector dispatch",
+                ));
+            }
+        }
 
         // Emit ExtCallStarted (fire-and-forget so the VM doesn't
         // pace on persistence latency).
@@ -535,7 +566,7 @@ mod tests {
             completed_at: None,
         };
         let run_id = record.id.clone();
-        execute_run(p.clone(), record, RunPolicy::default(), None, None).await;
+        execute_run(p.clone(), record, RunPolicy::default(), None, None, None).await;
         let got = p.get_run(&run_id).await.unwrap();
         assert_eq!(got.status, RunStatus::Succeeded);
         let out = got.output.unwrap();
@@ -564,7 +595,7 @@ mod tests {
             completed_at: None,
         };
         let run_id = record.id.clone();
-        execute_run(p.clone(), record, RunPolicy::default(), None, None).await;
+        execute_run(p.clone(), record, RunPolicy::default(), None, None, None).await;
         let got = p.get_run(&run_id).await.unwrap();
         assert_eq!(got.status, RunStatus::Failed);
         assert!(got.output.unwrap().return_value.is_none());
@@ -606,6 +637,7 @@ mod tests {
             RunPolicy::default(),
             None,
             Some(sink_arc),
+            None,
         )
         .await;
 
@@ -660,7 +692,7 @@ mod tests {
             max_output_lines: 100_000,
             max_events_per_run: 1_000_000,
         };
-        execute_run(p.clone(), record, policy, None, None).await;
+        execute_run(p.clone(), record, policy, None, None, None).await;
         let got = p.get_run(&run_id).await.unwrap();
         assert_eq!(got.status, RunStatus::Failed);
     }
