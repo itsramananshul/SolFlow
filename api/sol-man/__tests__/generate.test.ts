@@ -225,6 +225,101 @@ describe('/api/sol-man/generate — request validation', () => {
   });
 });
 
+describe('/api/sol-man/generate — semantic correctness pass', () => {
+  it('auto-repairs "for user in users" — response is ok=true with repairApplied', async () => {
+    scripted = [
+      JSON.stringify({
+        meta: { name: 'onboarding', description: '' },
+        nodes: [
+          { id: 't', kind: 'trigger', triggerKind: 'manual' },
+          { id: 'n1', kind: 'forEach', iteratorName: 'user', iteratorType: 'str', value: 'for user in users' },
+        ],
+        edges: [{ from: 't', to: 'n1' }],
+      }),
+    ];
+    const req = mockReq({ prompt: 'iterate over users' });
+    const res = mockRes();
+    await handler(req as never, res as never);
+    expect(res.statusCode).toBe(200);
+    const body = res.body as {
+      ok: boolean;
+      attempts: number;
+      repairApplied: boolean;
+      spec: { nodes: Array<{ id: string; value?: string }> };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.attempts).toBe(1);
+    expect(body.repairApplied).toBe(true);
+    // The headline regression: post-server-repair, the value is
+    // clean and the spec passes lint.
+    const node = body.spec.nodes.find((n) => n.id === 'n1');
+    expect(node?.value).toBe('users');
+  });
+
+  it('semantic-retries on persistent js_global keyword + surfaces validation_failed after exhaustion', async () => {
+    // Both attempts emit a node containing `Math.floor` — repair
+    // can't fix that (we don't invent the replacement), so lint
+    // surfaces it as validation_failed both times.
+    const badSpec = JSON.stringify({
+      meta: { name: 't', description: '' },
+      nodes: [
+        { id: 't', kind: 'trigger', triggerKind: 'manual' },
+        { id: 'n1', kind: 'let', varName: 'x', varType: 'int', value: 'Math.floor(payload.amount)' },
+      ],
+      edges: [{ from: 't', to: 'n1' }],
+    });
+    scripted = [badSpec, badSpec];
+    const req = mockReq({ prompt: 'demo' });
+    const res = mockRes();
+    await handler(req as never, res as never);
+    expect(res.statusCode).toBe(502);
+    const body = res.body as {
+      ok: boolean;
+      kind: string;
+      attempts: number;
+      details?: { repairLog?: string[] };
+    };
+    expect(body.kind).toBe('validation_failed');
+    expect(body.attempts).toBe(2);
+    // Repair log should carry a semantic_lint entry naming the
+    // js_global rule that fired.
+    expect(body.details?.repairLog?.join(',')).toMatch(/semantic_lint:js_global/);
+  });
+
+  it('validator-aware retry path succeeds on the second attempt with a clean spec', async () => {
+    scripted = [
+      // First attempt: dirty (statement keyword).
+      JSON.stringify({
+        meta: { name: 't', description: '' },
+        nodes: [
+          { id: 't', kind: 'trigger', triggerKind: 'manual' },
+          // Pretend the model produced something repair can't fix.
+          // `Math.PI` keeps lint angry; we test the RETRY path, not
+          // the repair path here.
+          { id: 'n1', kind: 'let', varName: 'x', varType: 'float', value: 'Math.PI' },
+        ],
+        edges: [{ from: 't', to: 'n1' }],
+      }),
+      // Second attempt: clean.
+      JSON.stringify({
+        meta: { name: 't', description: '' },
+        nodes: [
+          { id: 't', kind: 'trigger', triggerKind: 'manual' },
+          { id: 'n1', kind: 'let', varName: 'x', varType: 'float', value: '3.14' },
+        ],
+        edges: [{ from: 't', to: 'n1' }],
+      }),
+    ];
+    const req = mockReq({ prompt: 'demo' });
+    const res = mockRes();
+    await handler(req as never, res as never);
+    expect(res.statusCode).toBe(200);
+    const body = res.body as { ok: boolean; attempts: number };
+    expect(body.ok).toBe(true);
+    expect(body.attempts).toBe(2);
+  });
+});
+
 describe('/api/sol-man/generate — empty response', () => {
   it('retries on empty completion + bails with kind=empty_response if it persists', async () => {
     scripted = ['', ''];

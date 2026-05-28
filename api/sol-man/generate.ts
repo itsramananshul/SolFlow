@@ -38,10 +38,20 @@ import type {
 // .js extensions required: package.json has "type": "module" so Vercel
 // ships these as ESM, and Node's ESM resolver rejects extensionless
 // relative imports at runtime (ERR_MODULE_NOT_FOUND).
-import { SYSTEM_PROMPT, strictRetryUserPromptPreamble } from './_prompt.js';
-import { SpecValidationError, validateSpec } from './_validate.js';
+import {
+  SYSTEM_PROMPT,
+  strictRetryUserPromptPreamble,
+  validatorAwareRetryPreamble,
+} from './_prompt.js';
+import {
+  lintSemantics,
+  SpecValidationError,
+  validateSpec,
+  type SemanticIssue,
+} from './_validate.js';
 import { providerSummaries, resolveProvider } from './_providers.js';
 import { repairJson, type RepairResult } from './_jsonRepair.js';
+import { repairSemantics } from './_semanticRepair.js';
 
 const MAX_PROMPT_LEN = 4_000;
 
@@ -111,6 +121,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const repairLog: string[] = [];
   let attempts = 0;
   let lastFailure: GenerateResponseBody | null = null;
+  /** Carries forward across retries so the validator-aware retry
+   *  preamble can name the offending nodes/fields explicitly. */
+  let lastSemanticIssues: SemanticIssue[] = [];
   let activeModel = resolved.model;
 
   // Single retry loop: first attempt is the normal call; subsequent
@@ -118,12 +131,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // reason into the user prompt so the model self-corrects.
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     attempts++;
-    const userPrompt =
-      attempt === 0
-        ? prompt
-        : strictRetryUserPromptPreamble(lastFailureReason(lastFailure)) +
-          '\n\nOriginal request:\n' +
-          prompt;
+    // Build the retry prompt. When the previous attempt produced
+    // a spec that schema-validated but failed semantic linting,
+    // hand the model the EXACT offending node + field + suggestion
+    // so it can target the fix instead of guessing. This is the
+    // validator-aware-retry path; it converges materially faster
+    // than the blind strict-retry preamble for keyword/global errors.
+    let userPrompt: string;
+    if (attempt === 0) {
+      userPrompt = prompt;
+    } else if (lastSemanticIssues.length > 0) {
+      userPrompt =
+        validatorAwareRetryPreamble(lastSemanticIssues) +
+        '\n\nOriginal request:\n' +
+        prompt;
+    } else {
+      userPrompt =
+        strictRetryUserPromptPreamble(lastFailureReason(lastFailure)) +
+        '\n\nOriginal request:\n' +
+        prompt;
+    }
 
     let llmResult;
     const callStartedAt = Date.now();
@@ -224,6 +251,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             repairLog: (repaired as RepairResult).log,
           },
         });
+        lastSemanticIssues = [];
         continue;
       }
       // Unexpected — surface but don't retry; this is a bug in our
@@ -237,12 +265,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }));
     }
 
+    // Semantic repair pass — deterministic surgical fixes to common
+    // model habits (pseudocode like `for x in users`, redundant
+    // `print(...)` wrappers, prose-wrapped string literals, etc).
+    // ALWAYS runs — `repairSemantics` is a no-op when nothing fires.
+    // The repair entries are surfaced as soft warnings in the
+    // assumptions array so the user can see what we changed.
+    const semanticRepair = repairSemantics(spec);
+    if (semanticRepair.repairs.length > 0) {
+      spec = mergeRepairWarningsIntoAssumptions(
+        semanticRepair.spec,
+        semanticRepair.warnings,
+      );
+      logSemanticRepair({
+        provider: resolved.provider.id,
+        model: activeModel,
+        attempt: attempts,
+        repairs: semanticRepair.repairs,
+      });
+    }
+
+    // Semantic lint pass — same rules the editor enforces. Issues
+    // that survive the repair layer are USER-FACING fatal errors
+    // that block Apply, so we retry once with a validator-aware
+    // preamble that names the offending node + field + suggestion.
+    const semanticIssues = lintSemantics(spec);
+    if (semanticIssues.length > 0) {
+      logSemanticLint({
+        provider: resolved.provider.id,
+        model: activeModel,
+        attempt: attempts,
+        issues: semanticIssues,
+      });
+      lastSemanticIssues = semanticIssues;
+      lastFailure = makeFailure({
+        error: summarizeSemanticIssues(semanticIssues, resolved.provider.name),
+        kind: 'validation_failed',
+        stage: 'spec_validation',
+        retryable: true,
+        details: {
+          provider: resolved.provider.id,
+          model: activeModel,
+          repairLog: [
+            ...(repaired as RepairResult).log,
+            ...semanticRepair.repairs.map((r) => `semantic_repair:${r.kind}`),
+            ...semanticIssues.map((s) => `semantic_lint:${s.kind}`),
+          ],
+        },
+      });
+      continue;
+    }
+
     // Success path.
     logSuccess({
       provider: resolved.provider.id,
       model: activeModel,
       attempts,
-      repairApplied: repaired.modified,
+      repairApplied: repaired.modified || semanticRepair.repairs.length > 0,
       totalMs: Date.now() - startedAt,
     });
     return send(res, 200, {
@@ -252,7 +331,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       provider: { id: resolved.provider.id, name: resolved.provider.name },
       usage: llmResult.usage,
       attempts,
-      repairApplied: repaired.modified,
+      repairApplied: repaired.modified || semanticRepair.repairs.length > 0,
     });
   }
 
@@ -382,4 +461,63 @@ function logUnexpectedError(e: unknown): void {
   console.error(
     `[sol-man] unexpected_error message="${(e as Error)?.message ?? String(e)}"`,
   );
+}
+
+function logSemanticRepair(info: {
+  provider: string;
+  model: string;
+  attempt: number;
+  repairs: Array<{ nodeId: string; field: string; kind: string }>;
+}): void {
+  const summary = info.repairs
+    .map((r) => `${r.kind}@${r.nodeId}.${r.field}`)
+    .join(',');
+  console.info(
+    `[sol-man] semantic_repair provider=${info.provider} model=${info.model} attempt=${info.attempt} count=${info.repairs.length} fixes=[${summary}]`,
+  );
+}
+
+function logSemanticLint(info: {
+  provider: string;
+  model: string;
+  attempt: number;
+  issues: SemanticIssue[];
+}): void {
+  const summary = info.issues
+    .map((s) => `${s.kind}:${s.offender}@${s.nodeId}.${s.field}`)
+    .join(',');
+  console.warn(
+    `[sol-man] semantic_lint provider=${info.provider} model=${info.model} attempt=${info.attempt} count=${info.issues.length} issues=[${summary}]`,
+  );
+}
+
+/**
+ * Build a single user-facing error string summarizing semantic
+ * issues. The full structured list goes into details.repairLog;
+ * this is the headline message shown in the modal.
+ */
+function summarizeSemanticIssues(
+  issues: SemanticIssue[],
+  providerName: string,
+): string {
+  const head = `${providerName} output failed semantic lint`;
+  if (issues.length === 1) {
+    const i = issues[0];
+    return `${head}: ${i.message} (node ${i.nodeId}, field "${i.field}")`;
+  }
+  const sample = issues[0];
+  return `${head}: ${issues.length} issues, first is "${sample.message}" on node ${sample.nodeId} field "${sample.field}"`;
+}
+
+/** Append the repair warnings to the spec's assumptions array
+ *  so they show up in the modal preview alongside the LLM's own
+ *  assumptions. Pure — returns a new spec object. */
+function mergeRepairWarningsIntoAssumptions(
+  spec: ReturnType<typeof validateSpec>,
+  warnings: string[],
+): ReturnType<typeof validateSpec> {
+  if (warnings.length === 0) return spec;
+  const next = (spec.assumptions ?? []).slice();
+  for (const w of warnings) next.push(w);
+  return { ...spec, assumptions: next };
 }

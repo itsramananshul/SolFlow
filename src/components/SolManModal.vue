@@ -668,6 +668,20 @@ function onBackdrop(e: MouseEvent) {
                 ? 'Sol Man had enough detail to skip every assumption'
                 : `Sol Man made ${assumptions.length} ${assumptions.length === 1 ? 'assumption' : 'assumptions'} — read them below before applying`"
             >{{ assumptions.length }} {{ assumptions.length === 1 ? 'assumption' : 'assumptions' }}</span>
+            <template v-if="sm.lastAttempts > 1">
+              <span class="stat-sep">·</span>
+              <span
+                class="stat recovered-stat"
+                :title="`Sol Man auto-recovered after ${sm.lastAttempts - 1} retry attempt${sm.lastAttempts === 2 ? '' : 's'} — the first response failed parsing or semantic lint.`"
+              >recovered ({{ sm.lastAttempts }} attempts)</span>
+            </template>
+            <template v-if="sm.lastRepairApplied">
+              <span class="stat-sep">·</span>
+              <span
+                class="stat repaired-stat"
+                title="Sol Man's server-side repair pass corrected at least one expression. See the assumptions list for what changed."
+              >auto-repaired</span>
+            </template>
           </div>
           <div class="preview-shape">{{ nodeSummaryLine() }}</div>
 
@@ -1322,6 +1336,17 @@ function onBackdrop(e: MouseEvent) {
 }
 .assumption-stat.has-many {
   color: var(--sf-cat-trigger);
+  font-weight: 500;
+}
+
+/* Phase A semantic-correctness pass — chip that lights up when
+   the server's auto-retry or semantic-repair layer kicked in.
+   Quiet but visible; the user can hover to see what happened. */
+.recovered-stat {
+  color: var(--sf-cat-action, var(--sf-accent, #5d8acf));
+}
+.repaired-stat {
+  color: var(--sf-success);
   font-weight: 500;
 }
 

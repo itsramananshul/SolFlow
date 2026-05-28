@@ -269,3 +269,164 @@ export function validateSpec(raw: unknown): GeneratedGraphSpec {
     assumptions,
   };
 }
+
+// =============================================================
+//  Semantic linting — Phase A SOL expression checks
+// =============================================================
+//
+//  Runs AFTER structural validation. Catches the mistakes the
+//  schema validator can't see (it just checks types + ids):
+//
+//   - statement keywords inside expression fields
+//   - JavaScript globals
+//   - method calls (SOL has no methods)
+//   - pseudocode brackets / prose in expression fields
+//
+//  Mirrors the editor-side lint rules in
+//  src/graph/expressionLint.ts so the server enforces the same
+//  semantic contract. Returning the diagnostics as data (not
+//  throwing) lets the generate handler decide whether to
+//  semantic-repair, retry, or surface.
+
+/** SOL statement keywords that NEVER belong inside an inline
+ *  expression. Mirrors src/graph/expressionLint.ts. */
+const SOL_STATEMENT_KEYWORDS = new Set([
+  'if', 'else', 'while', 'for', 'let', 'return',
+  'struct', 'enum', 'import', 'function', 'ext', 'as',
+]);
+
+/** Identifiers / patterns that signal JS leakage. Mirrors the
+ *  editor lint rules; kept short here because the editor rejects
+ *  anything the server misses. */
+const JS_GLOBALS = new Set([
+  'fetch', 'eval', 'Function', 'Math', 'Date', 'JSON', 'document',
+  'window', 'console', 'localStorage', 'process', 'require',
+  'Promise', 'Object', 'Array', 'String', 'Number',
+]);
+
+const METHOD_CALL_PATTERN =
+  /\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\(/;
+
+const JS_SYNTAX_PATTERNS: Array<{ re: RegExp; name: string }> = [
+  { re: /=>/, name: '=>' },
+  { re: /\?\?/, name: '??' },
+  { re: /\?\./, name: '?.' },
+  { re: /\.\.\./, name: '...' },
+  { re: /`/, name: 'template literal `' },
+  { re: /\btypeof\b/, name: 'typeof' },
+];
+
+export type SemanticIssueKind =
+  | 'forbidden_keyword'
+  | 'js_global'
+  | 'method_call'
+  | 'js_syntax';
+
+export interface SemanticIssue {
+  nodeId: string;
+  field: 'value' | 'cond';
+  kind: SemanticIssueKind;
+  /** Offending token / substring. */
+  offender: string;
+  /** Human-friendly explanation. */
+  message: string;
+  /** Optional suggestion the generator can use on the retry. */
+  suggestion?: string;
+}
+
+/**
+ * Walk every node's `value` + `cond` fields and run the same
+ * lint rules the editor uses. Returns a flat list of issues; the
+ * caller decides whether to semantic-repair, retry, or surface.
+ */
+export function lintSemantics(spec: GeneratedGraphSpec): SemanticIssue[] {
+  const issues: SemanticIssue[] = [];
+  for (const node of spec.nodes) {
+    if (typeof node.value === 'string') {
+      collect(node.id, 'value', node.value, issues);
+    }
+    if (typeof node.cond === 'string') {
+      collect(node.id, 'cond', node.cond, issues);
+    }
+  }
+  return issues;
+}
+
+function collect(
+  nodeId: string,
+  field: 'value' | 'cond',
+  expr: string,
+  out: SemanticIssue[],
+): void {
+  const trimmed = expr.trim();
+  if (trimmed === '') return;
+  const wordTokens = trimmed.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? [];
+  for (const tok of wordTokens) {
+    if (SOL_STATEMENT_KEYWORDS.has(tok)) {
+      out.push({
+        nodeId,
+        field,
+        kind: 'forbidden_keyword',
+        offender: tok,
+        message: `Inline expression contains the keyword "${tok}", which is only valid in statement position.`,
+        suggestion: suggestForKeyword(tok, field),
+      });
+      // Surface only the first keyword per field — additional ones
+      // are usually downstream noise.
+      return;
+    }
+    if (JS_GLOBALS.has(tok)) {
+      out.push({
+        nodeId,
+        field,
+        kind: 'js_global',
+        offender: tok,
+        message: `Inline expression references "${tok}", a JavaScript global. SOL has no equivalent.`,
+      });
+      return;
+    }
+  }
+  const m = trimmed.match(METHOD_CALL_PATTERN);
+  if (m) {
+    out.push({
+      nodeId,
+      field,
+      kind: 'method_call',
+      offender: m[0],
+      message: `Inline expression looks like a method call ("${m[0]}"). SOL's "." is field access only; methods do not exist.`,
+    });
+    return;
+  }
+  for (const p of JS_SYNTAX_PATTERNS) {
+    if (p.re.test(trimmed)) {
+      out.push({
+        nodeId,
+        field,
+        kind: 'js_syntax',
+        offender: p.name,
+        message: `Inline expression uses JavaScript-only syntax ("${p.name}"). SOL has no equivalent.`,
+      });
+      return;
+    }
+  }
+}
+
+function suggestForKeyword(kw: string, field: 'value' | 'cond'): string {
+  switch (kw) {
+    case 'for':
+      return field === 'value'
+        ? 'For a forEach node, value should be JUST the array expression (e.g. `users`, `payload.items`). Move the loop body into separate nodes wired off the "body" port.'
+        : 'For a branch/while node, the condition should be a boolean expression, not a loop.';
+    case 'while':
+      return 'Use the `cond` field on a while node for the boolean condition only; the loop body lives on the "body" control port.';
+    case 'let':
+      return 'For a let node, set `varName` + `varType` + the initializer expression in `value` (e.g. `value: "payload.amount"`).';
+    case 'return':
+      return 'For a return node, set `hasValue: true` and the return expression in `value` (e.g. `value: "result"`), without the `return` keyword.';
+    case 'if':
+    case 'else':
+      return 'Use a `branch` node; the boolean goes in `cond` and the arms are wired via the "then"/"else" control ports.';
+    default:
+      return `Rewrite without the ${kw} keyword; expression fields only accept SOL expressions.`;
+  }
+}
