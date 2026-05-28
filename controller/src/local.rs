@@ -76,7 +76,8 @@ impl LocalController {
         );
         let scheduler = TokioScheduler::new(persistence.clone(), policy)
             .with_connectors(connectors.clone())
-            .with_event_sink(event_sink.clone());
+            .with_event_sink(event_sink.clone())
+            .with_run_manager(run_manager.clone());
         Self {
             persistence: Arc::new(persistence),
             policy,
@@ -111,7 +112,8 @@ impl LocalController {
             self.policy,
         )
         .with_connectors(self.connectors.clone())
-        .with_event_sink(self.event_sink.clone());
+        .with_event_sink(self.event_sink.clone())
+        .with_run_manager(self.run_manager.clone());
         self
     }
 
@@ -143,7 +145,8 @@ impl LocalController {
         self.scheduler =
             TokioScheduler::new((*self.persistence).clone(), self.policy)
                 .with_connectors(connectors)
-                .with_event_sink(self.event_sink.clone());
+                .with_event_sink(self.event_sink.clone())
+                .with_run_manager(self.run_manager.clone());
         self
     }
 
@@ -170,6 +173,56 @@ impl LocalController {
     /// against a background tick.
     pub fn start_scheduler(&self) -> tokio::task::JoinHandle<()> {
         self.scheduler.start()
+    }
+
+    /// Phase C C.6 c91 — boot recovery. Sweeps every run row
+    /// the controller left in a non-terminal status (Queued,
+    /// Starting, Running, Cancelling) and re-attaches it into
+    /// the orchestration queue.
+    ///
+    /// Semantics:
+    ///   - A `Queued` row never picked up before the crash is
+    ///     simply re-dispatched.
+    ///   - `Starting` / `Running` / `Cancelling` rows are
+    ///     **at-least-once**: the workflow side-effects already
+    ///     performed (ExtCalls fired) may execute again on
+    ///     retry. The Phase C contract documents this; workflow
+    ///     authors are responsible for idempotency.
+    ///   - `cancel_requested = 1` survives the restart, so a
+    ///     mid-cancel run finalizes as `Cancelled` on the first
+    ///     dispatcher pass after reboot (the cancel check fires
+    ///     before promotion to Starting).
+    ///
+    /// Returns the number of rows recovered. Idempotent — safe
+    /// to call multiple times (subsequent calls see no
+    /// non-terminal rows).
+    pub async fn recover_runs(&self) -> ControllerResult<u64> {
+        // Order matters: list first (so we capture pre-reset
+        // IDs), then reset (so the run_manager.reattach pushes
+        // records that already have status=Queued in the DB).
+        let recoverable = self.persistence.list_recoverable_runs().await?;
+        if recoverable.is_empty() {
+            return Ok(0);
+        }
+        self.persistence.reset_non_terminal_to_queued().await?;
+        let mut count: u64 = 0;
+        for mut rec in recoverable {
+            // Status was set by reset_non_terminal_to_queued;
+            // mirror it in the in-memory record we hand to the
+            // queue so the dispatcher's lifecycle assumptions
+            // hold.
+            rec.status = RunStatus::Queued;
+            rec.started_at = None;
+            rec.completed_at = None;
+            match self.run_manager.reattach(rec).await {
+                Ok(()) => count += 1,
+                Err(e) => {
+                    tracing::error!("recover_runs reattach failed: {e}");
+                }
+            }
+        }
+        tracing::info!("boot recovery re-enqueued {count} runs");
+        Ok(count)
     }
 
     /// Expose persistence so the HTTP server (and tests) can

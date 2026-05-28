@@ -264,6 +264,40 @@ impl RunManager {
         Ok(EnqueueOutcome::Accepted { run_id })
     }
 
+    /// Re-attach a recovered run (Phase C C.6 c91 boot-recovery).
+    /// The caller has already:
+    ///   1. queried `list_recoverable_runs`
+    ///   2. reset its status to `Queued` via
+    ///      `reset_non_terminal_to_queued`
+    ///   3. decided whether to honor a sticky `cancel_requested`
+    ///      bit
+    ///
+    /// `reattach` pushes the run into the dispatcher channel
+    /// WITHOUT re-persisting (status is already Queued) and
+    /// WITHOUT emitting a duplicate `Queued` event (one was
+    /// emitted at original submission and stays in the
+    /// event log for replay).
+    pub async fn reattach(&self, record: RunRecord) -> Result<(), RunManagerError> {
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        // queue_depth is a non-blocking bump; if the mpsc is
+        // full the send below errors — recovery surfaces the
+        // error to the caller so it can decide (typically: log
+        // + retry on next boot).
+        self.queue_depth.fetch_add(1, Ordering::Relaxed);
+        if let Err(e) = self
+            .tx
+            .send(QueuedRun {
+                record,
+                cancel_flag,
+            })
+            .await
+        {
+            self.queue_depth.fetch_sub(1, Ordering::Relaxed);
+            return Err(RunManagerError::QueueSendFailed(e.to_string()));
+        }
+        Ok(())
+    }
+
     /// Cancel a run.
     ///
     /// Three cases:
@@ -902,6 +936,107 @@ mod tests {
         let (mgr, _) = build_manager(ConcurrencyPolicy::default()).await;
         let err = mgr.cancel(&"run_does_not_exist".to_string()).await.unwrap_err();
         assert!(matches!(err, RunManagerError::RunNotFound(_)));
+    }
+
+    /// Phase C C.6 c91 — boot recovery. Persist a run row
+    /// directly in a non-terminal state (simulating a crashed
+    /// controller), then construct a fresh RunManager + invoke
+    /// the recovery sweep. Verify the run actually executes +
+    /// reaches Succeeded.
+    #[tokio::test]
+    async fn reattach_recovers_orphaned_runs_to_terminal() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let wf = fresh_workflow(&p).await;
+        // Simulate a crash mid-run: a row with status=Running.
+        let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
+        let orphan = RunRecord {
+            id: run_id.clone(),
+            workflow_id: wf,
+            status: RunStatus::Running,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: now_ms(),
+            started_at: Some(now_ms()),
+            completed_at: None,
+        };
+        p.put_run(&orphan).await.unwrap();
+        // Fresh manager (no prior in-memory state).
+        let sink = PersistentEventSink::new(p.clone());
+        let mgr = RunManager::new(
+            p.clone(),
+            RunPolicy::default(),
+            ConcurrencyPolicy::default(),
+            registry_default(),
+            Some(sink),
+        );
+        // Boot recovery: reset + reattach.
+        let recovered = p.list_recoverable_runs().await.unwrap();
+        assert_eq!(recovered.len(), 1);
+        let reset = p.reset_non_terminal_to_queued().await.unwrap();
+        assert_eq!(reset, 1);
+        for mut rec in recovered {
+            rec.status = RunStatus::Queued;
+            rec.started_at = None;
+            rec.completed_at = None;
+            mgr.reattach(rec).await.unwrap();
+        }
+        // Recovery success criterion: orphan run reaches a
+        // terminal status. The exact terminal isn't critical
+        // for c91 (clean workflow → Succeeded).
+        assert!(
+            wait_for_status(&p, &run_id, RunStatus::Succeeded).await,
+            "recovered run never reached Succeeded",
+        );
+    }
+
+    /// Phase C C.6 c91 — boot recovery honors the sticky
+    /// `cancel_requested` bit: an orphan that was being
+    /// cancelled when the controller crashed is finalized as
+    /// Cancelled on the first dispatcher pass after reboot.
+    #[tokio::test]
+    async fn reattach_with_cancel_requested_finalizes_cancelled() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let wf = fresh_workflow(&p).await;
+        let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
+        let orphan = RunRecord {
+            id: run_id.clone(),
+            workflow_id: wf,
+            status: RunStatus::Cancelling,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: now_ms(),
+            started_at: Some(now_ms()),
+            completed_at: None,
+        };
+        p.put_run(&orphan).await.unwrap();
+        // Mark the cancel intent that survived the crash.
+        p.set_cancel_requested(&run_id, true).await.unwrap();
+
+        let sink = PersistentEventSink::new(p.clone());
+        let mgr = RunManager::new(
+            p.clone(),
+            RunPolicy::default(),
+            ConcurrencyPolicy::default(),
+            registry_default(),
+            Some(sink),
+        );
+        // Boot recovery.
+        let recovered = p.list_recoverable_runs().await.unwrap();
+        p.reset_non_terminal_to_queued().await.unwrap();
+        for mut rec in recovered {
+            rec.status = RunStatus::Queued;
+            rec.started_at = None;
+            rec.completed_at = None;
+            mgr.reattach(rec).await.unwrap();
+        }
+        assert!(
+            wait_for_status(&p, &run_id, RunStatus::Cancelled).await,
+            "recovered run with cancel_requested should land Cancelled",
+        );
     }
 
     #[tokio::test]

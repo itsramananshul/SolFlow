@@ -37,6 +37,7 @@
 use crate::connector::ConnectorRegistry;
 use crate::event_sink::PersistentEventSink;
 use crate::executor::{execute_run, now_ms, RunPolicy};
+use crate::run_manager::{EnqueueOutcome, RunManager};
 use crate::{ControllerError, ControllerResult, EventSink, Persistence, SqlitePersistence};
 use chrono::{TimeZone, Utc};
 use cron::Schedule as CronSchedule;
@@ -72,6 +73,13 @@ pub struct TokioScheduler {
     /// emit RunEvents (Phase C C.5). Same fan-out as Manual
     /// runs from `LocalController`.
     event_sink: Option<PersistentEventSink>,
+    /// Phase C C.6 c91 — optional RunManager. When `Some`,
+    /// every scheduler-fired run goes through the orchestration
+    /// queue (honoring concurrency caps + saturation policy).
+    /// When `None`, falls back to the C.5 direct-spawn behavior
+    /// (kept only so existing scheduler-only tests don't need a
+    /// full controller harness).
+    run_manager: Option<RunManager>,
 }
 
 impl TokioScheduler {
@@ -83,7 +91,17 @@ impl TokioScheduler {
             started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             connectors: None,
             event_sink: None,
+            run_manager: None,
         }
+    }
+
+    /// Phase C C.6 c91 — install a RunManager so scheduler-fired
+    /// runs route through orchestration. LocalController calls
+    /// this; tests that exercise only scheduler behavior can
+    /// leave it `None` to keep direct-spawn semantics.
+    pub fn with_run_manager(mut self, mgr: RunManager) -> Self {
+        self.run_manager = Some(mgr);
+        self
     }
 
     /// Override the tick interval (tests use this to fire many
@@ -220,9 +238,10 @@ impl TokioScheduler {
         Ok(())
     }
 
-    /// Mint a `Queued` `RunRecord`, persist it, and spawn
-    /// `execute_run` on a tokio task. Returns the persisted
-    /// record so callers can echo it to clients (webhook handler).
+    /// Mint a `Queued` `RunRecord` and route it through the
+    /// orchestration queue (Phase C C.6 c91) or directly to
+    /// `execute_run` (legacy path). Returns the persisted record
+    /// so callers can echo it to clients (webhook handler).
     async fn spawn_run_for(
         &self,
         workflow_id: &WorkflowId,
@@ -243,19 +262,56 @@ impl TokioScheduler {
             started_at: None,
             completed_at: None,
         };
-        self.persistence.put_run(&record).await?;
-        let p = self.persistence.clone();
-        let r = record.clone();
-        let policy = self.policy;
-        let connectors = self.connectors.clone();
-        let event_sink: Option<Arc<dyn EventSink>> = self
-            .event_sink
-            .clone()
-            .map(|s| Arc::new(s) as Arc<dyn EventSink>);
-        tokio::spawn(async move {
-            execute_run(p, r, policy, connectors, event_sink, None).await;
-        });
-        Ok(record)
+        if let Some(mgr) = &self.run_manager {
+            // Route through orchestration. RunManager handles
+            // persist + enqueue + Queued event emission.
+            match mgr.enqueue(record.clone()).await {
+                Ok(EnqueueOutcome::Accepted { run_id }) => {
+                    // Re-fetch in case persistence canonicalized
+                    // anything; cheap + keeps the record fresh.
+                    self.persistence.get_run(&run_id).await
+                }
+                Ok(EnqueueOutcome::Rejected { run_id, reason }) => {
+                    tracing::warn!(
+                        "scheduler-fired run {} rejected by orchestration: {}",
+                        run_id,
+                        reason
+                    );
+                    self.persistence.get_run(&run_id).await
+                }
+                Ok(EnqueueOutcome::QueueFull { current_depth, capacity }) => {
+                    // Don't drop the schedule; next tick / webhook
+                    // call retries. Returned as a Persistence
+                    // error variant so the caller's HTTP layer can
+                    // map to 503; ingress_event swallows + logs.
+                    Err(ControllerError::Persistence {
+                        message: format!(
+                            "queue full ({current_depth}/{capacity}); retry later",
+                        ),
+                    })
+                }
+                Err(e) => Err(ControllerError::Persistence {
+                    message: format!("RunManager enqueue: {e}"),
+                }),
+            }
+        } else {
+            // Legacy direct-spawn path. Kept so scheduler-only
+            // unit tests (no LocalController, no RunManager) keep
+            // working. Production runs always plug a RunManager.
+            self.persistence.put_run(&record).await?;
+            let p = self.persistence.clone();
+            let r = record.clone();
+            let policy = self.policy;
+            let connectors = self.connectors.clone();
+            let event_sink: Option<Arc<dyn EventSink>> = self
+                .event_sink
+                .clone()
+                .map(|s| Arc::new(s) as Arc<dyn EventSink>);
+            tokio::spawn(async move {
+                execute_run(p, r, policy, connectors, event_sink, None).await;
+            });
+            Ok(record)
+        }
     }
 
     /// Register a new schedule. Mints an `id` when the input's id

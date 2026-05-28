@@ -47,10 +47,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let persistence = SqlitePersistence::open(&db_path).await?;
     let controller = LocalController::new(persistence).with_policy(policy);
-    // Start the scheduler tick loop AFTER policy is wired so the
-    // loop reads the right step-limit / wall-clock cap. Without
-    // this call the controller still works for Manual runs;
-    // Timer triggers wouldn't fire.
+    // Phase C C.6 c91 — boot recovery: re-enqueue any run row
+    // the previous controller process left in a non-terminal
+    // status (Queued / Starting / Running / Cancelling). At
+    // least once: workflow side-effects may execute twice on
+    // recovery; idempotency is the workflow author's concern.
+    match controller.recover_runs().await {
+        Ok(n) if n > 0 => tracing::info!("boot recovery re-enqueued {n} runs"),
+        Ok(_) => tracing::debug!("boot recovery found nothing to do"),
+        Err(e) => tracing::error!("boot recovery failed: {e}"),
+    }
+    // Start the scheduler tick loop AFTER recovery so any
+    // re-enqueued schedules get fair access.
     let _scheduler_handle = controller.start_scheduler();
     let app = server::router(controller);
 
