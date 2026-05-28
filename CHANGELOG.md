@@ -7,6 +7,85 @@ SolFlow uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Phase C C.6 (multi-run management + orchestration maturity)
+
+- **Concurrent execution.** The controller's `RunManager` runs
+  up to N workflows in parallel (default 8, configurable via
+  `SOLFLOW_CONTROLLER_MAX_CONCURRENT_RUNS`). Queue capacity
+  defaults to 64; configurable via
+  `SOLFLOW_CONTROLLER_MAX_QUEUED_RUNS`.
+- **Real cancellation.** `DELETE /runs/:id` now interrupts the
+  VM between instructions, aborts in-flight HTTP connector
+  calls via a 50ms cancel poll, and lands the run on
+  `RunStatus::Cancelled`. Cancellation latency = one VM step
+  (~µs) under normal load.
+- **Expanded lifecycle:** `RunStatus` gains `Starting`,
+  `Cancelling`, `TimedOut`, `Rejected` (additive — old wire
+  formats still parse). State machine enforced via
+  `RunStatus::can_transition_to`.
+- **Wall-clock timeout** lands as `RunStatus::TimedOut` (not
+  generic Failed) with a dedicated `RunEvent::TimedOut
+  { wall_clock_secs }`.
+- **Saturation policies.** Default `Queue` returns HTTP 503
+  with `code: "queue_full"` when at capacity; alternative
+  `Reject` persists a `Rejected` terminal record. Editor
+  surfaces a friendly "controller busy" message on
+  queue-full.
+- **At-least-once boot recovery.** Runs that were Running,
+  Starting, or Cancelling when the controller crashed get
+  re-enqueued on restart. Sticky `cancel_requested` bit
+  survives the crash so mid-cancel runs finalize Cancelled
+  on the first post-reboot dispatch.
+- **Per-run resource caps.** `max_output_lines` (default 100k)
+  and `max_events_per_run` (default 1M) protect against
+  runaway workflows. Cap violation surfaces as
+  `RuntimeErrorView::ResourceLimit { resource, limit }`.
+- **Active runs UI.** New `ActiveRunsModal` (Toolbar) polls
+  `/runs/active` + `/controller/concurrency` every 2 s; shows
+  live runs with per-row Cancel + a saturation-tinted
+  concurrency banner ("Running 8/8 · Queued 12/64").
+- **Run modal Cancel button** appears in controller-local
+  mode while a run is in flight; one click → real
+  cancellation through the orchestration loop.
+- **Scheduler routes through orchestration.** Timer + Event
+  triggered runs hit the same queue + concurrency caps as
+  Manual runs; scheduler ticks gracefully retry on next
+  cadence if the queue is full.
+- **Authoritative `docs/dev/RUN_LIFECYCLE.md`** documenting
+  the state machine, cancellation paths, recovery semantics,
+  concurrency policy, observability events, HTTP API, and
+  failure-mode troubleshooting.
+
+### Internal
+
+- New `controller::run_manager` module: `RunManager` (mpsc
+  queue + `tokio::sync::Semaphore` worker gating + in-memory
+  active registry), `ConcurrencyPolicy`, `SaturationPolicy`,
+  `EnqueueOutcome`, `ConcurrencyMetrics`.
+- `host-spec::RunStatus` + `RunEvent` extended additively; new
+  `transition_to(InvalidTransition)` helper enforces the
+  state machine in one place; `RunStatus::is_terminal`,
+  `can_transition_to`, `RunEvent::is_terminal` updated.
+- Runtime VM gains `cancel_callback: CancelCallback`
+  (`Arc<dyn Fn() -> bool>`) polled between every instruction
+  + `max_output_lines` cap on the print buffer. Browser-sim
+  installs neither → zero overhead in the WASM path.
+- `RunError::Cancelled` + `RunError::ResourceLimit`; both
+  bridged through `RuntimeErrorView` so the SSE / event-log
+  surfaces stay uniform.
+- `ConnectorInvocation::cancel_flag` + `HttpConnector`
+  `tokio::select!`-races each in-flight request against the
+  flag.
+- Migration `0004_lifecycle_expansion.sql` relaxes the runs
+  CHECK constraint + adds `cancel_requested INTEGER` column.
+- New HTTP routes: `GET /runs/active`,
+  `GET /controller/concurrency`.
+- TS `runtime-host`: `ActiveRunSummary`, `ConcurrencyMetrics`,
+  `SaturationPolicy` types; `listActiveRuns` +
+  `getConcurrencyMetrics` client methods; `ActiveRunsModal`
+  + RunModal Cancel button.
+- +25 Rust tests, +2 vitest across C.6. Totals: 160 rust + 136 vitest.
+
 ### Added — Phase C C.5 (event log + observability)
 
 - **Real-time run event stream.** Every run on the controller

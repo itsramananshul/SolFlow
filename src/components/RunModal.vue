@@ -591,6 +591,12 @@ function formatControllerError(phase: string, e: ControllerClientError): string 
     case 'timeout':
       return `Controller timed out while ${phaseLabel} (${e.timeoutMs}ms). ${e.message}`;
     case 'http':
+      // Phase C C.6 c95 — friendly saturation message when
+      // the controller reports its queue is full (HTTP 503 +
+      // code=queue_full from the controller's error envelope).
+      if (e.status === 503 && e.code === 'queue_full') {
+        return `Controller queue is full. Wait for in-flight runs to finish, then re-run. (${e.message})`;
+      }
       return `Controller returned HTTP ${e.status}${e.code ? ` (${e.code})` : ''} while ${phaseLabel}. ${e.message}`;
     case 'decode':
       return `Controller response couldn't be parsed while ${phaseLabel}. ${e.message}`;

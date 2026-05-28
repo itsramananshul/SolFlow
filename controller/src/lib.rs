@@ -79,6 +79,11 @@ pub enum ControllerError {
     /// Connector dispatch failures (timeout, auth, etc.). C.4+.
     #[error("connector error: {connector}: {message}")]
     Connector { connector: String, message: String },
+    /// Phase C C.6 c95 — explicit saturation signal. Maps to
+    /// HTTP 503 with `code: "queue_full"` so editors can render
+    /// a "controller busy" UX distinct from generic 5xx.
+    #[error("queue full: {current_depth}/{capacity}; retry shortly")]
+    QueueFull { current_depth: usize, capacity: usize },
 }
 
 /// Result alias shared across trait surfaces.

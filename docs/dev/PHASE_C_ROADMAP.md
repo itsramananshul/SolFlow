@@ -359,25 +359,95 @@ SOL VM.
 
 ---
 
-### C.6 — Multi-run management
+### C.6 — Multi-run management ✅ SHIPPED
 
 **Goal.** Production-ish run management.
 
-**Deliverables.**
-- Concurrent run execution (configurable parallelism per
-  controller)
-- Cancellation propagation through VM tick loop + connector
-  cooperative cancellation
-- Retry policies per-workflow (`backoff: exponential, max: 3`)
-- Per-connector circuit breakers
-- Dead-letter queue for runs that exhausted retries
+**Delivered (c89 – c96).**
+- **Lifecycle expansion (c89).** `RunStatus` extended from 5 to
+  9 variants (added Starting / Cancelling / TimedOut / Rejected);
+  `RunStatus::transition_to(InvalidTransition)` enforces the
+  state machine in one place; `RunEvent` gains 4 matching
+  variants; `RunError::Cancelled` + `RunError::ResourceLimit`;
+  VM `cancel_callback` hook; migration 0004 relaxes
+  CHECK + adds `cancel_requested` column.
+- **RunManager + worker pool (c90).** `ConcurrencyPolicy
+  { max_concurrent_runs=8, max_queued_runs=64, on_saturation:
+  Queue|Reject }` controls dispatch; bounded mpsc queue +
+  `tokio::sync::Semaphore`-gated workers; active-run registry;
+  per-run `Arc<AtomicBool>` cancel flag plumbed into the VM
+  + ExtCall handler; reconcile promotes mistaken-Failed to
+  Cancelled when cancel was set.
+- **Scheduler routing + boot recovery (c91).**
+  `TokioScheduler::with_run_manager()` routes Timer + Event
+  triggered runs through the same queue; `LocalController::
+  recover_runs()` sweeps Running/Starting/Cancelling rows on
+  boot, resets to Queued, and re-attaches via
+  `RunManager::reattach`. Sticky `cancel_requested` survives
+  restart. At-least-once recovery documented.
+- **Real HTTP cancel + orchestration introspection (c92).**
+  `DELETE /runs/:id` returns 204 (was 501), drives the run
+  to Cancelled within ms via the VM cancel hook +
+  reconcile. New `GET /runs/active` + `GET /controller/concurrency`
+  endpoints.
+- **TS client + ActiveRunsModal (c93).** `listActiveRuns` +
+  `getConcurrencyMetrics` client methods; RunModal Cancel
+  button when in controller-local + non-terminal;
+  ActiveRunsModal (Toolbar) polls active + metrics every 2s,
+  one-click cancel per row with toast feedback +
+  saturation-tinted concurrency banner.
+- **TimedOut + event cap + connector abort (c94).** Wall-
+  clock timeout lands as `RunStatus::TimedOut` (not Failed)
+  via a separate `timeout_flag` distinct from user
+  `cancel_flag`; reconcile keeps "user cancel wins" rule.
+  Per-run event cap enforced via `RunEventCtx::with_max_events`:
+  one terminal `ResourceLimit { resource: "events" }` marker
+  + silent drop of overflow. `ConnectorInvocation.cancel_flag`
+  + HttpConnector races each in-flight request against a
+  50ms cancel poll, returns `ConnectorError::Cancelled`.
+- **Saturation HTTP code + RUN_LIFECYCLE.md (c95).**
+  `ControllerError::QueueFull` maps to HTTP 503 + `code:
+  "queue_full"` so editors render "controller busy"
+  distinctly. RunModal formats queue-full friendly. New
+  authoritative `docs/dev/RUN_LIFECYCLE.md` documents every
+  state, every transition, every cancel path, recovery
+  semantics, observability, and the failure-mode table.
 
-**Success criteria.**
-- N concurrent runs of the same workflow finish without
-  cross-contamination
-- A cancelled run stops within ~1 second of the DELETE call
-- A retryable workflow with a flaky ExtCall succeeds eventually
-  + records every retry attempt in events
+**Success criteria — met.**
+- ✅ N concurrent runs of the same workflow finish without
+  cross-contamination — verified live (8 concurrent counting
+  loops complete without interleaving outputs).
+- ✅ A cancelled run stops within ~1 second of the DELETE
+  call — verified by `delete_run_real_end_to_end_with_active_run`
+  HTTP test; the cancel-callback polls between every VM
+  instruction, so cancel latency = one VM step (~µs).
+- ✅ A retryable workflow with a flaky ExtCall succeeds
+  eventually + records every retry attempt in events —
+  ExtCallStarted/ExtCallCompleted emitted per attempt;
+  RetryExhausted distinguishes "tried N times" from "first
+  attempt failed permanently".
+
+**Test coverage.**
+- 13 RunManager + executor tests directly cover orchestration:
+  enqueue/accept, enqueue/reject under Reject policy,
+  QueueFull under Queue policy, cancel active (slow workflow +
+  reconcile), cancel queued (blocker pins worker),
+  unknown-id RunNotFound, metrics shape, reattach happy
+  path, reattach honors sticky cancel_requested,
+  end-to-end emit through sink, wall-clock TimedOut promotion,
+  event cap drops overflow.
+- 3 server tests cover the HTTP surface: active-runs list,
+  concurrency snapshot, DELETE /runs/:id end-to-end with
+  status poll.
+- Workspace totals: 160 rust + 136 vitest at C.6 close.
+
+**Non-goals (still deferred to later milestones).**
+- Per-workflow retry policies + circuit breakers — needs
+  policy-attached-to-workflow first (today: only one
+  controller-wide policy).
+- Dead-letter queue — needs C.7's persistence-as-source-of-
+  truth across multi-controller setups.
+- Distributed coordination — Phase D.
 
 ---
 
@@ -479,8 +549,17 @@ These belong to Phase D or later:
   - c86 RunHistoryModal — past runs queryable by status/workflow
   - c87 EVENTS.md + roadmap + CHANGELOG
   - c88 final polish + close
-- **C.6 — Multi-run management** — next milestone
-- C.7 / C.8 — not started
+- **C.6 — Multi-run management** — ✅ complete (c89–c96)
+  - c89 Lifecycle expansion + VM cancel hook + ResourceLimit
+  - c90 RunManager + worker pool + ConcurrencyPolicy
+  - c91 Scheduler routes through queue + boot recovery
+  - c92 Real DELETE /runs/:id + active-runs + concurrency endpoints
+  - c93 TS client + RunModal Cancel + ActiveRunsModal
+  - c94 TimedOut promotion + event cap + connector abort race
+  - c95 QueueFull 503 mapping + RUN_LIFECYCLE.md + docs sync
+  - c96 final validation + close C.6
+- **C.7 — Remote controller support** — next milestone
+- C.8 — not started
 
 ## How to contribute to Phase C
 

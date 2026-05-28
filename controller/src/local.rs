@@ -363,10 +363,9 @@ impl Controller for LocalController {
                 current_depth,
                 capacity,
             } => {
-                return Err(ControllerError::Persistence {
-                    message: format!(
-                        "queue full ({current_depth}/{capacity}); retry shortly",
-                    ),
+                return Err(ControllerError::QueueFull {
+                    current_depth,
+                    capacity,
                 });
             }
         };

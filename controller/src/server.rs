@@ -411,6 +411,10 @@ impl IntoResponse for ApiError {
             NotImplemented { .. } => (StatusCode::NOT_IMPLEMENTED, "not_implemented"),
             Persistence { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "persistence"),
             Connector { .. } => (StatusCode::BAD_GATEWAY, "connector"),
+            // Phase C C.6 c95 — saturation surface. 503 + a
+            // distinct code lets editors render "controller busy"
+            // distinctly from generic 5xx + retry sanely.
+            QueueFull { .. } => (StatusCode::SERVICE_UNAVAILABLE, "queue_full"),
         };
         let body = serde_json::json!({
             "error": {

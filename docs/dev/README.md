@@ -21,6 +21,9 @@ compiler, or runtime.
   semantics, security boundaries
 - **[Events](./EVENTS.md)** — Phase C C.5 run-event log,
   SSE streaming, replay semantics, editor live-log UX
+- **[Run Lifecycle](./RUN_LIFECYCLE.md)** — Phase C C.6 state
+  machine, concurrency policy, cancellation, timeout, queue
+  saturation, boot recovery, operational troubleshooting
 - **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — code style + test discipline
 
 ## Deep dives
