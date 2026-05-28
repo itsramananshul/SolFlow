@@ -23,6 +23,13 @@ const DEFAULT_STEP_LIMIT: usize = 1_000_000;
 /// Print instruction (so the host can look up the source span
 /// via its `instruction_spans` sidecar).
 pub type PrintCallback = Arc<dyn Fn(&str, usize) + Send + Sync>;
+
+/// Type alias for the VM's cancellation callback (Phase C C.6).
+/// Returns `true` when the host wants the run interrupted; the
+/// VM checks before every instruction and surfaces a
+/// `RunError::Cancelled`. Wrap a single AtomicBool load in
+/// production for cheap polling.
+pub type CancelCallback = Arc<dyn Fn() -> bool + Send + Sync>;
 /// Default cap on captured trace entries when tracing is enabled.
 /// SOL programs can run millions of instructions; bounded memory
 /// matters more than full history for the editor UX (truncated
@@ -111,6 +118,21 @@ pub struct VM {
     /// turns each line into a real-time `RunEvent::Print`
     /// (Phase C C.5 c82).
     pub print_callback: Option<Arc<dyn Fn(&str, usize) + Send + Sync>>,
+
+    /// Optional cancellation callback (Phase C C.6 c89). When
+    /// installed, the VM polls it before every instruction;
+    /// returning `true` causes `run()` to terminate with
+    /// `RunError::Cancelled`. Designed to wrap a single atomic
+    /// load so the polling cost is one branch + one memory
+    /// fence in the hot path.
+    pub cancel_callback: Option<CancelCallback>,
+
+    /// Optional cap on lines `self.output` may accumulate
+    /// (Phase C C.6 c89). When exceeded, the offending Print
+    /// instruction returns `RunError::ResourceLimit { resource:
+    /// "output_lines", limit }`. `None` means unbounded (matches
+    /// browser-sim).
+    pub max_output_lines: Option<u64>,
 }
 
 impl Default for VM {
@@ -139,6 +161,8 @@ impl VM {
             error_inst_ptr: None,
             ext_call_handler: None,
             print_callback: None,
+            cancel_callback: None,
+            max_output_lines: None,
         }
     }
 
@@ -165,13 +189,24 @@ impl VM {
         self
     }
 
-    /// Fire the print callback if installed. Called by every
-    /// Print-family instruction just before appending the line
-    /// to `self.output`. Cheap when no callback is installed.
-    fn emit_print(&self, line: &str) {
+    /// Fire the print callback if installed AND enforce the
+    /// per-run `max_output_lines` cap (Phase C C.6 c89).
+    /// Returns `Err(ResourceLimit)` when this print would push
+    /// the buffer past the cap; callers swallow Ok and propagate
+    /// Err via `?`.
+    fn emit_print(&self, line: &str) -> Result<(), RunError> {
+        if let Some(max) = self.max_output_lines {
+            if self.output.len() as u64 >= max {
+                return Err(RunError::ResourceLimit {
+                    resource: "output_lines",
+                    limit: max,
+                });
+            }
+        }
         if let Some(cb) = &self.print_callback {
             cb(line, self.inst_ptr);
         }
+        Ok(())
     }
 
     pub fn heap_push_string(&mut self, s: String) -> u64 {
@@ -188,6 +223,15 @@ impl VM {
         loop {
             if self.steps >= self.step_limit {
                 return Err(RunError::StepLimit { limit: self.step_limit });
+            }
+            // Phase C C.6 c89 — cancellation check fires
+            // BEFORE each instruction. The callback is `Arc<dyn
+            // Fn() -> bool>` so it can be a single atomic load
+            // in production. When `None`, no overhead.
+            if let Some(cb) = &self.cancel_callback {
+                if cb() {
+                    return Err(RunError::Cancelled);
+                }
             }
             self.steps += 1;
             // Capture trace BEFORE step() advances inst_ptr — we
@@ -543,21 +587,21 @@ impl VM {
             Inst::PrintInt => {
                 let v = self.pop()? as i64;
                 let line = format!("{v}");
-                self.emit_print(&line);
+                self.emit_print(&line)?;
                 self.output.push(line);
                 self.push(0);
             }
             Inst::PrintFloat => {
                 let v = f64::from_bits(self.pop()?);
                 let line = format!("{v}");
-                self.emit_print(&line);
+                self.emit_print(&line)?;
                 self.output.push(line);
                 self.push(0);
             }
             Inst::PrintChar => {
                 let c = char::from_u32(self.pop()? as u32).unwrap_or('?');
                 let line = format!("{c}");
-                self.emit_print(&line);
+                self.emit_print(&line)?;
                 self.output.push(line);
                 self.push(0);
             }
@@ -569,7 +613,7 @@ impl VM {
                         return Err(RunError::HeapShapeMismatch { expected: "String", got: "other" });
                     }
                 };
-                self.emit_print(&line);
+                self.emit_print(&line)?;
                 self.output.push(line);
                 self.push(0);
             }

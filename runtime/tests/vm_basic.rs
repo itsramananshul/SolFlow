@@ -20,7 +20,7 @@ fn run_traced(source: &str) -> solflow_runtime::RunOutcome {
     let cp = compiled.value.unwrap_or_else(|| {
         panic!("compile failed: {:#?}", compiled.diagnostics);
     });
-    run_program_with(&cp.bytecode, RunOptions { step_limit: None, trace: true, ext_call_handler: None, print_callback: None })
+    run_program_with(&cp.bytecode, RunOptions { step_limit: None, trace: true, ext_call_handler: None, print_callback: None, cancel_callback: None, max_output_lines: None, max_events_per_run: None })
 }
 
 #[test]
@@ -202,6 +202,9 @@ fn ext_call_with_handler_returns_value() {
         trace: false,
         ext_call_handler: Some(handler.clone()),
         print_callback: None,
+        cancel_callback: None,
+        max_output_lines: None,
+        max_events_per_run: None,
     };
     let out = run_program_with(&program, opts);
     assert!(out.error.is_none(), "expected clean run, got {:?}", out.error);
@@ -246,6 +249,9 @@ fn ext_call_handler_error_surfaces_as_extcall_failed() {
         trace: false,
         ext_call_handler: Some(Arc::new(FailingHandler)),
         print_callback: None,
+        cancel_callback: None,
+        max_output_lines: None,
+        max_events_per_run: None,
     };
     let out = run_program_with(&program, opts);
     match out.error {
@@ -256,6 +262,92 @@ fn ext_call_handler_error_surfaces_as_extcall_failed() {
         }
         other => panic!("expected ExtCallFailed; got {other:?}"),
     }
+}
+
+/// Phase C C.6 c89 — VM polls the optional cancel callback
+/// before every instruction; returning true stops execution
+/// with RunError::Cancelled.
+#[test]
+fn vm_cancel_callback_returns_cancelled() {
+    use solflow_runtime::{run_program_with, CancelCallback, RunOptions};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // Program: an infinite-ish loop printing forever. We flip
+    // the cancel flag after construction so it cancels on the
+    // first poll (before any step).
+    let source = "function start() -> int { while (1 == 1) { print(\"x\"); } return 0; }";
+    let cp = solflow_compiler::compile_source(source)
+        .value
+        .expect("compile clean");
+
+    let flag = Arc::new(AtomicBool::new(true)); // cancel immediately
+    let cb_flag = flag.clone();
+    let cancel_callback: CancelCallback =
+        Arc::new(move || cb_flag.load(Ordering::Relaxed));
+
+    let opts = RunOptions {
+        step_limit: Some(1_000_000),
+        trace: false,
+        ext_call_handler: None,
+        print_callback: None,
+        cancel_callback: Some(cancel_callback),
+        max_output_lines: None,
+        max_events_per_run: None,
+    };
+    let out = run_program_with(&cp.bytecode, opts);
+    match out.error {
+        Some(RunError::Cancelled) => {}
+        other => panic!("expected RunError::Cancelled, got {other:?}"),
+    }
+    // Cancellation fired before any instruction → output empty
+    // (the callback returns true on the first poll).
+    assert!(out.output.is_empty());
+    assert_eq!(flag.load(Ordering::Relaxed), true);
+}
+
+/// Phase C C.6 c89 — `max_output_lines` cap surfaces as
+/// `ResourceLimit { resource: "output_lines", limit }`.
+#[test]
+fn vm_max_output_lines_returns_resource_limit() {
+    use solflow_runtime::{run_program_with, RunOptions};
+
+    // Program prints 5 lines then returns. Cap at 2 — the
+    // third print should error.
+    let source = r#"
+        function start() -> int {
+            print("a");
+            print("b");
+            print("c");
+            print("d");
+            print("e");
+            return 0;
+        }
+    "#;
+    let cp = solflow_compiler::compile_source(source)
+        .value
+        .expect("compile clean");
+
+    let opts = RunOptions {
+        step_limit: None,
+        trace: false,
+        ext_call_handler: None,
+        print_callback: None,
+        cancel_callback: None,
+        max_output_lines: Some(2),
+        max_events_per_run: None,
+    };
+    let out = run_program_with(&cp.bytecode, opts);
+    match out.error {
+        Some(RunError::ResourceLimit { resource, limit }) => {
+            assert_eq!(resource, "output_lines");
+            assert_eq!(limit, 2);
+        }
+        other => panic!("expected ResourceLimit, got {other:?}"),
+    }
+    // Two lines made it through before the cap fired.
+    assert_eq!(out.output.len(), 2);
+    assert_eq!(out.output, vec!["a", "b"]);
 }
 
 /// B.11 c32 regression: GetField on an OOB index used to panic
@@ -349,7 +441,7 @@ fn trace_truncates_at_default_cap_for_infinite_loop() {
     let cp = compiled.value.expect("should compile");
     let out = run_program_with(
         &cp.bytecode,
-        RunOptions { step_limit: Some(100_000), trace: true, ext_call_handler: None, print_callback: None },
+        RunOptions { step_limit: Some(100_000), trace: true, ext_call_handler: None, print_callback: None, cancel_callback: None, max_output_lines: None, max_events_per_run: None },
     );
     match out.error {
         Some(RunError::StepLimit { .. }) => {}

@@ -272,6 +272,12 @@ enum RuntimeErrorView {
     ExtCallBlocked { function_name: String, url: String },
     ExtCallFailed { connector: String, function_name: String, message: String },
     HeapShapeMismatch { expected: String, got: String },
+    // Phase C C.6 c89 — browser-sim doesn't trigger these
+    // today (no cancel hook + no output cap by default), but
+    // the variants exist so the wire shape stays uniform with
+    // the host-spec-mirrored editor types.
+    Cancelled,
+    ResourceLimit { resource: String, limit: u64 },
 }
 
 impl From<&RunError> for RuntimeErrorView {
@@ -300,6 +306,13 @@ impl From<&RunError> for RuntimeErrorView {
                 RuntimeErrorView::HeapShapeMismatch {
                     expected: (*expected).to_string(),
                     got: (*got).to_string(),
+                }
+            }
+            RunError::Cancelled => RuntimeErrorView::Cancelled,
+            RunError::ResourceLimit { resource, limit } => {
+                RuntimeErrorView::ResourceLimit {
+                    resource: (*resource).to_string(),
+                    limit: *limit,
                 }
             }
         }
@@ -367,7 +380,15 @@ pub fn run_source_json(source: &str) -> String {
         // doesn't blow memory.
         let outcome = run_program_with(
             &bytecode,
-            RunOptions { step_limit: None, trace: true, ext_call_handler: None, print_callback: None },
+            RunOptions {
+                step_limit: None,
+                trace: true,
+                ext_call_handler: None,
+                print_callback: None,
+                cancel_callback: None,
+                max_output_lines: None,
+                max_events_per_run: None,
+            },
         );
 
         #[derive(Serialize)]

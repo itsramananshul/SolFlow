@@ -77,12 +77,22 @@ export interface RunRequest {
   inputs?: unknown;
 }
 
+/**
+ * Per-run lifecycle state. Phase C C.6 (c89) extended this from
+ * the original 5 states to 9. New variants are additive — older
+ * editor builds see them as unknown strings and degrade
+ * gracefully. See `docs/dev/RUN_LIFECYCLE.md`.
+ */
 export type RunStatus =
   | 'Queued'
+  | 'Starting'    // dequeued, persisting; VM not yet ticking (C.6)
   | 'Running'
+  | 'Cancelling'  // cancel requested, winding down (C.6)
   | 'Succeeded'
   | 'Failed'
-  | 'Cancelled';
+  | 'Cancelled'
+  | 'TimedOut'    // wall-clock budget exhausted (C.6)
+  | 'Rejected';   // controller refused to enqueue (C.6)
 
 export interface RunCreated {
   run_id: RunId;
@@ -136,7 +146,10 @@ export type RuntimeErrorView =
   | { kind: 'ExtCallFailed'; connector: string; function_name: string; message: string }
   | { kind: 'HeapShapeMismatch'; expected: string; got: string }
   | { kind: 'Cancelled' }
-  | { kind: 'Timeout'; wall_clock_secs: number };
+  | { kind: 'Timeout'; wall_clock_secs: number }
+  /** Phase C C.6 — per-run resource cap exceeded.
+   *  `resource` is one of "output_lines" / "events" / … */
+  | { kind: 'ResourceLimit'; resource: string; limit: number };
 
 // =============================================================
 //  Event stream
@@ -197,6 +210,33 @@ export type RunEvent =
       run_id: RunId;
       seq: number;
       ts: number;
+    }
+  // Phase C C.6 — lifecycle expansion.
+  | {
+      kind: 'Starting';
+      run_id: RunId;
+      seq: number;
+      ts: number;
+    }
+  | {
+      kind: 'Cancelling';
+      run_id: RunId;
+      seq: number;
+      ts: number;
+    }
+  | {
+      kind: 'Rejected';
+      run_id: RunId;
+      seq: number;
+      ts: number;
+      reason: string;
+    }
+  | {
+      kind: 'TimedOut';
+      run_id: RunId;
+      seq: number;
+      ts: number;
+      wall_clock_secs: number;
     };
 
 // =============================================================

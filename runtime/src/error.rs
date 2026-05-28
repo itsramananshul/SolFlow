@@ -66,6 +66,23 @@ pub enum RunError {
         expected: &'static str,
         got: &'static str,
     },
+
+    /// Run was cancelled mid-execution via the VM's cancel hook
+    /// (the controller's `DELETE /runs/:id` flow installs a
+    /// callback that flips a token; the VM polls it between
+    /// instructions). Distinct from `StepLimit` (CPU bound) and
+    /// the future wall-clock TimedOut. Phase C C.6.
+    Cancelled,
+
+    /// A per-run resource cap was exceeded — `resource` names
+    /// which one (`"output_lines"`, `"events"`, …) and `limit`
+    /// carries the cap. Phase C C.6. Distinct from `StepLimit`
+    /// so editor UX can render "exceeded N output lines" vs
+    /// "ran too long" distinctly.
+    ResourceLimit {
+        resource: &'static str,
+        limit: u64,
+    },
 }
 
 impl fmt::Display for RunError {
@@ -93,6 +110,11 @@ impl fmt::Display for RunError {
             RunError::HeapShapeMismatch { expected, got } => write!(
                 f,
                 "heap shape mismatch: expected {expected}, got {got}",
+            ),
+            RunError::Cancelled => write!(f, "run cancelled"),
+            RunError::ResourceLimit { resource, limit } => write!(
+                f,
+                "resource limit exceeded: {resource} > {limit}",
             ),
         }
     }

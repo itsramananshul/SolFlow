@@ -569,6 +569,10 @@ function formatRuntimeError(e: RuntimeError): string {
       return `External call "${e.function_name}" via connector "${e.connector}" failed: ${e.message}`;
     case 'HeapShapeMismatch':
       return `Heap shape mismatch: expected ${e.expected}, got ${e.got}. Likely a compiler bug; please report.`;
+    case 'Cancelled':
+      return 'Run cancelled.';
+    case 'ResourceLimit':
+      return `Resource limit exceeded: ${e.resource} > ${e.limit.toLocaleString()}. The controller halted execution to protect itself; raise the limit if the workload is legitimate.`;
   }
 }
 

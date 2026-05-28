@@ -116,14 +116,125 @@ pub struct RunCreated {
     pub status: RunStatus,
 }
 
-/// Per-run status.
+/// Per-run lifecycle state.
+///
+/// Phase C C.6 (c89) extended this from the original 5 states
+/// (Queued / Running / Succeeded / Failed / Cancelled) to a full
+/// 9-state lifecycle. New variants are **additive** at the wire
+/// level — older editor builds see them as unknown strings and
+/// degrade gracefully (we render "Unknown" rather than crash).
+///
+/// State machine (terminals are sinks):
+///
+/// ```text
+///   Queued     ─► Starting | Cancelled | Rejected
+///   Starting   ─► Running  | Cancelled | Failed
+///   Running    ─► Succeeded | Failed | Cancelling | TimedOut
+///   Cancelling ─► Cancelled | Failed
+/// ```
+///
+/// See `RunStatus::can_transition_to` for the enforcement helper
+/// the controller uses; see `docs/dev/RUN_LIFECYCLE.md` for the
+/// authoritative narrative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunStatus {
+    /// Accepted by the controller; sitting in the pending queue.
     Queued,
+    /// Dequeued by a worker; persisting `started_at` and emitting
+    /// lifecycle events. VM not yet ticking. (Phase C C.6)
+    Starting,
+    /// The VM is executing instructions.
     Running,
+    /// A cancel request landed; waiting for execution to wind
+    /// down + connectors to release. Terminal `Cancelled`
+    /// follows shortly. (Phase C C.6)
+    Cancelling,
+    /// Terminal — VM ran to completion without runtime error.
     Succeeded,
+    /// Terminal — VM hit a runtime error (div-by-zero / OOB /
+    /// ExtCallFailed / ResourceLimit / …).
     Failed,
+    /// Terminal — user-initiated cancellation completed.
     Cancelled,
+    /// Terminal — wall-clock budget exceeded. Distinguished from
+    /// `Failed` so the editor can render distinct UX. (Phase C C.6)
+    TimedOut,
+    /// Terminal — controller refused to enqueue (e.g. queue full
+    /// under reject-on-saturation policy). No VM execution
+    /// attempted. (Phase C C.6)
+    Rejected,
+}
+
+/// Error returned when a caller tries `RunStatus::transition_to`
+/// with an invalid (from, to) pair. Used by the controller's
+/// lifecycle helper to catch state-machine bugs at the source
+/// rather than silently corrupting status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidTransition {
+    pub from: RunStatus,
+    pub to: RunStatus,
+}
+
+impl std::fmt::Display for InvalidTransition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid run-status transition: {:?} → {:?}",
+            self.from, self.to
+        )
+    }
+}
+
+impl std::error::Error for InvalidTransition {}
+
+impl RunStatus {
+    /// Terminal states are sinks — no outgoing transitions.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            RunStatus::Succeeded
+                | RunStatus::Failed
+                | RunStatus::Cancelled
+                | RunStatus::TimedOut
+                | RunStatus::Rejected
+        )
+    }
+
+    /// Whether `from → to` is a valid transition. Source of truth
+    /// for the lifecycle state machine. Encoded once; controller
+    /// + tests + future remote-controller code consult this.
+    pub fn can_transition_to(self, next: RunStatus) -> bool {
+        use RunStatus::*;
+        match (self, next) {
+            // Queued —
+            (Queued, Starting) | (Queued, Cancelled) | (Queued, Rejected) => true,
+            // Starting —
+            (Starting, Running) | (Starting, Cancelled) | (Starting, Failed) => true,
+            // Running —
+            (Running, Succeeded)
+            | (Running, Failed)
+            | (Running, Cancelling)
+            | (Running, TimedOut) => true,
+            // Cancelling —
+            (Cancelling, Cancelled) | (Cancelling, Failed) => true,
+            // Anything else (including any-from-terminal, or
+            // any-to-same-state) is rejected.
+            _ => false,
+        }
+    }
+
+    /// Disciplined transition entry point. Returns
+    /// `Err(InvalidTransition)` if the move would violate the
+    /// state machine. The controller's RunManager calls this on
+    /// every status update so bugs surface here, not as silently
+    /// corrupt persisted state.
+    pub fn transition_to(self, next: RunStatus) -> Result<RunStatus, InvalidTransition> {
+        if self.can_transition_to(next) {
+            Ok(next)
+        } else {
+            Err(InvalidTransition { from: self, to: next })
+        }
+    }
 }
 
 /// Final run output. Present iff `status == Succeeded`.
@@ -235,6 +346,37 @@ pub enum RunEvent {
         seq: u64,
         ts: i64,
     },
+    /// Phase C C.6 — `Queued → Starting`. The dispatcher
+    /// dequeued the run; the VM hasn't ticked yet.
+    Starting {
+        run_id: RunId,
+        seq: u64,
+        ts: i64,
+    },
+    /// Phase C C.6 — a cancel request arrived; waiting for the
+    /// VM to finish current step + connectors to release. A
+    /// terminal `Cancelled` follows shortly.
+    Cancelling {
+        run_id: RunId,
+        seq: u64,
+        ts: i64,
+    },
+    /// Phase C C.6 — terminal: controller refused to enqueue
+    /// (queue saturation under reject-on-saturation policy).
+    Rejected {
+        run_id: RunId,
+        seq: u64,
+        ts: i64,
+        reason: String,
+    },
+    /// Phase C C.6 — terminal: wall-clock budget exhausted.
+    /// Distinct from `Failed` so the editor renders distinct UX.
+    TimedOut {
+        run_id: RunId,
+        seq: u64,
+        ts: i64,
+        wall_clock_secs: u64,
+    },
 }
 
 impl RunEvent {
@@ -250,7 +392,11 @@ impl RunEvent {
             | RunEvent::Diagnostic { run_id, .. }
             | RunEvent::Completed { run_id, .. }
             | RunEvent::Failed { run_id, .. }
-            | RunEvent::Cancelled { run_id, .. } => run_id,
+            | RunEvent::Cancelled { run_id, .. }
+            | RunEvent::Starting { run_id, .. }
+            | RunEvent::Cancelling { run_id, .. }
+            | RunEvent::Rejected { run_id, .. }
+            | RunEvent::TimedOut { run_id, .. } => run_id,
         }
     }
 
@@ -266,7 +412,11 @@ impl RunEvent {
             | RunEvent::Diagnostic { seq, .. }
             | RunEvent::Completed { seq, .. }
             | RunEvent::Failed { seq, .. }
-            | RunEvent::Cancelled { seq, .. } => *seq,
+            | RunEvent::Cancelled { seq, .. }
+            | RunEvent::Starting { seq, .. }
+            | RunEvent::Cancelling { seq, .. }
+            | RunEvent::Rejected { seq, .. }
+            | RunEvent::TimedOut { seq, .. } => *seq,
         }
     }
 
@@ -281,7 +431,11 @@ impl RunEvent {
             | RunEvent::Diagnostic { ts, .. }
             | RunEvent::Completed { ts, .. }
             | RunEvent::Failed { ts, .. }
-            | RunEvent::Cancelled { ts, .. } => *ts,
+            | RunEvent::Cancelled { ts, .. }
+            | RunEvent::Starting { ts, .. }
+            | RunEvent::Cancelling { ts, .. }
+            | RunEvent::Rejected { ts, .. }
+            | RunEvent::TimedOut { ts, .. } => *ts,
         }
     }
 
@@ -298,6 +452,10 @@ impl RunEvent {
             RunEvent::Completed { .. } => "Completed",
             RunEvent::Failed { .. } => "Failed",
             RunEvent::Cancelled { .. } => "Cancelled",
+            RunEvent::Starting { .. } => "Starting",
+            RunEvent::Cancelling { .. } => "Cancelling",
+            RunEvent::Rejected { .. } => "Rejected",
+            RunEvent::TimedOut { .. } => "TimedOut",
         }
     }
 
@@ -306,7 +464,11 @@ impl RunEvent {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            RunEvent::Completed { .. } | RunEvent::Failed { .. } | RunEvent::Cancelled { .. }
+            RunEvent::Completed { .. }
+                | RunEvent::Failed { .. }
+                | RunEvent::Cancelled { .. }
+                | RunEvent::Rejected { .. }
+                | RunEvent::TimedOut { .. }
         )
     }
 }
@@ -333,6 +495,12 @@ pub enum RuntimeErrorView {
     Cancelled,
     /// Wall-clock timeout exceeded.
     Timeout { wall_clock_secs: u64 },
+    /// Per-run resource cap exceeded. `resource` discriminates
+    /// which cap fired — `"output_lines"` for the print buffer
+    /// cap, `"events"` for the per-run event-log cap, etc.
+    /// Phase C C.6. (Field is `resource` rather than `kind` to
+    /// avoid clashing with the enum's serde tag.)
+    ResourceLimit { resource: String, limit: u64 },
 }
 
 /// Byte-range source span. Mirrors `solflow_compiler::SourceSpan`
@@ -538,6 +706,159 @@ mod tests {
         })
         .unwrap();
         assert!(json.starts_with(r#"{"kind":"ExtCallFailed""#));
+    }
+
+    // =============================================================
+    //  Phase C C.6 c89 — lifecycle + new variants
+    // =============================================================
+
+    #[test]
+    fn run_status_terminal_classification() {
+        // Non-terminals
+        assert!(!RunStatus::Queued.is_terminal());
+        assert!(!RunStatus::Starting.is_terminal());
+        assert!(!RunStatus::Running.is_terminal());
+        assert!(!RunStatus::Cancelling.is_terminal());
+        // Terminals
+        assert!(RunStatus::Succeeded.is_terminal());
+        assert!(RunStatus::Failed.is_terminal());
+        assert!(RunStatus::Cancelled.is_terminal());
+        assert!(RunStatus::TimedOut.is_terminal());
+        assert!(RunStatus::Rejected.is_terminal());
+    }
+
+    #[test]
+    fn run_status_valid_transitions() {
+        use RunStatus::*;
+        let valid: Vec<(RunStatus, RunStatus)> = vec![
+            // Queued —
+            (Queued, Starting), (Queued, Cancelled), (Queued, Rejected),
+            // Starting —
+            (Starting, Running), (Starting, Cancelled), (Starting, Failed),
+            // Running —
+            (Running, Succeeded), (Running, Failed),
+            (Running, Cancelling), (Running, TimedOut),
+            // Cancelling —
+            (Cancelling, Cancelled), (Cancelling, Failed),
+        ];
+        for (from, to) in valid {
+            assert!(
+                from.can_transition_to(to),
+                "{from:?} → {to:?} should be valid",
+            );
+            assert_eq!(from.transition_to(to).unwrap(), to);
+        }
+    }
+
+    #[test]
+    fn run_status_rejects_invalid_transitions() {
+        use RunStatus::*;
+        let invalid: Vec<(RunStatus, RunStatus)> = vec![
+            // Queued shortcuts that skip Starting are illegal.
+            (Queued, Running), (Queued, Succeeded), (Queued, Failed),
+            // Backward transitions
+            (Running, Queued), (Cancelling, Running),
+            // Terminals are sinks.
+            (Succeeded, Failed), (Failed, Running),
+            (Cancelled, Running), (Rejected, Starting),
+            (TimedOut, Running),
+            // Self-transitions are not transitions.
+            (Running, Running), (Queued, Queued),
+            // Starting can't TimedOut directly (only Running can).
+            (Starting, TimedOut),
+        ];
+        for (from, to) in invalid {
+            assert!(
+                !from.can_transition_to(to),
+                "{from:?} → {to:?} should be invalid",
+            );
+            let err = from.transition_to(to).expect_err("must reject");
+            assert_eq!(err.from, from);
+            assert_eq!(err.to, to);
+        }
+    }
+
+    #[test]
+    fn run_status_new_variants_serde_bare_strings() {
+        // Wire compat: plain-enum variants serialize as bare
+        // JSON strings (matches the existing `Succeeded` shape).
+        for (status, expected) in &[
+            (RunStatus::Starting, r#""Starting""#),
+            (RunStatus::Cancelling, r#""Cancelling""#),
+            (RunStatus::TimedOut, r#""TimedOut""#),
+            (RunStatus::Rejected, r#""Rejected""#),
+        ] {
+            let s = serde_json::to_string(status).unwrap();
+            assert_eq!(&s, expected);
+            // Round-trip.
+            let back: RunStatus = serde_json::from_str(&s).unwrap();
+            assert_eq!(&back, status);
+        }
+    }
+
+    #[test]
+    fn run_event_lifecycle_variants_round_trip() {
+        let evts: Vec<RunEvent> = vec![
+            RunEvent::Starting {
+                run_id: "r".into(), seq: 0, ts: 1,
+            },
+            RunEvent::Cancelling {
+                run_id: "r".into(), seq: 1, ts: 2,
+            },
+            RunEvent::Rejected {
+                run_id: "r".into(), seq: 2, ts: 3,
+                reason: "queue full".into(),
+            },
+            RunEvent::TimedOut {
+                run_id: "r".into(), seq: 3, ts: 4,
+                wall_clock_secs: 600,
+            },
+        ];
+        for ev in &evts {
+            let json = serde_json::to_string(ev).unwrap();
+            let back: RunEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(ev.kind(), back.kind());
+            assert_eq!(ev.seq(), back.seq());
+            assert_eq!(ev.ts(), back.ts());
+            assert_eq!(ev.run_id(), back.run_id());
+        }
+    }
+
+    #[test]
+    fn run_event_is_terminal_covers_new_variants() {
+        let make = |run_id: &str| -> Vec<(RunEvent, bool)> {
+            vec![
+                (RunEvent::Queued { run_id: run_id.into(), seq: 0, ts: 0 }, false),
+                (RunEvent::Starting { run_id: run_id.into(), seq: 0, ts: 0 }, false),
+                (RunEvent::Cancelling { run_id: run_id.into(), seq: 0, ts: 0 }, false),
+                (RunEvent::Rejected { run_id: run_id.into(), seq: 0, ts: 0, reason: "".into() }, true),
+                (RunEvent::TimedOut { run_id: run_id.into(), seq: 0, ts: 0, wall_clock_secs: 0 }, true),
+                (RunEvent::Cancelled { run_id: run_id.into(), seq: 0, ts: 0 }, true),
+            ]
+        };
+        for (ev, want) in make("r") {
+            assert_eq!(ev.is_terminal(), want, "kind={}", ev.kind());
+        }
+    }
+
+    #[test]
+    fn runtime_error_view_resource_limit_serde() {
+        let e = RuntimeErrorView::ResourceLimit {
+            resource: "output_lines".into(),
+            limit: 1024,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""kind":"ResourceLimit""#));
+        assert!(json.contains(r#""resource":"output_lines""#));
+        assert!(json.contains(r#""limit":1024"#));
+        let back: RuntimeErrorView = serde_json::from_str(&json).unwrap();
+        match back {
+            RuntimeErrorView::ResourceLimit { resource, limit } => {
+                assert_eq!(resource, "output_lines");
+                assert_eq!(limit, 1024);
+            }
+            other => panic!("expected ResourceLimit, got {other:?}"),
+        }
     }
 
     #[test]

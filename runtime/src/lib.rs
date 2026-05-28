@@ -12,7 +12,7 @@ pub use extcall::{
     ExtCallContext, ExtCallError, ExtCallHandler, ExtCallHandlerArc, ExtCallType,
     ExtCallValue,
 };
-pub use vm::{HeapObject, PrintCallback, VM};
+pub use vm::{CancelCallback, HeapObject, PrintCallback, VM};
 
 use solflow_compiler::bytecode::Inst;
 
@@ -80,6 +80,21 @@ pub struct RunOptions {
     /// inst_ptr)` so the controller can look up the source
     /// span via `instruction_spans`.
     pub print_callback: Option<PrintCallback>,
+    /// Optional cancellation callback (Phase C C.6 c89). The VM
+    /// polls this before every instruction; returning `true`
+    /// stops execution with `RunError::Cancelled`. Browser-sim
+    /// installs `None`.
+    pub cancel_callback: Option<CancelCallback>,
+    /// Optional cap on `self.output` line count (Phase C C.6).
+    /// When exceeded, the offending Print returns
+    /// `RunError::ResourceLimit { resource: "output_lines", ... }`.
+    pub max_output_lines: Option<u64>,
+    /// Reserved — per-run event-log cap. Wired up by the
+    /// controller's RunManager in c91. Not enforced by the VM
+    /// directly (events come from the controller event sink),
+    /// but threaded through here for symmetry with other policy
+    /// knobs.
+    pub max_events_per_run: Option<u64>,
 }
 
 /// Run a compiled program to completion (or to first runtime
@@ -95,6 +110,9 @@ pub fn run_program(program: &[Inst], step_limit: Option<usize>) -> RunOutcome {
             trace: false,
             ext_call_handler: None,
             print_callback: None,
+            cancel_callback: None,
+            max_output_lines: None,
+            max_events_per_run: None,
         },
     )
 }
@@ -111,6 +129,11 @@ pub fn run_program_with(program: &[Inst], opts: RunOptions) -> RunOutcome {
     }
     vm.ext_call_handler = opts.ext_call_handler;
     vm.print_callback = opts.print_callback;
+    vm.cancel_callback = opts.cancel_callback;
+    vm.max_output_lines = opts.max_output_lines;
+    // `max_events_per_run` is reserved — the VM doesn't emit
+    // events directly; the controller's RunManager honors it.
+    let _ = opts.max_events_per_run;
     match vm.run() {
         Ok(return_value) => RunOutcome {
             return_value,

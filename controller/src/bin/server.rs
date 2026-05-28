@@ -34,6 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy = RunPolicy {
         step_limit: env_usize("SOLFLOW_CONTROLLER_STEP_LIMIT", 10_000_000),
         wall_clock_timeout: Duration::from_secs(env_u64("SOLFLOW_CONTROLLER_TIMEOUT_SECS", 600)),
+        max_output_lines: env_u64("SOLFLOW_CONTROLLER_MAX_OUTPUT_LINES", 100_000),
+        max_events_per_run: env_u64("SOLFLOW_CONTROLLER_MAX_EVENTS_PER_RUN", 1_000_000),
     };
 
     tracing::info!(%bind, %db_path, "starting solflow-controller");

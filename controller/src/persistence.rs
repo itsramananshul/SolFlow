@@ -25,6 +25,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_initial", include_str!("../migrations/0001_initial.sql")),
     ("0002_schedules", include_str!("../migrations/0002_schedules.sql")),
     ("0003_run_events", include_str!("../migrations/0003_run_events.sql")),
+    (
+        "0004_lifecycle_expansion",
+        include_str!("../migrations/0004_lifecycle_expansion.sql"),
+    ),
 ];
 
 /// Concrete persistence backend wrapping a sqlx connection pool.
@@ -586,20 +590,28 @@ fn row_to_run_record(row: &sqlx::sqlite::SqliteRow) -> ControllerResult<RunRecor
 fn status_to_str(s: RunStatus) -> &'static str {
     match s {
         RunStatus::Queued => "Queued",
+        RunStatus::Starting => "Starting",
         RunStatus::Running => "Running",
+        RunStatus::Cancelling => "Cancelling",
         RunStatus::Succeeded => "Succeeded",
         RunStatus::Failed => "Failed",
         RunStatus::Cancelled => "Cancelled",
+        RunStatus::TimedOut => "TimedOut",
+        RunStatus::Rejected => "Rejected",
     }
 }
 
 fn str_to_status(s: &str) -> Option<RunStatus> {
     match s {
         "Queued" => Some(RunStatus::Queued),
+        "Starting" => Some(RunStatus::Starting),
         "Running" => Some(RunStatus::Running),
+        "Cancelling" => Some(RunStatus::Cancelling),
         "Succeeded" => Some(RunStatus::Succeeded),
         "Failed" => Some(RunStatus::Failed),
         "Cancelled" => Some(RunStatus::Cancelled),
+        "TimedOut" => Some(RunStatus::TimedOut),
+        "Rejected" => Some(RunStatus::Rejected),
         _ => None,
     }
 }
@@ -644,7 +656,45 @@ mod tests {
         assert!(matches!(err, ControllerError::WorkflowNotFound { .. }));
     }
 
+    /// Phase C C.6 c89 — every new lifecycle variant round-
+    /// trips through the table (CHECK constraint accepts them +
+    /// status_to_str / str_to_status agree).
     #[tokio::test]
+    async fn run_status_new_variants_round_trip_through_runs_table() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_c89".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        let lifecycle_states = [
+            RunStatus::Queued,
+            RunStatus::Starting,
+            RunStatus::Running,
+            RunStatus::Cancelling,
+            RunStatus::Succeeded,
+            RunStatus::Failed,
+            RunStatus::Cancelled,
+            RunStatus::TimedOut,
+            RunStatus::Rejected,
+        ];
+        for (i, status) in lifecycle_states.iter().enumerate() {
+            let record = RunRecord {
+                id: format!("run_c89_{i}"),
+                workflow_id: "wf_c89".into(),
+                status: *status,
+                trigger: RunTrigger::Manual,
+                inputs: serde_json::json!({}),
+                output: None,
+                diagnostics: Vec::new(),
+                created_at: 1_700_000_000_000 + i as i64,
+                started_at: None,
+                completed_at: None,
+            };
+            p.put_run(&record).await.unwrap();
+            let got = p.get_run(&record.id).await.unwrap();
+            assert_eq!(got.status, *status, "status {status:?} didn't round-trip");
+        }
+    }
+
     async fn put_run_then_get_round_trips() {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         p.put_workflow(&"wf_t2".to_string(), b"bc", b"sp", &sample_meta_json())

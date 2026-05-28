@@ -31,10 +31,24 @@ use std::time::Duration;
 
 /// Configurable run-execution policy applied by the controller.
 /// MVP defaults match the architecture doc §10.2 numbers.
+///
+/// Phase C C.6 c89 adds `max_output_lines` + `max_events_per_run`
+/// as resource caps. The VM enforces `max_output_lines` directly;
+/// `max_events_per_run` is reserved for the RunManager in c91.
 #[derive(Debug, Clone, Copy)]
 pub struct RunPolicy {
     pub step_limit: usize,
     pub wall_clock_timeout: Duration,
+    /// Cap on `RunOutput::output` lines. Exceeding it surfaces
+    /// as `RunError::ResourceLimit { resource: "output_lines",
+    /// ... }`. Default 100k lines — large enough for any
+    /// reasonable run, small enough to fence runaway loops.
+    pub max_output_lines: u64,
+    /// Cap on total `RunEvent` entries persisted for one run.
+    /// RunManager honors this in c91; the VM doesn't see it.
+    /// Default 1M events. Defensive ceiling against an
+    /// adversarial workflow that logs a million prints.
+    pub max_events_per_run: u64,
 }
 
 impl Default for RunPolicy {
@@ -42,6 +56,8 @@ impl Default for RunPolicy {
         Self {
             step_limit: 10_000_000,
             wall_clock_timeout: Duration::from_secs(600),
+            max_output_lines: 100_000,
+            max_events_per_run: 1_000_000,
         }
     }
 }
@@ -153,6 +169,12 @@ pub async fn execute_run(
             }) as ExtCallHandlerArc
         }),
         print_callback,
+        // Phase C C.6 c89 — cancellation is plumbed end-to-end
+        // by the RunManager in c91. For now the executor passes
+        // `None` so behavior matches C.5.
+        cancel_callback: None,
+        max_output_lines: Some(policy.max_output_lines),
+        max_events_per_run: Some(policy.max_events_per_run),
     };
     let bytecode_for_task = bytecode.clone();
     let vm_future = tokio::task::spawn_blocking(move || {
@@ -251,6 +273,13 @@ fn run_error_to_view(e: &RunError) -> RuntimeErrorView {
             RuntimeErrorView::HeapShapeMismatch {
                 expected: (*expected).to_string(),
                 got: (*got).to_string(),
+            }
+        }
+        RunError::Cancelled => RuntimeErrorView::Cancelled,
+        RunError::ResourceLimit { resource, limit } => {
+            RuntimeErrorView::ResourceLimit {
+                resource: (*resource).to_string(),
+                limit: *limit,
             }
         }
     }
@@ -628,6 +657,8 @@ mod tests {
         let policy = RunPolicy {
             step_limit: 1000, // tiny limit for the test
             wall_clock_timeout: Duration::from_secs(10),
+            max_output_lines: 100_000,
+            max_events_per_run: 1_000_000,
         };
         execute_run(p.clone(), record, policy, None, None).await;
         let got = p.get_run(&run_id).await.unwrap();

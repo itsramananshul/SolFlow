@@ -347,10 +347,14 @@ fn encode_sse_event(ev: &RunEvent) -> SseEvent {
 fn parse_status(s: &str) -> Option<RunStatus> {
     match s {
         "Queued" => Some(RunStatus::Queued),
+        "Starting" => Some(RunStatus::Starting),
         "Running" => Some(RunStatus::Running),
+        "Cancelling" => Some(RunStatus::Cancelling),
         "Succeeded" => Some(RunStatus::Succeeded),
         "Failed" => Some(RunStatus::Failed),
         "Cancelled" => Some(RunStatus::Cancelled),
+        "TimedOut" => Some(RunStatus::TimedOut),
+        "Rejected" => Some(RunStatus::Rejected),
         _ => None,
     }
 }

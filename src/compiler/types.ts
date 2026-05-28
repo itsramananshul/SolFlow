@@ -84,7 +84,13 @@ export type RuntimeError =
   | { kind: 'StepLimit'; limit: number }
   | { kind: 'ExtCallBlocked'; function_name: string; url: string }
   | { kind: 'ExtCallFailed'; connector: string; function_name: string; message: string }
-  | { kind: 'HeapShapeMismatch'; expected: string; got: string };
+  | { kind: 'HeapShapeMismatch'; expected: string; got: string }
+  // Phase C C.6 c89 — browser-sim doesn't trigger these today,
+  // but the wire shape stays uniform with the controller's
+  // runtime-error view so editor code can switch on `kind`
+  // exhaustively.
+  | { kind: 'Cancelled' }
+  | { kind: 'ResourceLimit'; resource: string; limit: number };
 
 /**
  * The `run` field of the {@link RunEnvelope}. Null when compile

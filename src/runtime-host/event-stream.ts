@@ -37,6 +37,11 @@ const KNOWN_KINDS = [
   'Completed',
   'Failed',
   'Cancelled',
+  // Phase C C.6 — lifecycle expansion.
+  'Starting',
+  'Cancelling',
+  'Rejected',
+  'TimedOut',
 ] as const;
 type KnownKind = (typeof KNOWN_KINDS)[number];
 
@@ -44,6 +49,9 @@ const TERMINAL_KINDS: ReadonlySet<KnownKind> = new Set([
   'Completed',
   'Failed',
   'Cancelled',
+  // Terminals added in C.6.
+  'Rejected',
+  'TimedOut',
 ]);
 
 /** Minimal type-shape we need from the EventSource constructor

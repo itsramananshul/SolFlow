@@ -181,9 +181,16 @@ function statusDot(status: RunStatus): string {
   switch (status) {
     case 'Succeeded': return 'ok';
     case 'Failed':
-    case 'Cancelled': return 'err';
-    case 'Running': return 'pending';
-    case 'Queued': return 'idle';
+    case 'Cancelled':
+    case 'TimedOut':
+    case 'Rejected':
+      return 'err';
+    case 'Running':
+    case 'Starting':
+    case 'Cancelling':
+      return 'pending';
+    case 'Queued':
+      return 'idle';
   }
 }
 
