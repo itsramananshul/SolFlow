@@ -52,6 +52,21 @@ export interface ProviderConfig {
 
 const MAX_TOKENS = 4096;
 
+/**
+ * Default per-call timeout. Chosen to leave headroom under the
+ * Vercel function maxDuration (60s) so the strict-retry path in
+ * generate.ts can run a second LLM round-trip + JSON repair +
+ * validation without the platform cutting us.
+ *
+ * Per-deployment override: `SOL_MAN_PROVIDER_TIMEOUT_MS`.
+ */
+function providerTimeoutMs(): number {
+  const raw = process.env.SOL_MAN_PROVIDER_TIMEOUT_MS;
+  if (!raw) return 25_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 25_000;
+}
+
 // =============================================================
 //  Helpers
 // =============================================================
@@ -67,6 +82,38 @@ async function safeText(r: Response): Promise<string> {
 function throwIfBad(providerName: string, r: Response, text: string): void {
   if (r.ok) return;
   throw new Error(`${providerName} ${r.status}: ${text || r.statusText}`);
+}
+
+/**
+ * Wrap fetch with an AbortSignal timeout. Translates the resulting
+ * AbortError into a typed "provider timeout" error message so the
+ * generate handler can classify it as gateway_timeout and emit a
+ * retryable envelope.
+ */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  providerName: string,
+  timeoutMs = providerTimeoutMs(),
+): Promise<Response> {
+  const ctl = new AbortController();
+  const timer = setTimeout(
+    () => ctl.abort(new DOMException('timeout', 'TimeoutError')),
+    timeoutMs,
+  );
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } catch (e) {
+    const name = (e as Error)?.name;
+    if (name === 'AbortError' || name === 'TimeoutError') {
+      throw new Error(
+        `${providerName} timed out after ${(timeoutMs / 1000).toFixed(0)}s`,
+      );
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // =============================================================
@@ -86,20 +133,24 @@ const anthropic: ProviderConfig = {
   envKey: 'ANTHROPIC_API_KEY',
   defaultModel: 'claude-sonnet-4-6',
   async call({ systemPrompt, userPrompt, apiKey, model }) {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
+    const r = await fetchWithTimeout(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: MAX_TOKENS,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+        }),
       },
-      body: JSON.stringify({
-        model,
-        max_tokens: MAX_TOKENS,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      }),
-    });
+      this.name,
+    );
     const raw = await safeText(r);
     throwIfBad(this.name, r, raw);
     const data = JSON.parse(raw) as AnthropicResponse;
@@ -149,22 +200,26 @@ async function callOpenAICompatible(opts: {
   extraHeaders?: Record<string, string>;
 }): Promise<ProviderCallResult> {
   const url = `${opts.baseUrl.replace(/\/$/, '')}/chat/completions`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${opts.apiKey}`,
-      ...(opts.extraHeaders ?? {}),
+  const r = await fetchWithTimeout(
+    url,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${opts.apiKey}`,
+        ...(opts.extraHeaders ?? {}),
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        max_tokens: MAX_TOKENS,
+        messages: [
+          { role: 'system', content: opts.systemPrompt },
+          { role: 'user', content: opts.userPrompt },
+        ],
+      }),
     },
-    body: JSON.stringify({
-      model: opts.model,
-      max_tokens: MAX_TOKENS,
-      messages: [
-        { role: 'system', content: opts.systemPrompt },
-        { role: 'user', content: opts.userPrompt },
-      ],
-    }),
-  });
+    opts.providerName,
+  );
   const raw = await safeText(r);
   throwIfBad(opts.providerName, r, raw);
   const data = JSON.parse(raw) as OpenAIChatResponse;
@@ -222,15 +277,19 @@ const gemini: ProviderConfig = {
   defaultModel: 'gemini-2.0-flash',
   async call({ systemPrompt, userPrompt, apiKey, model }) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        generationConfig: { maxOutputTokens: MAX_TOKENS },
-      }),
-    });
+    const r = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          generationConfig: { maxOutputTokens: MAX_TOKENS },
+        }),
+      },
+      this.name,
+    );
     const raw = await safeText(r);
     throwIfBad(this.name, r, raw);
     const data = JSON.parse(raw) as GeminiResponse;

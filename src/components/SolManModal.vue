@@ -139,6 +139,53 @@ async function onGenerate() {
   await sm.generate();
 }
 
+// Reliability hardening: Retry button preserves the prompt + skips
+// the silent auto-retry that runs inside `generate()` (a manual
+// press becomes one call, not two).
+async function onRetry() {
+  await sm.retry();
+}
+
+// Copy a copy-pastable diagnostic blob to the clipboard. Used by
+// the Copy error details button on the error banner; pastes cleanly
+// into a bug report. Does NOT include the prompt or any API key.
+const copyFlash = ref<'idle' | 'copied'>('idle');
+async function onCopyErrorDetails() {
+  try {
+    await navigator.clipboard.writeText(sm.buildErrorDetailsBlob());
+    copyFlash.value = 'copied';
+    setTimeout(() => (copyFlash.value = 'idle'), 1500);
+  } catch {
+    // Clipboard API may be unavailable (sandboxed iframe, etc.) —
+    // fall back to a toast so the user knows something happened.
+    // Intentionally minimal; the modal already has plenty of UI.
+    copyFlash.value = 'idle';
+  }
+}
+
+// Friendly title per error kind. Defaults to "Generation failed".
+const errorBannerTitle = computed(() => {
+  if (sm.configMissing) return 'Sol Man has no provider configured';
+  switch (sm.errorKind) {
+    case 'gateway_timeout':
+      return 'Sol Man timed out';
+    case 'invalid_json':
+      return 'Sol Man returned invalid JSON';
+    case 'validation_failed':
+      return 'Generated workflow failed validation';
+    case 'empty_response':
+      return 'Sol Man returned an empty response';
+    case 'provider_error':
+      return 'Provider rejected the request';
+    case 'network':
+      return 'Network error reaching Sol Man';
+    case 'bad_request':
+      return 'Request was rejected';
+    default:
+      return 'Generation failed';
+  }
+});
+
 function onApplyAsNew(force = false) {
   const res = sm.applyAsNewWorkflow({ force });
   if (res.ok) emit('close');
@@ -489,9 +536,29 @@ function onBackdrop(e: MouseEvent) {
                 <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3" />
                 <path d="M8 5 V8.5 M8 10.5 V11.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
               </svg>
-              <span>{{ sm.configMissing ? 'Sol Man has no provider configured' : 'Generation failed' }}</span>
+              <span>{{ errorBannerTitle }}</span>
+              <span v-if="sm.errorKind" class="error-code">{{ sm.errorKind }}</span>
+              <span v-if="sm.errorAttempts > 1" class="error-retries">
+                · {{ sm.errorAttempts }} attempts
+              </span>
             </div>
             <div class="error-body">{{ sm.errorMessage }}</div>
+
+            <!-- Action row: Retry (when the kind is retryable AND
+                 not a config issue) + Copy details (always, so
+                 users can paste into a bug report). -->
+            <div v-if="!sm.configMissing" class="error-actions">
+              <button
+                v-if="sm.errorRetryable"
+                class="primary small"
+                @click="onRetry"
+              >
+                Retry
+              </button>
+              <button class="ghost small" @click="onCopyErrorDetails">
+                {{ copyFlash === 'copied' ? '✓ Copied' : 'Copy error details' }}
+              </button>
+            </div>
 
             <!-- Structured config screen when no provider is set.
                  Lists every supported provider with its env var so the
@@ -969,6 +1036,30 @@ function onBackdrop(e: MouseEvent) {
   font-size: 0.6875rem;
   color: var(--sf-text-1);
   line-height: 1.5;
+}
+.error-code {
+  font-family: var(--sf-font-mono);
+  font-size: 0.5625rem;
+  font-weight: 500;
+  color: var(--sf-error);
+  background: rgba(255, 77, 79, 0.16);
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+.error-retries {
+  font-size: 0.5625rem;
+  color: var(--sf-text-3);
+  font-weight: 400;
+}
+.error-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.error-actions .small {
+  font-size: 0.625rem;
+  padding: 3px 10px;
 }
 .error-hint {
   font-size: 0.625rem;

@@ -20,7 +20,13 @@ import {
   specToInsertSnapshot,
   specToWorkflow,
 } from '@/sol-man/applyGraph';
-import type { GeneratedGraphSpec, ProviderSummary } from '@/sol-man/types';
+import type {
+  GeneratedGraphSpec,
+  GenerateErrorKind,
+  GenerateResponseBody,
+  GenerateStage,
+  ProviderSummary,
+} from '@/sol-man/types';
 import { useGraphStore } from '@/stores/graph.store';
 import { useSolManConfigStore } from '@/stores/sol-man-config.store';
 import { useToastStore } from '@/stores/toast.store';
@@ -32,11 +38,31 @@ export const useSolManStore = defineStore('solMan', () => {
   const prompt = ref('');
   const status = ref<SolManStatus>('idle');
   const errorMessage = ref<string | null>(null);
+  /** Structured failure classification — surfaced by the modal so
+   *  we can render code-specific guidance instead of just dumping
+   *  `errorMessage`. Reliability hardening pass. */
+  const errorKind = ref<GenerateErrorKind | null>(null);
+  const errorStage = ref<GenerateStage | null>(null);
+  const errorRetryable = ref<boolean>(false);
+  const errorAttempts = ref<number>(0);
+  /** Tagged details (provider, model, raw excerpt, repair log)
+   *  surfaced via Copy Error Details. Never contains keys. */
+  const errorDetails = ref<{
+    provider?: string;
+    model?: string;
+    httpStatus?: number;
+    rawExcerpt?: string;
+    repairLog?: string[];
+  } | null>(null);
   const configMissing = ref(false);
   const availableProviders = ref<ProviderSummary[]>([]);
   const spec = ref<GeneratedGraphSpec | null>(null);
   const lastModel = ref<string | null>(null);
   const lastProvider = ref<{ id: string; name: string } | null>(null);
+  /** Did the server's strict-retry path kick in for the current
+   *  preview? Surfaced as a soft notice ("recovered after retry"). */
+  const lastAttempts = ref<number>(0);
+  const lastRepairApplied = ref<boolean>(false);
   const translationWarnings = ref<string[]>([]);
 
   // Preview-time validation. We translate the generated spec into a
@@ -59,6 +85,11 @@ export const useSolManStore = defineStore('solMan', () => {
   function reset() {
     status.value = 'idle';
     errorMessage.value = null;
+    errorKind.value = null;
+    errorStage.value = null;
+    errorRetryable.value = false;
+    errorAttempts.value = 0;
+    errorDetails.value = null;
     configMissing.value = false;
     availableProviders.value = [];
     spec.value = null;
@@ -67,6 +98,8 @@ export const useSolManStore = defineStore('solMan', () => {
     previewWarnings.value = [];
     lastModel.value = null;
     lastProvider.value = null;
+    lastAttempts.value = 0;
+    lastRepairApplied.value = false;
   }
 
   function clearPrompt() {
@@ -77,16 +110,39 @@ export const useSolManStore = defineStore('solMan', () => {
    * Submit the current prompt. Resolves with the new status so the
    * caller can react synchronously after `await`. Re-running with the
    * same prompt is allowed — overwrites the prior preview.
+   *
+   * Reliability-hardening pass: on a transient failure (gateway
+   * timeout, empty response, invalid JSON, validation failed) we
+   * AUTOMATICALLY retry once with the same prompt. The server's
+   * strict-retry path covers JSON-shape errors WITHIN one request
+   * lifecycle; this layer covers gateway/transport errors BETWEEN
+   * requests (the user wouldn't otherwise see a retry happen for a
+   * Vercel-edge 504). The retry is silent — the modal shows
+   * "Recovered after retry" on success rather than flashing an
+   * error state in between.
+   *
+   * Pass `{ silent: true }` to skip the auto-retry (used by the
+   * Retry button so a manual press doesn't compound into 2 calls).
    */
-  async function generate(): Promise<SolManStatus> {
+  async function generate(
+    opts: { autoRetry?: boolean } = { autoRetry: true },
+  ): Promise<SolManStatus> {
     const text = prompt.value.trim();
     if (!text) {
       errorMessage.value = 'Describe the workflow you want first.';
+      errorKind.value = 'bad_request';
+      errorStage.value = 'request_validation';
+      errorRetryable.value = false;
       status.value = 'error';
       return status.value;
     }
     status.value = 'generating';
     errorMessage.value = null;
+    errorKind.value = null;
+    errorStage.value = null;
+    errorRetryable.value = false;
+    errorAttempts.value = 0;
+    errorDetails.value = null;
     configMissing.value = false;
     availableProviders.value = [];
     spec.value = null;
@@ -99,18 +155,39 @@ export const useSolManStore = defineStore('solMan', () => {
     // user has no local config saved, this is null and the server
     // falls back to env vars.
     const cfg = useSolManConfigStore().toRequestConfig();
-    const resp = await callSolMan(text, cfg);
+
+    let resp = await callSolMan(text, cfg);
+    let clientAttempts = 1;
+
+    // Auto-retry ONCE on a retryable failure. Skipped when the
+    // caller opted out (manual Retry button — we don't want a button
+    // press to become 2 calls). Auth / bad_request / config_missing
+    // are NEVER retried regardless of the retryable flag — the
+    // server marks them non-retryable but a defensive double-check
+    // doesn't hurt.
+    if (
+      !resp.ok
+      && resp.retryable === true
+      && opts.autoRetry !== false
+      && resp.kind !== 'config_missing'
+      && resp.kind !== 'bad_request'
+    ) {
+      // Tiny backoff to avoid immediately re-hitting a hot gateway.
+      await new Promise<void>((r) => setTimeout(r, 400));
+      resp = await callSolMan(text, cfg);
+      clientAttempts = 2;
+    }
+
     if (!resp.ok) {
-      errorMessage.value = resp.error;
-      configMissing.value = !!resp.configMissing;
-      availableProviders.value = resp.availableProviders ?? [];
-      status.value = 'error';
+      surfaceFailure(resp, clientAttempts);
       return status.value;
     }
     rememberPrompt(text);
     spec.value = resp.spec;
     lastModel.value = resp.model;
     lastProvider.value = resp.provider ?? null;
+    lastAttempts.value = (resp.attempts ?? 1) * clientAttempts;
+    lastRepairApplied.value = !!resp.repairApplied;
 
     // Run the SAME validation pipeline the live canvas runs against
     // the prospective workflow. If anything's off, we surface it in
@@ -120,6 +197,63 @@ export const useSolManStore = defineStore('solMan', () => {
 
     status.value = 'preview';
     return status.value;
+  }
+
+  function surfaceFailure(
+    resp: Extract<GenerateResponseBody, { ok: false }>,
+    clientAttempts: number,
+  ) {
+    errorMessage.value = resp.error;
+    errorKind.value = resp.kind ?? 'unknown';
+    errorStage.value = resp.stage ?? 'unknown';
+    errorRetryable.value = !!resp.retryable;
+    errorAttempts.value = (resp.attempts ?? 1) * clientAttempts;
+    errorDetails.value = resp.details ?? null;
+    configMissing.value = !!resp.configMissing;
+    availableProviders.value = resp.availableProviders ?? [];
+    status.value = 'error';
+  }
+
+  /**
+   * Manual retry from the modal's Retry button. Skips the
+   * auto-retry (we got HERE because the user clicked the button)
+   * so a single press = a single call, with the same prompt
+   * preserved.
+   */
+  function retry(): Promise<SolManStatus> {
+    return generate({ autoRetry: false });
+  }
+
+  /**
+   * Build a copy-pastable diagnostic blob for the Copy details
+   * button on the error banner. Includes everything an operator
+   * would need to file a bug: provider/model/stage/kind/attempts/
+   * raw excerpt / repair log. EXPLICITLY excludes the prompt text
+   * (privacy) and any API key (security).
+   */
+  function buildErrorDetailsBlob(): string {
+    const lines = [
+      'Sol Man generation failure',
+      `kind:      ${errorKind.value ?? 'unknown'}`,
+      `stage:     ${errorStage.value ?? 'unknown'}`,
+      `retryable: ${errorRetryable.value}`,
+      `attempts:  ${errorAttempts.value}`,
+      `message:   ${errorMessage.value ?? ''}`,
+    ];
+    const d = errorDetails.value;
+    if (d) {
+      if (d.provider) lines.push(`provider:  ${d.provider}`);
+      if (d.model) lines.push(`model:     ${d.model}`);
+      if (d.httpStatus !== undefined) lines.push(`status:    ${d.httpStatus}`);
+      if (d.repairLog && d.repairLog.length > 0) {
+        lines.push(`repair:    ${d.repairLog.join(' → ')}`);
+      }
+      if (d.rawExcerpt) {
+        lines.push('raw_excerpt:');
+        lines.push('  ' + d.rawExcerpt);
+      }
+    }
+    return lines.join('\n');
   }
 
   /**
@@ -281,11 +415,18 @@ export const useSolManStore = defineStore('solMan', () => {
     prompt,
     status,
     errorMessage,
+    errorKind,
+    errorStage,
+    errorRetryable,
+    errorAttempts,
+    errorDetails,
     configMissing,
     availableProviders,
     spec,
     lastModel,
     lastProvider,
+    lastAttempts,
+    lastRepairApplied,
     translationWarnings,
     previewDiagnostics,
     previewWarnings,
@@ -302,6 +443,8 @@ export const useSolManStore = defineStore('solMan', () => {
     hasWarnings,
     // ops
     generate,
+    retry,
+    buildErrorDetailsBlob,
     runPreviewValidation,
     applyAsNewWorkflow,
     insertIntoCurrent,

@@ -311,4 +311,45 @@ all of them as hard constraints, not preferences.
 }
 \`\`\`
 
-Return JSON only. No code fences. No explanation outside the JSON.`;
+Return JSON only. No code fences. No explanation outside the JSON.
+
+# RESPONSE FORMAT — strict
+
+Your response MUST:
+- start with the character \`{\`
+- end with the character \`}\`
+- contain a single valid JSON object matching the schema above
+- contain NOTHING ELSE — no prose, no markdown, no fenced code
+  blocks, no commentary before or after, no apologies
+
+If you would normally add a sentence like "Here's the workflow:"
+or "Let me know if you'd like adjustments." — don't. The output
+goes straight into a parser.`;
+
+/**
+ * Preamble prepended to the user prompt on the strict-retry attempt.
+ *
+ * When a first attempt produces invalid JSON or a schema-validator
+ * rejection, we re-invoke the LLM with this preamble so it can
+ * self-correct without losing the user's original intent. The
+ * caller appends the failure reason + the original user prompt.
+ *
+ * Kept terse — long retry prompts confuse smaller models. The goal
+ * is to communicate "your last response broke; emit pure JSON this
+ * time" without re-explaining the entire schema.
+ */
+export function strictRetryUserPromptPreamble(reason: string): string {
+  return `Your previous response failed Sol Man's parser. Reason: ${reason}
+
+Respond AGAIN with ONLY the JSON object — no prose, no markdown
+fences, no preamble, no commentary. The first character must be \`{\`
+and the last must be \`}\`. The schema is unchanged from the system
+prompt. Pay special attention to:
+
+- escape every quote inside string values (\\")
+- close every \`{\` with \`}\` and every \`[\` with \`]\`
+- do not include trailing commas before \`}\` or \`]\`
+- every node's required fields must be present (value/cond/varName
+  per kind)
+- every edge's from/to must reference an existing node id`;
+}

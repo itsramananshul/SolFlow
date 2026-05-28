@@ -13,7 +13,10 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/**/*.test.ts'],
+    // Tests live next to source. `api/` holds the Vercel serverless
+    // functions; their tests live in `api/**/__tests__/*.test.ts`
+    // and are picked up by the same vitest run.
+    include: ['src/**/*.test.ts', 'api/**/*.test.ts'],
     environment: 'node',
     globals: false,
   },

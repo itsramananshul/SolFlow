@@ -159,6 +159,47 @@ export interface ProviderSummary {
   defaultModel: string;
 }
 
+/**
+ * Discriminated failure category. Surfaces in the modal so we can
+ * render specific guidance + decide whether to auto-retry.
+ *
+ * Reliability hardening pass: replaces the old single-field error
+ * with a structured envelope so "Sol Man returned a non-JSON
+ * response (HTTP 504)" becomes something the UI can actually
+ * route on (gateway timeout → retry; validation failure → tweak
+ * prompt; config missing → settings panel; etc.).
+ */
+export type GenerateErrorKind =
+  /** No provider configured server-side AND nothing in BYO config. */
+  | 'config_missing'
+  /** User input rejected (empty / too long / bad shape). */
+  | 'bad_request'
+  /** Provider rejected the request — wrong key, auth, model not found, etc. */
+  | 'provider_error'
+  /** Provider returned 5xx OR our outer wrapper hit Vercel's gateway
+   *  timeout. Auto-retry candidate (idempotent). */
+  | 'gateway_timeout'
+  /** Provider returned an empty completion. */
+  | 'empty_response'
+  /** Provider returned text we couldn't parse + couldn't repair into
+   *  valid JSON. */
+  | 'invalid_json'
+  /** Parsed JSON but the validator (schema/structure/ids) rejected it. */
+  | 'validation_failed'
+  /** Network or fetch failure on the client side (CORS, offline, etc.). */
+  | 'network'
+  /** Generic unknown — last-resort bucket. */
+  | 'unknown';
+
+/** Which lifecycle stage the failure was detected at. */
+export type GenerateStage =
+  | 'request_validation'
+  | 'provider_resolution'
+  | 'provider_call'
+  | 'json_extraction'
+  | 'spec_validation'
+  | 'unknown';
+
 export type GenerateResponseBody =
   | {
       ok: true;
@@ -169,10 +210,38 @@ export type GenerateResponseBody =
         inputTokens: number;
         outputTokens: number;
       };
+      /** Number of total LLM round-trips made (1 normal, 2 if the
+       *  strict-retry kicked in). Surfaced so we can show "Recovered
+       *  after retry" in the UI. */
+      attempts?: number;
+      /** True when the JSON-repair layer modified the raw provider
+       *  output. Surfaced as a soft warning. */
+      repairApplied?: boolean;
     }
   | {
       ok: false;
       error: string;
+      /** Discriminated cause; defaults to 'unknown' on older
+       *  payloads so legacy parsing keeps working. */
+      kind?: GenerateErrorKind;
+      /** Lifecycle stage the failure occurred at. */
+      stage?: GenerateStage;
+      /** How many round-trips we made before giving up. */
+      attempts?: number;
+      /** Whether the failure is worth re-trying — gateway_timeout,
+       *  empty_response, transient provider_error are all true.
+       *  invalid_json / validation_failed are typically true after
+       *  ONE auto-retry; afterwards the modal prompts the user. */
+      retryable?: boolean;
+      /** Optional extra diagnostic detail — provider name, raw
+       *  excerpt, repair pass log. Never includes API keys. */
+      details?: {
+        provider?: string;
+        model?: string;
+        httpStatus?: number;
+        rawExcerpt?: string;
+        repairLog?: string[];
+      };
       /** True when the failure is configuration (missing key, etc.) so
        *  the client can show a "set up your provider" hint. */
       configMissing?: boolean;
