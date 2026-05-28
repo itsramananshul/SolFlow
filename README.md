@@ -52,7 +52,7 @@ reimplementation of language semantics owns user-displayed output.
 | Compiler | `compiler/` — Rust crate (lexer, parser, analyzer, codegen) |
 | VM | `runtime/` — Rust crate (canonical bytecode interpreter) |
 | Bridge | `compiler-wasm/` — wasm-bindgen WASM bundle |
-| Tests | vitest (TS, 50 tests) + cargo workspace (Rust, 42 tests) |
+| Tests | vitest (TS, 158 tests) + cargo workspace (Rust, 181 tests) |
 
 ## Run it
 
@@ -134,7 +134,7 @@ Quick links:
 - **Phase B** — canonical Rust compiler + VM compiled to WASM, AST→graph importer, source spans, rich diagnostics, round-trip stability, canonical-VM execution. ✅ Shipped (B.1–B.11).
 - **Deferred-B** — per-instruction span sidecar, importer expansion (fieldSet / indexSet / top-level let), Node-target WASM e2e, Web Worker for parse/analyze, execution trace + click-to-source/node navigation. ✅ Shipped.
 - **Productization (v0.2.0)** — user docs, in-app docs discoverability, sample CI gates, modal Escape consistency, LICENSE + CONTRIBUTING, CHANGELOG. ✅ Shipped.
-- **Phase C** — real orchestration / runtime platform: controller integration, persistence, scheduling, connectors, observability, concurrent execution with real cancellation. 🟡 In progress (C.1 – C.6 shipped — local controller MVP + Timer/Event scheduling + HTTP-connector ExtCall + persistent event log streamed over SSE + concurrent execution with worker pool + real cancellation + TimedOut/Rejected lifecycle + saturation policies + at-least-once boot recovery). See [`docs/dev/PHASE_C_ARCHITECTURE.md`](./docs/dev/PHASE_C_ARCHITECTURE.md), [`docs/dev/PHASE_C_ROADMAP.md`](./docs/dev/PHASE_C_ROADMAP.md), [`docs/dev/CONTROLLER_LOCAL.md`](./docs/dev/CONTROLLER_LOCAL.md), [`docs/dev/SCHEDULING.md`](./docs/dev/SCHEDULING.md), [`docs/dev/CONNECTORS.md`](./docs/dev/CONNECTORS.md), [`docs/dev/EVENTS.md`](./docs/dev/EVENTS.md), and [`docs/dev/RUN_LIFECYCLE.md`](./docs/dev/RUN_LIFECYCLE.md).
+- **Phase C** — real orchestration / runtime platform: controller integration, persistence, scheduling, connectors, observability, concurrent execution with real cancellation, **remote-capable with TLS + bearer-token auth**, release packaging. ✅ Shipped (C.1 – C.8). Local controller MVP, Timer/Event scheduling, HTTP-connector ExtCall, persistent event log streamed over SSE, concurrent execution with worker pool, real cancellation, TimedOut/Rejected lifecycle, saturation policies, at-least-once boot recovery, HTTPS via rustls, optional bearer auth, capability-probe `/healthz`, editor remote UX with URL classification, `npm run release:check` + `npm run package:local`. See [`docs/dev/PHASE_C_ARCHITECTURE.md`](./docs/dev/PHASE_C_ARCHITECTURE.md), [`docs/dev/PHASE_C_ROADMAP.md`](./docs/dev/PHASE_C_ROADMAP.md), [`docs/dev/CONTROLLER_LOCAL.md`](./docs/dev/CONTROLLER_LOCAL.md), [`docs/dev/REMOTE_CONTROLLER.md`](./docs/dev/REMOTE_CONTROLLER.md), [`docs/dev/CONTROLLER_OPERATIONS.md`](./docs/dev/CONTROLLER_OPERATIONS.md), [`docs/dev/SCHEDULING.md`](./docs/dev/SCHEDULING.md), [`docs/dev/CONNECTORS.md`](./docs/dev/CONNECTORS.md), [`docs/dev/EVENTS.md`](./docs/dev/EVENTS.md), and [`docs/dev/RUN_LIFECYCLE.md`](./docs/dev/RUN_LIFECYCLE.md).
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the per-release record.
 

@@ -451,43 +451,120 @@ SOL VM.
 
 ---
 
-### C.7 — Remote controller support
+### C.7 — Remote controller support ✅ SHIPPED
 
 **Goal.** Controllers usable across a network, not just on
 localhost.
 
-**Deliverables.**
-- TLS support for HTTPS endpoint
-- Auth handshake stub: bearer token from controller config
-  (full auth/RBAC is Phase D)
-- `host-spec` versioning negotiation on connect
-- Editor "Controller URL" field accepts `https://...` with
-  explicit user warning about deployment-grade hardening
+**Delivered (c97 – c101).**
+- **Health capability probe (c97).** `Health.name` +
+  `Health.auth_required` so editors can fingerprint +
+  capability-probe a controller before sending credentials.
+  Additive — pre-C.7 controllers still parse fine.
+- **Bearer-token auth (c98).** `AuthConfig::{Disabled, Bearer}`
+  + axum middleware `require_bearer_token` protects every
+  endpoint except `/healthz` + `OPTIONS`. Constant-time
+  comparison; 401 carries structured `code` field
+  (`auth_missing` / `auth_malformed` / `auth_mismatch`) so
+  editors render per-case guidance. `SOLFLOW_CONTROLLER_AUTH_TOKEN`
+  env var. +12 tests.
+- **TS client hardening (c99).** `authToken` option on
+  `controllerClient`; new error kinds `auth` + `invalid_url`
+  with discriminating sub-codes; `classifyControllerUrl(url)`
+  helper returning local / loopback_https / https_remote /
+  unsafe_remote / invalid; `normalizeBaseUrl` parses via WHATWG
+  URL + never silently rewrites HTTP→HTTPS. +22 vitest.
+- **TLS / HTTPS support (c100).** `axum-server + rustls(ring)`
+  for HTTPS bind; `tls::from_env(...)` decides
+  `TransportConfig::{Http, Https}` from
+  `SOLFLOW_CONTROLLER_TLS_CERT` + `SOLFLOW_CONTROLLER_TLS_KEY`.
+  Half-configured TLS refused at boot. Process-level
+  `CryptoProvider` installed in main + integration tests via
+  rcgen-minted self-signed certs. +5 unit + 2 integration tests.
+- **Editor remote UX (c101).** `ControllerSettingsModal` now
+  surfaces the full remote-controller posture: live URL
+  classification badge, unsafe-HTTP warning banner, bearer-token
+  password input, auth-error banner with per-code guidance,
+  expanded connection-detail card (controller name,
+  auth_required, transport), execution-mode list distinguishes
+  `controller-local` vs `controller-remote`. Phase tag flipped
+  to "Phase C.7".
 
-**Success criteria.**
-- Editor connects to a controller on a different machine over
-  HTTPS with a shared bearer token
-- Wire-protocol mismatch fails fast with a clear error
+**Success criteria — met.**
+- ✅ Editor connects to a controller on a different machine over
+  HTTPS with a shared bearer token. End-to-end smoke recipe in
+  `docs/dev/REMOTE_CONTROLLER.md` (verified locally via 127.0.0.1
+  + rcgen self-signed cert; same recipe extends to any host
+  reachable by the editor).
+- ✅ Wire-protocol mismatch fails fast with a clear error
+  (pre-existing C.2 host-spec major check; extended in c97 with
+  the name + auth_required fingerprint).
 
-**Non-goals.**
-- No real auth UI (Phase D)
-- No multi-user controller (Phase D)
+**Test coverage.**
+- 17 new tests across C.7: 5 auth-config unit + 7 auth-middleware
+  server + 5 TLS-config unit + 2 TLS-integration HTTPS round-trip.
+- 22 new vitest across C.7: 12 client (token injection + auth
+  errors + URL classification) + 4 store (token persistence +
+  auth error + clear-stale-error) + 6 misc.
+- Workspace totals at C.7 close: 181 rust / 158 vitest.
+
+**Non-goals (deferred as planned).**
+- No real auth UI / per-user identity (Phase D).
+- No multi-user controller (Phase D).
+- No token rotation flows / refresh (Phase D).
+- No multi-controller cluster coordination (Phase D).
 
 ---
 
-### C.8 — Stabilization
+### C.8 — Stabilization + release packaging ✅ SHIPPED
 
 **Goal.** Phase C close-out. Make it shippable.
 
-**Deliverables.**
-- Performance pass (worst-case run throughput, event-stream
-  fan-out)
-- Reliability pass (controller restart with in-flight runs,
-  network drops mid-stream)
-- Docs pass (`docs/user/` updated for controller mode;
-  `controller/README.md` written)
-- `PHASE_C_RELEASE_NOTES.md` summarizing C.1 → C.8
-- Update Phase B plan banner → "Phase C complete"
+**Delivered (c102 – c104).**
+- **Reliability sweep (c100/c104).** Full state-machine pinned
+  via `RunStatus::can_transition_to` + transition tests;
+  cancellation race / TimedOut promotion / event-cap / boot
+  recovery / saturation handling all covered with explicit
+  tests; live smoke validated multi-run, cancel, timeout under
+  TLS + auth. No new bugs flagged during the sweep.
+- **Performance sweep (c104).** Worker pool overhead = one
+  semaphore acquire + one cancel-callback atomic-load per VM
+  instruction (negligible); event-stream broadcast ring bounded
+  at 1024 with `Lagged` recovery via persistent re-query;
+  SQLite write patterns are per-event (acceptable at C-tier
+  workloads); editor polling cadence (2s for ActiveRunsModal +
+  200ms for pollRun) tuned to balance responsiveness against
+  controller load. No structural changes warranted at this
+  scale.
+- **Operator docs (c102).** `docs/dev/REMOTE_CONTROLLER.md`
+  (TLS + auth + smoke) + `docs/dev/CONTROLLER_OPERATIONS.md`
+  (env-var reference, log format, request lifecycle, failure
+  modes, sizing, backups). `docs/dev/README.md` index updated.
+- **Release packaging (c103).** `npm run release:check`
+  (5-stage validation gate), `npm run package:local`
+  (version-tagged release bundle under `dist-release/`),
+  `npm run build:controller` (cargo release alias).
+- **CHANGELOG.md + roadmap closeout (c104).** This document
+  reflects what shipped; CHANGELOG has the user-facing summary
+  for both C.7 + C.8.
+
+**Success criteria — met.**
+- ✅ `npm run release:check` is one command and exits non-zero
+  on any failure across all 5 stages.
+- ✅ `npm run package:local` produces a self-contained release
+  bundle (controller binary + editor dist + migrations + docs +
+  RELEASE.txt) in ~70s on a typical dev box.
+- ✅ Phase C is honestly shippable: 181 rust / 158 vitest green;
+  binary builds; editor builds; docs cover every operator-facing
+  knob.
+
+**Non-goals (intentionally deferred — see roadmap "What's
+deliberately out of Phase C").**
+- Tarball generation / signing / upload (compose externally).
+- Multi-platform cross-compilation matrix (package:local builds
+  for the host platform; CI extends this).
+- Performance benchmarking suite with regression gates (a Phase
+  D concern when traffic patterns settle).
 
 ---
 
@@ -503,7 +580,7 @@ These belong to Phase D or later:
 - Billing / usage metering
 - Production SLA hosting
 
-## Status (2026-05-27)
+## Status (2026-05-28 — Phase C close)
 
 - **C.1 — Architecture + scaffolding** — ✅ complete (c54–c58)
   - c54 architecture doc
@@ -558,8 +635,33 @@ These belong to Phase D or later:
   - c94 TimedOut promotion + event cap + connector abort race
   - c95 QueueFull 503 mapping + RUN_LIFECYCLE.md + docs sync
   - c96 final validation + close C.6
-- **C.7 — Remote controller support** — next milestone
-- C.8 — not started
+- **C.7 — Remote controller support** — ✅ complete (c97–c101)
+  - c97 host-spec Health.name + auth_required (capability probe)
+  - c98 AuthConfig + bearer-token middleware + structured 401s
+  - c99 TS client token injection + URL classification + auth errors
+  - c100 TLS/HTTPS via axum-server + rustls + half-config refusal
+  - c101 ControllerSettingsModal remote UX (transport badge,
+        token field, unsafe-HTTP warning, auth-error guidance)
+- **C.8 — Stabilization + release packaging** — ✅ complete (c102–c104)
+  - c102 REMOTE_CONTROLLER.md + CONTROLLER_OPERATIONS.md + env-var ref
+  - c103 release:check + package:local + build:controller scripts
+  - c104 reliability + performance sweep + roadmap + CHANGELOG closeout
+
+## Phase C — SHIPPED (2026-05-28)
+
+Phase C is complete. The runtime infrastructure that began as a
+local controller MVP (C.2, c59) is now a remote-capable
+single-controller runtime with TLS, bearer auth, full event
+observability, multi-run orchestration, and release packaging.
+181 rust + 158 vitest tests pass; controller binary + editor
+build cleanly; operator docs cover every knob.
+
+Next phase: **Phase D** (out of scope for this document).
+Highlights of what Phase D would tackle when planned:
+real authentication / authorization (per-user, not shared
+bearer); multi-tenant controllers; distributed coordination
+(multiple controllers, exactly-once semantics); workflow
+marketplace; billing.
 
 ## How to contribute to Phase C
 

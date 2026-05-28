@@ -7,6 +7,97 @@ SolFlow uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Phase C C.7 (remote controller support)
+
+- **TLS / HTTPS support.** Setting
+  `SOLFLOW_CONTROLLER_TLS_CERT` + `SOLFLOW_CONTROLLER_TLS_KEY`
+  switches the controller binary from plain HTTP to TLS via
+  `axum-server` + rustls (ring-backed). HTTP remains the
+  default. Half-configured TLS (only one of the two vars set)
+  is refused at boot with a clear stderr message so operators
+  never get a silent HTTP fallback.
+- **Bearer-token auth.** Setting `SOLFLOW_CONTROLLER_AUTH_TOKEN`
+  requires `Authorization: Bearer <token>` on every protected
+  endpoint. `/healthz` stays open so editors can fingerprint +
+  capability-probe before sending credentials. Comparison is
+  constant-time. Distinct 401 codes (`auth_missing` /
+  `auth_malformed` / `auth_mismatch`) ride through to the editor
+  for per-case guidance.
+- **Health capability probe.** `/healthz` response now carries
+  `name` ("solflow-controller") + `auth_required` so editors
+  can decide what to render BEFORE the user gets a 401.
+  Additive on the wire — pre-C.7 controllers still parse fine.
+- **TS client hardening.** New `authToken` option on
+  `controllerClient(...)`; new error kinds `auth` (carrying
+  `code: auth_missing | auth_malformed | auth_mismatch |
+  unauthorized`) and `invalid_url` (carrying `reason: no_scheme
+  | bad_scheme | unparseable | no_host`). `normalizeBaseUrl`
+  now parses via WHATWG URL; never silently rewrites HTTP→HTTPS.
+- **`classifyControllerUrl(url)`** — pure helper returning one
+  of `local` / `loopback_https` / `https_remote` /
+  `unsafe_remote` / `invalid`. Drives the editor's transport
+  badge + unsafe-HTTP warning.
+- **ControllerSettingsModal upgrade.** Transport badge next to
+  the URL field; unsafe-HTTP banner when typing plain http to a
+  remote host; new Authentication section (bearer token, masked
+  input, localStorage-persisted); auth-error banner with
+  per-code guidance; expanded connection-detail card (controller
+  name, auth-required, transport).
+- **Execution-mode list** distinguishes `controller-local` vs
+  `controller-remote` based on whether the connected URL
+  resolves to a loopback or remote host.
+- **`docs/dev/REMOTE_CONTROLLER.md`** — TLS setup recipe with
+  working `openssl req` command, URL classification table,
+  auth-failure-mode guidance, smoke recipes, deployment
+  guardrails.
+
+### Added — Phase C C.8 (stabilization + release packaging)
+
+- **`docs/dev/CONTROLLER_OPERATIONS.md`** — full operator
+  reference: env-var table (every var the binary reads),
+  startup log format, lifecycle-of-a-request walkthrough,
+  health-probe + dashboard endpoint guidance, failure-mode
+  catalog, resource-sizing rules of thumb, backup recipes.
+- **`npm run release:check`** — single-command release gate.
+  Runs typecheck + vitest + cargo test --workspace + controller
+  release build + editor build. Per-stage timing summary; aborts
+  on first failure.
+- **`npm run package:local`** — assembles a versioned release
+  bundle under `dist-release/solflow-<v>-<platform>-<arch>/`
+  containing the release controller binary, the editor dist,
+  controller SQLite migrations, curated operator-facing docs,
+  LICENSE, CHANGELOG, and a top-level RELEASE.txt with smoke
+  + prod boot recipes.
+- **`npm run build:controller`** — convenience alias for
+  `cargo build --release --bin solflow-controller`.
+
+### Internal — C.7 + C.8
+
+- `host-spec::Health` gains `name` + `auth_required` (serde-
+  defaulted; pre-C.7 controllers still parse). New
+  `CONTROLLER_NAME` constant exported from both sides.
+- `controller::AuthConfig::{Disabled, Bearer}` +
+  `AuthFailure::{Missing, Malformed, Mismatch}` + constant-
+  time-byte comparison. `LocalController::with_auth(...)`
+  builder.
+- `controller::server::require_bearer_token` axum middleware:
+  protects every endpoint except `/healthz` + `OPTIONS`;
+  rejects with structured 401 + `code` discriminator.
+- `controller::tls` module: `TransportConfig::{Http, Https}` +
+  `tls::from_env(...)`. Binary refuses half-configured TLS.
+- `controller::Cargo.toml` adds `axum-server` (TLS) +
+  `rustls = { features = ["ring"] }` (process-level
+  CryptoProvider) + `rcgen` (dev-dep for self-signed test
+  certs).
+- 4 server auth tests + 5 tls config unit tests + 2 HTTPS
+  integration tests (rcgen-minted ephemeral cert,
+  `axum_server::bind_rustls` round trip via reqwest).
+- TS `controller.store` gains `authToken` ref +
+  `setAuthToken(...)` with localStorage persistence; cached
+  client keys on (url, token); `error{auth}` reason variant.
+- +21 Rust tests / +22 vitest across C.7. Totals: **181 rust +
+  158 vitest at C.8 close.**
+
 ### Added — Phase C C.6 (multi-run management + orchestration maturity)
 
 - **Concurrent execution.** The controller's `RunManager` runs

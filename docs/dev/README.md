@@ -30,6 +30,9 @@ compiler, or runtime.
 - **[Controller Operations](./CONTROLLER_OPERATIONS.md)** — Phase
   C C.8 operator reference: full env-var table, startup logs,
   request lifecycle, failure-mode catalog, backup guidance
+- **[Phase C Validation](./PHASE_C_VALIDATION.md)** — final
+  C.7 + C.8 acceptance snapshot, smoke recipe, reliability +
+  performance sweep findings, what didn't ship
 - **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — code style + test discipline
 
 ## Deep dives
@@ -65,10 +68,10 @@ npm run check
 
 Runs:
 - `vue-tsc --noEmit` (TypeScript typecheck)
-- `vitest run` (TS unit + integration tests; 69 currently)
-- `cargo test --workspace` (Rust unit + integration tests; 49 currently)
+- `vitest run` (TS unit + integration tests; 158 currently)
+- `cargo test --workspace` (Rust unit + integration tests; 181 currently)
 
-Total: ~118 tests across both runtimes.
+Total: 339 tests across both runtimes (at Phase C close).
 
 For Rust-only iteration:
 
