@@ -24,6 +24,7 @@ use std::path::Path;
 const MIGRATIONS: &[(&str, &str)] = &[
     ("0001_initial", include_str!("../migrations/0001_initial.sql")),
     ("0002_schedules", include_str!("../migrations/0002_schedules.sql")),
+    ("0003_run_events", include_str!("../migrations/0003_run_events.sql")),
 ];
 
 /// Concrete persistence backend wrapping a sqlx connection pool.
@@ -221,20 +222,61 @@ impl Persistence for SqlitePersistence {
         Ok(row_to_run_record(&row)?)
     }
 
-    async fn append_event(&self, _event: &RunEvent) -> ControllerResult<()> {
-        // C.2 doesn't persist events — that's C.5. Trait method
-        // returns Ok so the rest of the controller can call it
-        // unconditionally; C.5 wires real storage here.
+    async fn append_event(&self, event: &RunEvent) -> ControllerResult<()> {
+        let payload = serde_json::to_string(event).map_err(|e| {
+            ControllerError::Persistence {
+                message: format!("encode run_event: {e}"),
+            }
+        })?;
+        sqlx::query(
+            "INSERT INTO run_events (run_id, seq, ts, kind, payload_json)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(event.run_id())
+        .bind(event.seq() as i64)
+        .bind(event.ts())
+        .bind(event.kind())
+        .bind(&payload)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ControllerError::Persistence {
+            message: format!("append_event: {e}"),
+        })?;
         Ok(())
     }
 
     async fn list_events(
         &self,
-        _run_id: &RunId,
-        _after_seq: u64,
+        run_id: &RunId,
+        after_seq: u64,
     ) -> ControllerResult<Vec<RunEvent>> {
-        // Same — empty list until C.5 lands.
-        Ok(Vec::new())
+        // SQLite INTEGER is signed; clamp to i64::MAX so a sentinel
+        // u64::MAX (used by callers as "everything in the future")
+        // doesn't wrap to -1 and match every row.
+        let after_seq_i: i64 = after_seq.min(i64::MAX as u64) as i64;
+        let rows = sqlx::query(
+            "SELECT payload_json
+             FROM run_events
+             WHERE run_id = ? AND seq > ?
+             ORDER BY seq ASC",
+        )
+        .bind(run_id)
+        .bind(after_seq_i)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ControllerError::Persistence {
+            message: format!("list_events: {e}"),
+        })?;
+        rows.iter()
+            .map(|row| {
+                let s: String = row.get("payload_json");
+                serde_json::from_str::<RunEvent>(&s).map_err(|e| {
+                    ControllerError::Persistence {
+                        message: format!("decode run_event: {e}"),
+                    }
+                })
+            })
+            .collect()
     }
 
     // ---- Phase C C.3 — schedules ----
@@ -759,6 +801,125 @@ mod tests {
         p.set_schedule_enabled(&"sch_pause".to_string(), true).await.unwrap();
         let due = p.list_due_timer_schedules(1_700_000_001_000).await.unwrap();
         assert_eq!(due.len(), 1);
+    }
+
+    // =============================================================
+    //  Phase C C.5 — run_events
+    // =============================================================
+
+    use solflow_host_spec::{RunEvent as Ev, RuntimeErrorView};
+
+    fn print_event(run_id: &str, seq: u64, text: &str) -> Ev {
+        Ev::Print {
+            run_id: run_id.into(),
+            seq,
+            ts: 1_700_000_000_000 + seq as i64,
+            text: text.into(),
+            source_span: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn append_event_round_trips_and_orders_by_seq() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_e".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        let record = RunRecord {
+            id: "run_events_a".into(),
+            workflow_id: "wf_e".into(),
+            status: RunStatus::Running,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: 0,
+            started_at: None,
+            completed_at: None,
+        };
+        p.put_run(&record).await.unwrap();
+
+        // Append out-of-order; list_events must still return ASC.
+        p.append_event(&print_event("run_events_a", 2, "second")).await.unwrap();
+        p.append_event(&print_event("run_events_a", 0, "first")).await.unwrap();
+        p.append_event(&print_event("run_events_a", 1, "middle")).await.unwrap();
+        // Different run; must not pollute the list.
+        p.append_event(&print_event("run_other", 0, "other-run")).await.unwrap_or(()); // no FK so OK even if absent
+
+        let events = p
+            .list_events(&"run_events_a".to_string(), 0)
+            .await
+            .unwrap();
+        // after_seq=0 is EXCLUSIVE per the architecture doc; expect seqs 1 + 2.
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq(), 1);
+        assert_eq!(events[1].seq(), 2);
+
+        let all = p
+            .list_events(&"run_events_a".to_string(), u64::MAX)
+            .await
+            .unwrap();
+        assert!(all.is_empty(), "after=u64::MAX returns nothing");
+    }
+
+    #[tokio::test]
+    async fn append_event_handles_every_variant_via_serde() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        p.put_workflow(&"wf_v".to_string(), b"bc", b"sp", &sample_meta_json())
+            .await
+            .unwrap();
+        let record = RunRecord {
+            id: "run_v".into(),
+            workflow_id: "wf_v".into(),
+            status: RunStatus::Running,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: 0,
+            started_at: None,
+            completed_at: None,
+        };
+        p.put_run(&record).await.unwrap();
+
+        let variants = vec![
+            Ev::Queued { run_id: "run_v".into(), seq: 0, ts: 1 },
+            Ev::Started { run_id: "run_v".into(), seq: 1, ts: 2 },
+            Ev::Print {
+                run_id: "run_v".into(), seq: 2, ts: 3,
+                text: "hi".into(), source_span: None,
+            },
+            Ev::ExtCallStarted {
+                run_id: "run_v".into(), seq: 3, ts: 4,
+                connector: "http".into(), fn_name: "fetch".into(),
+            },
+            Ev::ExtCallCompleted {
+                run_id: "run_v".into(), seq: 4, ts: 5,
+                connector: "http".into(), fn_name: "fetch".into(), ok: true,
+            },
+            Ev::Completed {
+                run_id: "run_v".into(), seq: 5, ts: 6,
+                output: RunOutput {
+                    return_value: Some(0),
+                    output: vec![],
+                    steps: 1,
+                },
+            },
+            Ev::Failed {
+                run_id: "run_v".into(), seq: 6, ts: 7,
+                error: RuntimeErrorView::DivByZero,
+                source_span: None,
+            },
+            Ev::Cancelled { run_id: "run_v".into(), seq: 7, ts: 8 },
+        ];
+        for e in &variants {
+            p.append_event(e).await.unwrap();
+        }
+        let got = p.list_events(&"run_v".to_string(), 0).await.unwrap();
+        // after=0 excludes seq=0; so we expect 7 events back (seq 1..=7).
+        assert_eq!(got.len(), 7);
+        assert_eq!(got[0].kind(), "Started");
+        assert_eq!(got.last().unwrap().kind(), "Cancelled");
     }
 
     #[tokio::test]

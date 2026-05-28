@@ -237,6 +237,80 @@ pub enum RunEvent {
     },
 }
 
+impl RunEvent {
+    /// Run id the event belongs to. Useful so persistence /
+    /// broadcast layers don't have to pattern-match the variant.
+    pub fn run_id(&self) -> &RunId {
+        match self {
+            RunEvent::Queued { run_id, .. }
+            | RunEvent::Started { run_id, .. }
+            | RunEvent::Print { run_id, .. }
+            | RunEvent::ExtCallStarted { run_id, .. }
+            | RunEvent::ExtCallCompleted { run_id, .. }
+            | RunEvent::Diagnostic { run_id, .. }
+            | RunEvent::Completed { run_id, .. }
+            | RunEvent::Failed { run_id, .. }
+            | RunEvent::Cancelled { run_id, .. } => run_id,
+        }
+    }
+
+    /// Monotonic seq the event was emitted at. The same value
+    /// the SSE replay endpoint expects via `?after=N`.
+    pub fn seq(&self) -> u64 {
+        match self {
+            RunEvent::Queued { seq, .. }
+            | RunEvent::Started { seq, .. }
+            | RunEvent::Print { seq, .. }
+            | RunEvent::ExtCallStarted { seq, .. }
+            | RunEvent::ExtCallCompleted { seq, .. }
+            | RunEvent::Diagnostic { seq, .. }
+            | RunEvent::Completed { seq, .. }
+            | RunEvent::Failed { seq, .. }
+            | RunEvent::Cancelled { seq, .. } => *seq,
+        }
+    }
+
+    /// Wall-clock timestamp (millis since UNIX epoch).
+    pub fn ts(&self) -> i64 {
+        match self {
+            RunEvent::Queued { ts, .. }
+            | RunEvent::Started { ts, .. }
+            | RunEvent::Print { ts, .. }
+            | RunEvent::ExtCallStarted { ts, .. }
+            | RunEvent::ExtCallCompleted { ts, .. }
+            | RunEvent::Diagnostic { ts, .. }
+            | RunEvent::Completed { ts, .. }
+            | RunEvent::Failed { ts, .. }
+            | RunEvent::Cancelled { ts, .. } => *ts,
+        }
+    }
+
+    /// The serde tag — matches the persistence table's `kind`
+    /// column and the SSE event name.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            RunEvent::Queued { .. } => "Queued",
+            RunEvent::Started { .. } => "Started",
+            RunEvent::Print { .. } => "Print",
+            RunEvent::ExtCallStarted { .. } => "ExtCallStarted",
+            RunEvent::ExtCallCompleted { .. } => "ExtCallCompleted",
+            RunEvent::Diagnostic { .. } => "Diagnostic",
+            RunEvent::Completed { .. } => "Completed",
+            RunEvent::Failed { .. } => "Failed",
+            RunEvent::Cancelled { .. } => "Cancelled",
+        }
+    }
+
+    /// True for variants that end a run lifecycle. SSE handlers
+    /// close the connection after sending one of these.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            RunEvent::Completed { .. } | RunEvent::Failed { .. } | RunEvent::Cancelled { .. }
+        )
+    }
+}
+
 /// Wire shape for a structured runtime error. Matches the
 /// existing `RuntimeErrorView` from the compiler-wasm bridge so
 /// the editor doesn't need a separate union.
