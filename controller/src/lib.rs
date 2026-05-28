@@ -37,6 +37,7 @@ pub mod persistence;
 pub mod run_manager;
 pub mod scheduler;
 pub mod server;
+pub mod tls;
 
 pub use event_sink::{EventSink, PersistentEventSink, RunEventCtx};
 pub use local::LocalController;

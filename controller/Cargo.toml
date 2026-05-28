@@ -73,6 +73,15 @@ reqwest = { version = "0.12", default-features = false, features = [
 
 # HTTP server (C.2 c61).
 axum = { version = "0.7", features = ["macros"] }
+# Phase C C.7 c100 — axum-server adds optional TLS termination on
+# top of axum. HTTP-only mode still goes through `axum::serve` so
+# c97-and-earlier deployments don't pay for TLS code they aren't
+# using. We also pull in `rustls` directly with the `ring`
+# crypto-provider feature so rustls 0.23's mandatory
+# `CryptoProvider::install_default()` step works on every entry
+# point — without this, axum-server panics on its first TLS handshake.
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 # Stream helpers for the SSE endpoint (C.5 c83). `tokio-stream`
@@ -90,3 +99,7 @@ tempfile = "3"
 # Mock HTTP server for HTTP-connector tests (C.4). Pure-Rust,
 # wraps hyper; no external service required.
 wiremock = "0.6"
+# Phase C C.7 c100 — synthesize ephemeral self-signed certificates
+# for the HTTPS integration tests. Pure-Rust; no openssl
+# dependency. Test-only.
+rcgen = "0.13"

@@ -12,12 +12,15 @@
 //!   SOLFLOW_CONTROLLER_STEP_LIMIT     per-run step cap (default 10_000_000)
 //!   SOLFLOW_CONTROLLER_TIMEOUT_SECS   per-run wall-clock cap (default 600)
 //!   SOLFLOW_CONTROLLER_AUTH_TOKEN     bearer token (default unset → no auth)
+//!   SOLFLOW_CONTROLLER_TLS_CERT       PEM cert path (default unset → HTTP)
+//!   SOLFLOW_CONTROLLER_TLS_KEY        PEM key path (must accompany TLS_CERT)
 //!   RUST_LOG                    tracing filter (default info)
 //!
 //! Graceful shutdown on Ctrl+C (SIGINT) — in-flight requests
 //! drain before exit.
 
 use solflow_controller::executor::RunPolicy;
+use solflow_controller::tls::{self, TransportConfig};
 use solflow_controller::{server, AuthConfig, LocalController, SqlitePersistence};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -26,6 +29,12 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
+
+    // Phase C C.7 c100 — rustls 0.23 requires a process-level
+    // crypto provider. Install the ring-backed default before any
+    // TLS handshake; idempotent (`.ok()` swallows the duplicate-
+    // install error if main is invoked twice in tests).
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let bind: SocketAddr = std::env::var("SOLFLOW_CONTROLLER_BIND")
         .unwrap_or_else(|_| "127.0.0.1:3939".to_string())
@@ -46,6 +55,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SOLFLOW_CONTROLLER_AUTH_TOKEN").ok(),
     );
 
+    // Phase C C.7 c100 — read TLS config from env. Both vars set →
+    // HTTPS. Neither set → HTTP (default). Exactly-one-set →
+    // refuse to start with a clear message.
+    let transport = match tls::from_env(
+        std::env::var("SOLFLOW_CONTROLLER_TLS_CERT").ok(),
+        std::env::var("SOLFLOW_CONTROLLER_TLS_KEY").ok(),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("{e}");
+            let boxed: Box<dyn std::error::Error> = Box::new(e);
+            return Err(boxed);
+        }
+    };
+
     tracing::info!(%bind, %db_path, "starting solflow-controller");
     tracing::info!(
         step_limit = policy.step_limit,
@@ -59,6 +83,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AuthConfig::Disabled => tracing::info!(
             "auth: disabled (set SOLFLOW_CONTROLLER_AUTH_TOKEN to enable)"
         ),
+    }
+    match &transport {
+        TransportConfig::Http => tracing::info!(
+            "transport: HTTP (set SOLFLOW_CONTROLLER_TLS_CERT + _TLS_KEY for HTTPS)"
+        ),
+        TransportConfig::Https(_) => {
+            tracing::info!("transport: HTTPS (rustls)");
+            if matches!(&auth, AuthConfig::Disabled) {
+                tracing::warn!(
+                    "HTTPS is enabled but bearer-token auth is NOT — anyone \
+                     who reaches this endpoint can submit + execute workflows. \
+                     Set SOLFLOW_CONTROLLER_AUTH_TOKEN before exposing to a \
+                     network you don't fully control."
+                );
+            }
+        }
     }
 
     let persistence = SqlitePersistence::open(&db_path).await?;
@@ -80,12 +120,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _scheduler_handle = controller.start_scheduler();
     let app = server::router(controller);
 
+    match transport {
+        TransportConfig::Http => serve_http(bind, app).await?,
+        TransportConfig::Https(paths) => {
+            tracing::info!(
+                cert = %paths.cert.display(),
+                key = %paths.key.display(),
+                "TLS enabled — loading cert + key",
+            );
+            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                &paths.cert, &paths.key,
+            )
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> {
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "TLS cert/key load failed (cert={}, key={}): {e}",
+                        paths.cert.display(),
+                        paths.key.display(),
+                    ),
+                ))
+            })?;
+            serve_https(bind, app, config).await?;
+        }
+    }
+    tracing::info!("solflow-controller stopped cleanly");
+    Ok(())
+}
+
+async fn serve_http(
+    bind: SocketAddr,
+    app: axum::Router,
+) -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("listening on http://{bind}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    tracing::info!("solflow-controller stopped cleanly");
+    Ok(())
+}
+
+async fn serve_https(
+    bind: SocketAddr,
+    app: axum::Router,
+    config: axum_server::tls_rustls::RustlsConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // axum-server uses a Handle for graceful shutdown rather than
+    // a future-based combinator. Wire ctrl-c → handle.graceful_shutdown.
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        shutdown_handle.graceful_shutdown(Some(Duration::from_secs(30)));
+    });
+    tracing::info!("listening on https://{bind}");
+    axum_server::bind_rustls(bind, config)
+        .handle(handle)
+        .serve(app.into_make_service())
+        .await?;
     Ok(())
 }
 
