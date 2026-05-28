@@ -13,15 +13,21 @@
 //! served from a different origin. In production we'd lock this
 //! down per environment; this is a developer-experience MVP.
 
-use crate::{Controller, ControllerError, LocalController};
+use crate::{Controller, ControllerError, LocalController, Persistence};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Json, Response},
+    response::{
+        sse::{Event as SseEvent, KeepAlive, Sse},
+        IntoResponse, Json, Response,
+    },
     routing::{delete, get, patch, post},
     Router,
 };
 use serde::Deserialize;
+use solflow_host_spec::RunEvent;
+use std::convert::Infallible;
+use std::time::Duration;
 use crate::connector::ConnectorMeta;
 use solflow_host_spec::{
     Health, RunCreated, RunRecord, RunRequest, RunStatus,
@@ -65,6 +71,8 @@ pub fn router(controller: LocalController) -> Router {
         .route("/events/*path", post(post_event))
         // Phase C C.4 — connectors
         .route("/connectors", get(get_connectors))
+        // Phase C C.5 — SSE run-event stream
+        .route("/runs/:id/events", get(get_run_events))
         .with_state(state)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -187,6 +195,153 @@ async fn get_connectors(
     State(s): State<AppState>,
 ) -> Result<Json<Vec<ConnectorMeta>>, ApiError> {
     Ok(Json(s.controller.list_connectors()))
+}
+
+// =============================================================
+//  Phase C C.5 — SSE run-event stream
+// =============================================================
+
+#[derive(Debug, Deserialize)]
+struct EventStreamQuery {
+    /// Resume from this seq (exclusive). Defaults to 0 — the
+    /// client sees every event from Queued onwards.
+    #[serde(default)]
+    after: Option<u64>,
+}
+
+/// `GET /runs/:id/events?after=N` — Server-Sent Events stream
+/// of `RunEvent`s. Two phases:
+///
+///   1. **Replay** — emit every persisted event with `seq > after`
+///      in ASC order. Lets a client that joined late catch up
+///      from the persistent log without missing anything.
+///   2. **Live** — subscribe to the in-process broadcast and
+///      forward events as they're emitted. Filters on run_id
+///      (broadcast carries every run's events).
+///
+/// Stops sending after a terminal event (Completed / Failed /
+/// Cancelled) so the client's `EventSource` knows to close.
+///
+/// Each SSE message uses the event's `kind` (Queued / Started /
+/// …) as the SSE `event:` field so clients can dispatch with
+/// `eventSource.addEventListener('Print', …)`. The payload is
+/// the full JSON-encoded `RunEvent`.
+async fn get_run_events(
+    State(s): State<AppState>,
+    Path(run_id): Path<String>,
+    Query(q): Query<EventStreamQuery>,
+) -> impl IntoResponse {
+    let after = q.after.unwrap_or(0);
+    let controller = s.controller.clone();
+    let sink_clone = controller.event_sink().clone();
+    let run_id_clone = run_id.clone();
+
+    let after_explicit = q.after.is_some();
+    let stream = async_stream::stream! {
+        // ---- Phase 1: persistent replay ----
+        // When `?after=N` is supplied, we honor strict-after-N
+        // semantics (matches the architecture's RunEvent.seq
+        // contract: clients resume past the last seq they saw).
+        // When omitted, we replay every event so the editor's
+        // RunLog renders the full history on first connect.
+        let replayed: Vec<RunEvent> = if after_explicit {
+            controller
+                .persistence()
+                .list_events(&run_id_clone, after)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "SSE list_events failed for run {}: {}",
+                        run_id_clone, e
+                    );
+                    Vec::new()
+                })
+        } else {
+            controller
+                .persistence()
+                .list_all_events(&run_id_clone)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "SSE list_all_events failed for run {}: {}",
+                        run_id_clone, e
+                    );
+                    Vec::new()
+                })
+        };
+        let mut last_seq = after;
+        let mut terminal_seen = false;
+        for ev in replayed {
+            last_seq = ev.seq().max(last_seq);
+            if ev.is_terminal() {
+                terminal_seen = true;
+            }
+            yield Ok::<_, Infallible>(encode_sse_event(&ev));
+            if terminal_seen {
+                break;
+            }
+        }
+        if terminal_seen {
+            return;
+        }
+
+        // ---- Phase 2: live broadcast ----
+        let mut rx = sink_clone.subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(ev) if ev.run_id() == &run_id_clone => {
+                    if ev.seq() <= last_seq {
+                        // Already saw this seq during replay.
+                        continue;
+                    }
+                    last_seq = ev.seq();
+                    let term = ev.is_terminal();
+                    yield Ok::<_, Infallible>(encode_sse_event(&ev));
+                    if term {
+                        return;
+                    }
+                }
+                Ok(_) => continue, // event for a different run
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // The broadcast ring dropped messages we missed.
+                    // Re-query the persistent log starting from
+                    // `last_seq` to recover the gap.
+                    if let Ok(rows) = controller
+                        .persistence()
+                        .list_events(&run_id_clone, last_seq)
+                        .await
+                    {
+                        for ev in rows {
+                            if ev.seq() <= last_seq {
+                                continue;
+                            }
+                            last_seq = ev.seq();
+                            let term = ev.is_terminal();
+                            yield Ok::<_, Infallible>(encode_sse_event(&ev));
+                            if term {
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+fn encode_sse_event(ev: &RunEvent) -> SseEvent {
+    let payload = serde_json::to_string(ev).unwrap_or_else(|_| "{}".into());
+    SseEvent::default()
+        .event(ev.kind())
+        .id(ev.seq().to_string())
+        .data(payload)
 }
 
 fn parse_status(s: &str) -> Option<RunStatus> {
@@ -499,6 +654,186 @@ mod tests {
         assert_eq!(arr[0]["name"], "http");
         // default_policy serializes the conservative defaults.
         assert_eq!(arr[0]["default_policy"]["timeout_ms"], 10_000);
+    }
+
+    // =============================================================
+    //  Phase C C.5 — SSE event-stream route tests
+    // =============================================================
+
+    #[tokio::test]
+    async fn sse_replays_persisted_events_for_a_run() {
+        // Build a real LocalController with an in-memory DB.
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let controller = LocalController::new(p);
+        // Submit a workflow + create a run so the events FK can
+        // resolve. The run never actually executes (we manually
+        // append events instead) — that lets the test be
+        // hermetic (no VM, no timing).
+        let cp = compile_source(
+            "function start() -> int { print(\"hi\"); return 0; }",
+        )
+        .value
+        .expect("clean");
+        let bc = encode_bytecode(&cp.bytecode).unwrap();
+        let wf_id = controller
+            .submit_workflow(WorkflowSubmission {
+                name: "sse-test".into(),
+                description: None,
+                bytecode: bc,
+                instruction_spans: serde_json::to_vec::<Vec<()>>(&vec![]).unwrap(),
+                source: None,
+            })
+            .await
+            .unwrap()
+            .workflow_id;
+
+        // Hand-craft a finished run + 3 persisted events. The
+        // SSE handler replays from the persistent log + stops
+        // at the terminal event without needing a live VM.
+        let run_id = "run_sse_replay".to_string();
+        let record = solflow_host_spec::RunRecord {
+            id: run_id.clone(),
+            workflow_id: wf_id,
+            status: solflow_host_spec::RunStatus::Succeeded,
+            trigger: solflow_host_spec::RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: Some(solflow_host_spec::RunOutput {
+                return_value: Some(0),
+                output: vec!["hi".into()],
+                steps: 5,
+            }),
+            diagnostics: Vec::new(),
+            created_at: 0,
+            started_at: Some(0),
+            completed_at: Some(0),
+        };
+        let pers = controller.persistence();
+        pers.put_run(&record).await.unwrap();
+        let events = vec![
+            solflow_host_spec::RunEvent::Queued { run_id: run_id.clone(), seq: 0, ts: 1 },
+            solflow_host_spec::RunEvent::Started { run_id: run_id.clone(), seq: 1, ts: 2 },
+            solflow_host_spec::RunEvent::Completed {
+                run_id: run_id.clone(),
+                seq: 2,
+                ts: 3,
+                output: solflow_host_spec::RunOutput {
+                    return_value: Some(0),
+                    output: vec![],
+                    steps: 1,
+                },
+            },
+        ];
+        for e in &events {
+            pers.append_event(e).await.unwrap();
+        }
+
+        // GET /runs/:id/events — should replay then close.
+        let app = router(controller);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/runs/{run_id}/events"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // SSE body: collect once the stream finishes (terminal
+        // event closes the underlying generator).
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        // Three event blocks, each with `event: <kind>` + `id: N`
+        // + `data: {...}`.
+        assert!(body.contains("event: Queued"), "missing Queued: {body}");
+        assert!(body.contains("event: Started"));
+        assert!(body.contains("event: Completed"));
+        assert!(body.contains("id: 0"));
+        assert!(body.contains("id: 2"));
+    }
+
+    #[tokio::test]
+    async fn sse_replay_honors_after_query_param() {
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let controller = LocalController::new(p);
+        let cp = compile_source("function start() -> int { return 0; }")
+            .value
+            .expect("clean");
+        let bc = encode_bytecode(&cp.bytecode).unwrap();
+        let wf_id = controller
+            .submit_workflow(WorkflowSubmission {
+                name: "sse-after".into(),
+                description: None,
+                bytecode: bc,
+                instruction_spans: serde_json::to_vec::<Vec<()>>(&vec![]).unwrap(),
+                source: None,
+            })
+            .await
+            .unwrap()
+            .workflow_id;
+        let run_id = "run_sse_after".to_string();
+        let record = solflow_host_spec::RunRecord {
+            id: run_id.clone(),
+            workflow_id: wf_id,
+            status: solflow_host_spec::RunStatus::Succeeded,
+            trigger: solflow_host_spec::RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: 0,
+            started_at: None,
+            completed_at: None,
+        };
+        let pers = controller.persistence();
+        pers.put_run(&record).await.unwrap();
+        for seq in 0..5 {
+            pers.append_event(&solflow_host_spec::RunEvent::Print {
+                run_id: run_id.clone(),
+                seq,
+                ts: seq as i64,
+                text: format!("line {seq}"),
+                source_span: None,
+            })
+            .await
+            .unwrap();
+        }
+        // Terminal so the stream closes after replay.
+        pers.append_event(&solflow_host_spec::RunEvent::Completed {
+            run_id: run_id.clone(),
+            seq: 5,
+            ts: 5,
+            output: solflow_host_spec::RunOutput {
+                return_value: Some(0),
+                output: vec![],
+                steps: 1,
+            },
+        })
+        .await
+        .unwrap();
+
+        let app = router(controller);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/runs/{run_id}/events?after=2"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        // after=2 excludes seq=0,1,2. Should see "line 3", "line 4"
+        // and the terminal Completed; should NOT see "line 0..2".
+        assert!(!body.contains("line 0"), "after=2 leaked line 0:\n{body}");
+        assert!(!body.contains("line 2"));
+        assert!(body.contains("line 3"));
+        assert!(body.contains("line 4"));
+        assert!(body.contains("event: Completed"));
     }
 
     #[tokio::test]

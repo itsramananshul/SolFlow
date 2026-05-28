@@ -20,7 +20,7 @@ fn run_traced(source: &str) -> solflow_runtime::RunOutcome {
     let cp = compiled.value.unwrap_or_else(|| {
         panic!("compile failed: {:#?}", compiled.diagnostics);
     });
-    run_program_with(&cp.bytecode, RunOptions { step_limit: None, trace: true, ext_call_handler: None })
+    run_program_with(&cp.bytecode, RunOptions { step_limit: None, trace: true, ext_call_handler: None, print_callback: None })
 }
 
 #[test]
@@ -201,6 +201,7 @@ fn ext_call_with_handler_returns_value() {
         step_limit: None,
         trace: false,
         ext_call_handler: Some(handler.clone()),
+        print_callback: None,
     };
     let out = run_program_with(&program, opts);
     assert!(out.error.is_none(), "expected clean run, got {:?}", out.error);
@@ -244,6 +245,7 @@ fn ext_call_handler_error_surfaces_as_extcall_failed() {
         step_limit: None,
         trace: false,
         ext_call_handler: Some(Arc::new(FailingHandler)),
+        print_callback: None,
     };
     let out = run_program_with(&program, opts);
     match out.error {
@@ -347,7 +349,7 @@ fn trace_truncates_at_default_cap_for_infinite_loop() {
     let cp = compiled.value.expect("should compile");
     let out = run_program_with(
         &cp.bytecode,
-        RunOptions { step_limit: Some(100_000), trace: true, ext_call_handler: None },
+        RunOptions { step_limit: Some(100_000), trace: true, ext_call_handler: None, print_callback: None },
     );
     match out.error {
         Some(RunError::StepLimit { .. }) => {}

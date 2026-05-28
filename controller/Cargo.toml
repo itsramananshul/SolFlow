@@ -75,6 +75,11 @@ reqwest = { version = "0.12", default-features = false, features = [
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+# Stream helpers for the SSE endpoint (C.5 c83). `tokio-stream`
+# wraps a `broadcast::Receiver` as a `Stream`; `async-stream`
+# lets us chain replay + live cleanly with an async generator.
+tokio-stream = { version = "0.1", features = ["sync"] }
+async-stream = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

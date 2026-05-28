@@ -367,7 +367,7 @@ pub fn run_source_json(source: &str) -> String {
         // doesn't blow memory.
         let outcome = run_program_with(
             &bytecode,
-            RunOptions { step_limit: None, trace: true, ext_call_handler: None },
+            RunOptions { step_limit: None, trace: true, ext_call_handler: None, print_callback: None },
         );
 
         #[derive(Serialize)]

@@ -500,6 +500,38 @@ impl SqlitePersistence {
         rows.iter().map(row_to_run_record).collect()
     }
 
+    /// All persisted events for `run_id`, ASC by seq. Unlike the
+    /// trait's `list_events(after_seq)` (strict `>`), this has
+    /// no lower bound — used by the SSE endpoint when the client
+    /// hasn't supplied `?after` and wants the complete log.
+    pub async fn list_all_events(
+        &self,
+        run_id: &RunId,
+    ) -> ControllerResult<Vec<RunEvent>> {
+        let rows = sqlx::query(
+            "SELECT payload_json
+             FROM run_events
+             WHERE run_id = ?
+             ORDER BY seq ASC",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ControllerError::Persistence {
+            message: format!("list_all_events: {e}"),
+        })?;
+        rows.iter()
+            .map(|row| {
+                let s: String = row.get("payload_json");
+                serde_json::from_str::<RunEvent>(&s).map_err(|e| {
+                    ControllerError::Persistence {
+                        message: format!("decode run_event: {e}"),
+                    }
+                })
+            })
+            .collect()
+    }
+
     /// Look up workflow name (used for HTTP-API responses).
     pub async fn get_workflow_name(
         &self,
