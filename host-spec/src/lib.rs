@@ -590,6 +590,24 @@ pub fn decode_instruction_spans(
 }
 
 /// `GET /healthz` response.
+///
+/// Phase C C.7 (c97) extended this with `name` + `auth_required` so
+/// the editor can fingerprint a controller before connecting:
+///
+/// - `name` lets remote editors confirm they're talking to a
+///   real solflow controller (and not, say, a random HTTPS service
+///   on the same port). Constant for now (`"solflow-controller"`);
+///   future forks can override.
+/// - `auth_required` tells the editor whether a bearer token is
+///   needed BEFORE the user tries (and gets a 401 on) their first
+///   protected request. The healthz endpoint itself stays open in
+///   every config so this probe always works.
+///
+/// New fields are additive at the wire level — older editor builds
+/// see them as unknown JSON keys and ignore them. Older controller
+/// builds without these fields deserialize fine because the TS
+/// mirror marks them optional and the editor falls back to "assume
+/// no auth, name unknown" semantics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
     pub ok: bool,
@@ -598,7 +616,26 @@ pub struct Health {
     /// Host-spec major version this controller speaks. Editors
     /// reject connection on mismatch.
     pub host_spec_major: u32,
+    /// Stable software name. Lets clients confirm they're talking
+    /// to a SolFlow controller. Defaults to `"solflow-controller"`.
+    /// Phase C C.7.
+    #[serde(default = "default_controller_name")]
+    pub name: String,
+    /// Whether the controller requires `Authorization: Bearer …`
+    /// on mutating endpoints. `/healthz` itself is always open.
+    /// Phase C C.7.
+    #[serde(default)]
+    pub auth_required: bool,
 }
+
+fn default_controller_name() -> String {
+    "solflow-controller".to_string()
+}
+
+/// Stable software identifier baked into `Health::name`. The
+/// editor compares case-insensitively so forks that capitalize
+/// differently still pass the fingerprint check.
+pub const CONTROLLER_NAME: &str = "solflow-controller";
 
 impl Default for Health {
     fn default() -> Self {
@@ -606,6 +643,8 @@ impl Default for Health {
             ok: true,
             controller_version: env!("CARGO_PKG_VERSION").to_string(),
             host_spec_major: HOST_SPEC_MAJOR,
+            name: CONTROLLER_NAME.to_string(),
+            auth_required: false,
         }
     }
 }
@@ -900,6 +939,40 @@ mod tests {
         assert!(h.ok);
         assert_eq!(h.host_spec_major, HOST_SPEC_MAJOR);
         assert!(!h.controller_version.is_empty());
+        assert_eq!(h.name, CONTROLLER_NAME);
+        assert!(!h.auth_required);
+    }
+
+    /// Phase C C.7 c97 — older controller builds may serialize a
+    /// `Health` without `name` / `auth_required`. The deserializer
+    /// must populate sensible defaults rather than fail, so editors
+    /// can still negotiate with pre-C.7 controllers.
+    #[test]
+    fn health_back_compat_missing_optional_fields() {
+        let legacy_json = r#"{"ok":true,"controller_version":"0.1.0","host_spec_major":0}"#;
+        let h: Health = serde_json::from_str(legacy_json).expect("legacy parse");
+        assert!(h.ok);
+        assert_eq!(h.host_spec_major, 0);
+        assert_eq!(h.name, CONTROLLER_NAME);
+        assert!(!h.auth_required);
+    }
+
+    /// Phase C C.7 c97 — round-trip when all new fields are set.
+    #[test]
+    fn health_round_trip_includes_new_fields() {
+        let h = Health {
+            ok: true,
+            controller_version: "9.9.9".into(),
+            host_spec_major: HOST_SPEC_MAJOR,
+            name: "solflow-controller".into(),
+            auth_required: true,
+        };
+        let json = serde_json::to_string(&h).unwrap();
+        assert!(json.contains(r#""auth_required":true"#));
+        assert!(json.contains(r#""name":"solflow-controller""#));
+        let back: Health = serde_json::from_str(&json).unwrap();
+        assert!(back.auth_required);
+        assert_eq!(back.name, "solflow-controller");
     }
 
     fn round_trip<T: Serialize + for<'de> Deserialize<'de> + std::fmt::Debug>(val: &T) {

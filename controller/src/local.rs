@@ -20,7 +20,8 @@ use sha2::{Digest, Sha256};
 use solflow_host_spec::{
     Health, RunCreated, RunEvent, RunId, RunRecord, RunRequest,
     RunStatus, ScheduleCreate, ScheduleId, ScheduleRecord, WorkflowId,
-    WorkflowSubmission, WorkflowSubmissionResponse, HOST_SPEC_MAJOR,
+    WorkflowSubmission, WorkflowSubmissionResponse, CONTROLLER_NAME,
+    HOST_SPEC_MAJOR,
 };
 use std::sync::Arc;
 
@@ -261,6 +262,14 @@ impl LocalController {
     pub fn run_manager(&self) -> &RunManager {
         &self.run_manager
     }
+
+    /// Phase C C.7 c97 — whether protected endpoints require a
+    /// bearer token. Surfaced in `/healthz` so editors can probe
+    /// a controller before connecting. c97 ships the surface only;
+    /// the auth middleware that enforces this lands in c98.
+    pub fn auth_required(&self) -> bool {
+        false
+    }
 }
 
 fn default_connector_registry() -> ConnectorRegistry {
@@ -276,6 +285,11 @@ impl Controller for LocalController {
             ok: true,
             controller_version: env!("CARGO_PKG_VERSION").to_string(),
             host_spec_major: HOST_SPEC_MAJOR,
+            name: CONTROLLER_NAME.to_string(),
+            // Phase C C.7 c98 will populate this from AuthConfig.
+            // c97 keeps it `false` so existing test fixtures keep
+            // their meaning ("no auth required").
+            auth_required: self.auth_required(),
         })
     }
 

@@ -261,11 +261,30 @@ export interface ScheduleRecord {
 //  Health
 // =============================================================
 
+/**
+ * `GET /healthz` payload. Phase C C.7 (c97) added `name` +
+ * `auth_required` so editors can fingerprint + capability-probe
+ * a controller before negotiating a connection.
+ *
+ * Both new fields are **optional in the wire shape** — older
+ * controllers don't include them; the editor falls back to
+ * "no auth" + "unknown name" semantics in that case.
+ */
 export interface Health {
   ok: boolean;
   controller_version: string;
   host_spec_major: number;
+  /** Software identifier. Stable string `"solflow-controller"`
+   *  on canonical builds; absent on pre-C.7 controllers. */
+  name?: string;
+  /** Whether mutating endpoints require `Authorization: Bearer …`.
+   *  Absent on pre-C.7 controllers — treated as `false`. */
+  auth_required?: boolean;
 }
+
+/** Stable controller-name fingerprint. Editor checks
+ *  `Health.name` against this case-insensitively. */
+export const CONTROLLER_NAME = 'solflow-controller';
 
 // =============================================================
 //  Connectors (Phase C C.4)
