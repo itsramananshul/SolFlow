@@ -1,28 +1,36 @@
 <script setup lang="ts">
 /**
- * Controller Settings — Phase C C.2 c62.
+ * Controller Settings — Phase C C.2 c62 + C.7 c101.
  *
- * Live connection management for the SolFlow local controller.
- * Backed by `useControllerStore`; this component is the user-facing
- * surface for connect / disconnect / retry / mismatch handling.
+ * Live connection management for a SolFlow controller. C.7
+ * extended this to surface the full remote-controller posture:
+ * transport (HTTP/HTTPS), unsafe-HTTP warnings, bearer-token
+ * field, auth status, and per-failure-mode UX.
+ *
+ * Backed by `useControllerStore`; this component is the user-
+ * facing surface for connect / disconnect / retry / mismatch /
+ * unauthenticated / unsafe-URL handling.
  *
  * State→UX mapping (matches `ConnectionState`):
  *
- *   idle          → "Connect" button enabled; status dot grey
- *   connecting    → button disabled with spinner; dot orange
- *   connected     → "Disconnect" + "Re-check" buttons; dot green;
- *                   controller version + host-spec major shown
+ *   idle              → "Connect" button enabled; status dot grey
+ *   connecting        → button disabled with spinner; dot orange
+ *   connected         → "Disconnect" + "Re-check" buttons; dot green;
+ *                       controller version, name, host-spec major,
+ *                       auth_required shown
  *   error.invalid_url → "Connect" disabled until URL fixed; red
  *                       inline message under the URL field
- *   error.network → "Retry" + "controller unreachable" hint
- *   error.timeout → "Retry" + "took too long" hint
- *   error.http    → status + structured error code
- *   error.version → prominent banner: controller speaks vN, editor
- *                   speaks vM — refuses to use it
+ *   error.network     → "Retry" + "controller unreachable" hint
+ *   error.timeout     → "Retry" + "took too long" hint
+ *   error.http        → status + structured error code
+ *   error.version     → prominent banner: controller speaks vN,
+ *                       editor speaks vM — refuses to use it
+ *   error.auth        → "Set / fix your token" guidance + code
  */
 import { computed, onBeforeUnmount, onMounted } from 'vue';
 import { useControllerStore } from '@/stores/controller.store';
 import { HOST_SPEC_MAJOR } from '@/runtime-host/types';
+import { classifyControllerUrl } from '@/runtime-host/client';
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -45,11 +53,32 @@ function onUrlInput(e: Event) {
   ctrl.setUrl((e.target as HTMLInputElement).value);
 }
 
+function onTokenInput(e: Event) {
+  ctrl.setAuthToken((e.target as HTMLInputElement).value);
+}
+
 function onBackdrop(e: MouseEvent) {
   if (e.target === e.currentTarget) emit('close');
 }
 
 const stateKind = computed(() => ctrl.connection.kind);
+
+// Phase C C.7 c101 — classification of the typed URL. Drives the
+// transport badge + the unsafe-HTTP warning. Recomputes live as
+// the user types.
+const urlClassification = computed(() => classifyControllerUrl(ctrl.url));
+
+const transportBadgeLabel = computed(() => {
+  switch (urlClassification.value.kind) {
+    case 'local':           return 'local · HTTP';
+    case 'loopback_https':  return 'local · HTTPS';
+    case 'https_remote':    return 'remote · HTTPS';
+    case 'unsafe_remote':   return 'remote · HTTP ⚠';
+    case 'invalid':         return '—';
+  }
+});
+
+const transportBadgeKind = computed(() => urlClassification.value.kind);
 
 const statusLabel = computed(() => {
   const c = ctrl.connection;
@@ -74,6 +103,8 @@ const statusLabel = computed(() => {
           return 'Bad response shape';
         case 'version':
           return 'Version mismatch';
+        case 'auth':
+          return 'Auth rejected';
         case 'unknown':
           return 'Failed';
       }
@@ -99,9 +130,12 @@ const statusDotClass = computed(() => {
 /** Pretty controller version banner — appears only when connected. */
 const connectionDetail = computed(() => {
   if (ctrl.connection.kind !== 'connected') return null;
+  const h = ctrl.connection.health;
   return {
-    version: ctrl.connection.health.controller_version,
-    hostSpec: ctrl.connection.health.host_spec_major,
+    version: h.controller_version,
+    hostSpec: h.host_spec_major,
+    name: h.name ?? '(pre-C.7 controller)',
+    authRequired: h.auth_required === true,
     connectedAtIso: new Date(ctrl.connection.connectedAt).toISOString(),
   };
 });
@@ -113,9 +147,44 @@ const errorDetail = computed(() => {
   return c.reason;
 });
 
+/** Auth-specific human-friendly guidance per failure code. */
+const authErrorGuidance = computed(() => {
+  const c = ctrl.connection;
+  if (c.kind !== 'error' || c.reason.kind !== 'auth') return null;
+  switch (c.reason.code) {
+    case 'auth_missing':
+      return 'The controller requires a bearer token. Paste one into the Authentication field above and re-try.';
+    case 'auth_mismatch':
+      return 'The token you sent doesn\'t match the controller\'s. Re-check the token from your operator and re-try.';
+    case 'auth_malformed':
+      return 'Your token header is malformed. Make sure the value is just the token — the client adds the "Bearer " prefix automatically.';
+    case 'unauthorized':
+    default:
+      return 'The controller refused your credentials. Re-check your token, then re-try.';
+  }
+});
+
 /** Disabled while URL is empty OR mid-connection. */
 const connectDisabled = computed(
-  () => ctrl.connection.kind === 'connecting' || ctrl.url.trim().length === 0,
+  () => ctrl.connection.kind === 'connecting'
+      || ctrl.url.trim().length === 0
+      || urlClassification.value.kind === 'invalid',
+);
+
+/** Phase C C.7 — true when the URL warrants an in-modal warning
+ *  banner. Today: HTTP to a non-loopback host. */
+const showUnsafeWarning = computed(
+  () => urlClassification.value.kind === 'unsafe_remote',
+);
+
+/** Phase C C.7 — remote-mode availability. Available when
+ *  connected AND the URL classifies as a non-loopback host.
+ *  Otherwise the editor's RunModal stays on browser-sim or
+ *  controller-local. */
+const remoteModeAvailable = computed(
+  () => ctrl.isConnected
+    && (urlClassification.value.kind === 'https_remote'
+       || urlClassification.value.kind === 'unsafe_remote'),
 );
 
 function onConnect() {
@@ -142,7 +211,7 @@ function onRecheck() {
         <header class="modal-header">
           <div class="header-left">
             <span class="title">Controller Settings</span>
-            <span class="phase-tag">Phase C.2</span>
+            <span class="phase-tag">Phase C.7</span>
           </div>
           <button class="close" @click="emit('close')" aria-label="Close">✕</button>
         </header>
@@ -151,24 +220,64 @@ function onRecheck() {
           <section class="settings-section">
             <label class="field">
               <span class="field-label">Controller URL</span>
-              <input
-                type="url"
-                class="field-input"
-                placeholder="http://127.0.0.1:3939"
-                :value="ctrl.url"
-                @input="onUrlInput"
-                :disabled="stateKind === 'connecting'"
-              />
+              <div class="url-row">
+                <input
+                  type="url"
+                  class="field-input"
+                  placeholder="http://127.0.0.1:3939"
+                  :value="ctrl.url"
+                  @input="onUrlInput"
+                  :disabled="stateKind === 'connecting'"
+                />
+                <span
+                  class="transport-badge"
+                  :class="`badge-${transportBadgeKind}`"
+                  :title="urlClassification.warnings.join('\n') || 'transport posture'"
+                >{{ transportBadgeLabel }}</span>
+              </div>
               <span class="field-help">
-                The URL of your locally running
-                <code>solflow-controller</code>. Stored in this
-                browser; never sent anywhere except to the
-                controller itself.
+                The URL of a SolFlow controller. Local + remote
+                supported. Stored in this browser; never sent
+                anywhere except to the controller itself.
               </span>
             </label>
+
+            <!-- Unsafe-HTTP-remote warning -->
+            <div v-if="showUnsafeWarning" class="warn-banner">
+              <strong>Unsafe transport.</strong>
+              {{ urlClassification.warnings[0] }}
+            </div>
+
             <div v-if="errorDetail?.kind === 'invalid_url'" class="inline-error">
               {{ errorDetail.message }}
             </div>
+          </section>
+
+          <!-- Phase C C.7 c101 — Authentication section. Always
+               rendered; the field is optional. Connecting to a
+               controller that requires auth surfaces a clear
+               401-friendly message below. -->
+          <section class="settings-section">
+            <h3>Authentication</h3>
+            <label class="field">
+              <span class="field-label">Bearer token (optional)</span>
+              <input
+                type="password"
+                class="field-input"
+                placeholder="leave blank for local-dev / unauthenticated controllers"
+                :value="ctrl.authToken"
+                @input="onTokenInput"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <span class="field-help">
+                Sent as <code>Authorization: Bearer &lt;token&gt;</code>
+                on every protected request. Required when the
+                controller is started with
+                <code>SOLFLOW_CONTROLLER_AUTH_TOKEN</code>. Stored
+                in this browser only.
+              </span>
+            </label>
           </section>
 
           <section class="settings-section">
@@ -212,9 +321,22 @@ function onRecheck() {
               versions match before retrying.
             </div>
 
+            <!-- Phase C C.7 c101 — auth-error specific banner -->
+            <div
+              v-if="errorDetail?.kind === 'auth'"
+              class="auth-banner"
+            >
+              <strong>Controller rejected auth.</strong>
+              <span class="auth-code"><code>{{ errorDetail.code }}</code></span>
+              <p class="auth-guidance">{{ authErrorGuidance }}</p>
+            </div>
+
             <!-- Network / timeout / http error inline detail -->
             <div
-              v-if="errorDetail && errorDetail.kind !== 'invalid_url' && errorDetail.kind !== 'version'"
+              v-if="errorDetail
+                    && errorDetail.kind !== 'invalid_url'
+                    && errorDetail.kind !== 'version'
+                    && errorDetail.kind !== 'auth'"
               class="inline-error"
             >
               {{ errorDetail.message }}
@@ -230,13 +352,31 @@ function onRecheck() {
             <!-- Connection detail -->
             <div v-if="connectionDetail" class="connection-detail">
               <div class="kv">
-                <span class="k">controller version</span>
+                <span class="k">controller</span>
+                <code class="v">{{ connectionDetail.name }}</code>
+              </div>
+              <div class="kv">
+                <span class="k">version</span>
                 <code class="v">{{ connectionDetail.version }}</code>
               </div>
               <div class="kv">
                 <span class="k">host-spec major</span>
                 <code class="v">{{ connectionDetail.hostSpec }}</code>
                 <span class="subtle">(editor: {{ HOST_SPEC_MAJOR }})</span>
+              </div>
+              <div class="kv">
+                <span class="k">auth required</span>
+                <code class="v">{{ connectionDetail.authRequired ? 'yes' : 'no' }}</code>
+                <span
+                  v-if="connectionDetail.authRequired && !ctrl.authToken"
+                  class="subtle warn-text"
+                >
+                  controller wants a token — set one above
+                </span>
+              </div>
+              <div class="kv">
+                <span class="k">transport</span>
+                <code class="v">{{ transportBadgeLabel }}</code>
               </div>
               <div class="kv">
                 <span class="k">connected at</span>
@@ -289,24 +429,37 @@ function onRecheck() {
               </div>
               <div
                 class="mode-row"
-                :class="{ active: ctrl.isConnected, disabled: !ctrl.isConnected }"
+                :class="{
+                  active: ctrl.isConnected && !remoteModeAvailable,
+                  disabled: !ctrl.isConnected,
+                }"
               >
-                <span class="mode-dot" :class="{ ok: ctrl.isConnected }" />
+                <span class="mode-dot" :class="{ ok: ctrl.isConnected && !remoteModeAvailable }" />
                 <div class="mode-text">
                   <strong>controller-local</strong>
                   <span class="subtle">— canonical VM hosted by a controller on this machine</span>
                 </div>
                 <span class="mode-tag">
-                  {{ ctrl.isConnected ? 'Available' : 'Connect to enable' }}
+                  {{ !ctrl.isConnected
+                       ? 'Connect to enable'
+                       : (remoteModeAvailable ? 'Remote' : 'Available') }}
                 </span>
               </div>
-              <div class="mode-row disabled">
-                <span class="mode-dot" />
+              <div
+                class="mode-row"
+                :class="{
+                  active: remoteModeAvailable,
+                  disabled: !remoteModeAvailable,
+                }"
+              >
+                <span class="mode-dot" :class="{ ok: remoteModeAvailable }" />
                 <div class="mode-text">
                   <strong>controller-remote</strong>
-                  <span class="subtle">— remote controller over HTTPS</span>
+                  <span class="subtle">— remote controller over HTTPS (Phase C.7)</span>
                 </div>
-                <span class="mode-tag">C.7</span>
+                <span class="mode-tag">
+                  {{ remoteModeAvailable ? 'Available' : (ctrl.isConnected ? 'Local URL' : 'Connect to enable') }}
+                </span>
               </div>
             </div>
           </section>
@@ -351,7 +504,7 @@ function onRecheck() {
   background: var(--sf-bg-0);
   border: 1px solid var(--sf-border);
   border-radius: 6px;
-  width: min(620px, 92vw);
+  width: min(640px, 92vw);
   max-height: 84vh;
   display: flex;
   flex-direction: column;
@@ -427,6 +580,7 @@ function onRecheck() {
   font-size: 0.75rem;
   padding: 6px 10px;
   border-radius: 4px;
+  width: 100%;
 }
 .field-input:focus {
   outline: 1px solid var(--sf-accent, #5d8acf);
@@ -444,6 +598,56 @@ function onRecheck() {
   border-radius: 2px;
   font-style: normal;
 }
+
+/* Phase C C.7 c101 — URL + transport badge inline */
+.url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.url-row .field-input { flex: 1; }
+.transport-badge {
+  font-size: 0.625rem;
+  font-family: var(--sf-font-mono);
+  padding: 4px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
+  border: 1px solid var(--sf-border);
+  background: var(--sf-bg-2);
+  color: var(--sf-text-2);
+  flex: 0 0 auto;
+}
+.transport-badge.badge-local {
+  background: rgba(93, 138, 207, 0.12);
+  color: var(--sf-accent, #5d8acf);
+  border-color: rgba(93, 138, 207, 0.3);
+}
+.transport-badge.badge-loopback_https,
+.transport-badge.badge-https_remote {
+  background: rgba(0, 204, 136, 0.12);
+  color: var(--sf-success);
+  border-color: rgba(0, 204, 136, 0.3);
+}
+.transport-badge.badge-unsafe_remote {
+  background: rgba(231, 90, 90, 0.12);
+  color: var(--sf-danger, #e75a5a);
+  border-color: rgba(231, 90, 90, 0.3);
+}
+.transport-badge.badge-invalid {
+  color: var(--sf-text-3);
+}
+
+.warn-banner {
+  margin-top: 8px;
+  font-size: 0.6875rem;
+  background: rgba(231, 90, 90, 0.08);
+  border: 1px solid rgba(231, 90, 90, 0.32);
+  border-radius: 4px;
+  padding: 8px 12px;
+  line-height: 1.55;
+  color: var(--sf-text-1);
+}
+.warn-banner strong { color: var(--sf-danger, #e75a5a); }
 
 .inline-error {
   margin-top: 6px;
@@ -485,7 +689,8 @@ function onRecheck() {
   50%      { opacity: 0.45; }
 }
 
-.version-banner {
+.version-banner,
+.auth-banner {
   margin-top: 6px;
   font-size: 0.6875rem;
   background: rgba(231, 90, 90, 0.08);
@@ -495,12 +700,21 @@ function onRecheck() {
   line-height: 1.55;
   color: var(--sf-text-1);
 }
-.version-banner strong { color: var(--sf-danger, #e75a5a); }
-.version-banner code {
+.version-banner strong,
+.auth-banner strong {
+  color: var(--sf-danger, #e75a5a);
+}
+.version-banner code,
+.auth-banner code {
   font-family: var(--sf-font-mono);
   background: rgba(0, 0, 0, 0.14);
   padding: 0 4px;
   border-radius: 2px;
+}
+.auth-banner .auth-code { margin-left: 6px; }
+.auth-banner .auth-guidance {
+  margin: 4px 0 0 0;
+  color: var(--sf-text-1);
 }
 
 .connection-detail {
@@ -530,6 +744,7 @@ function onRecheck() {
   font-family: var(--sf-font-mono);
   color: var(--sf-text-0);
 }
+.warn-text { color: var(--sf-danger, #e75a5a); }
 
 .mode-list {
   display: flex;
