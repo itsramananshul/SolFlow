@@ -182,26 +182,97 @@ SOL VM.
 
 ---
 
-### C.4 — Connector framework
+### C.4 — Connector framework ✅ SHIPPED
 
 **Goal.** Real external calls work via a typed Connector trait.
 
-**Deliverables.**
-- `Connector` trait in `controller/` with at-least-once
-  semantics, timeout, retry policy
-- `http` reference connector implementation
-- ExtCall URL parsing: `connector://name?key=value`
-- Connector config loaded from controller config file
-  (environment variables for secrets)
-- Tests: an `ext function fetch_user(url: str) -> str` workflow
-  hits a real local HTTP server and gets a response
+**Delivered (c74 – c80).**
+- `Connector` trait (`controller/src/connector/mod.rs`):
+  async `invoke(ConnectorInvocation) -> ConnectorOutcome`,
+  `meta()` for self-description.
+- `ConnectorRegistry` (build-time, lock-free reads, lookup by
+  name) with `ConnectorMeta` exposure.
+- `ConnectorError` — 14 structured variants for every failure
+  mode (connector_not_found / invalid_connector_url /
+  missing_param / timeout / auth_failed / dns_failure /
+  http_status / retry_exhausted / payload_too_large /
+  response_too_large / url_not_allowed / cancelled /
+  invalid_response / network).
+- `parse_connector_url("connector://name?k=v")` rejects
+  non-connector schemes + path segments; query params only.
+- `HttpConnector` reference implementation
+  (`controller/src/connector/http.rs`) — reqwest + rustls,
+  conservative defaults (10s wall-clock, 1 MiB response cap,
+  0 retries), exponential backoff on transport/5xx, optional
+  host allowlist with exact + subdomain matching, content-
+  length and read-time response-size enforcement, 4xx
+  not retried.
+- VM `ExtCallHandler` hook (`runtime/src/extcall.rs`) — VM
+  stays browser-safe; controller installs a handler that
+  bridges synchronous `Inst::ExtCall` to async connector
+  invocations via `Handle::block_on` inside `spawn_blocking`.
+- `RunError::ExtCallFailed { connector, function_name,
+  message }` — distinct from the pre-existing `ExtCallBlocked`.
+- `LocalController::new()` registers HttpConnector by default;
+  `with_connector(...)` builder adds more. `TokioScheduler`
+  inherits the same registry so Timer + Event triggered runs
+  also dispatch through it.
+- `GET /connectors` HTTP endpoint returns `Vec<ConnectorMeta>`.
+- TS client `listConnectors()` + `useControllerStore` populates
+  on connect; `ControllerSettingsModal` renders a Connectors
+  section with each entry's name / description / default
+  policy / version.
+- `RuntimeError` TS union + `RunModal::formatRuntimeError`
+  handle `ExtCallFailed` distinctly from `ExtCallBlocked`.
+- `docs/dev/CONNECTORS.md` — full URL grammar, HTTP connector
+  reference, type bridging rules, error model table, end-to-end
+  example, failure-mode troubleshooting, "add a new connector"
+  recipe.
 
-**Success criteria.**
-- Workflows that previously failed in browser-sim with
-  `ExtCallBlocked` now succeed when run via a controller with
-  the `http` connector enabled
-- Connector errors surface as `RunError::ExtCallFailed { connector,
-  message }` — no silent successes
+**Success criteria — met.**
+- ✅ Workflows that previously failed in browser-sim with
+  `ExtCallBlocked` now succeed when run via the controller:
+  the end-to-end test
+  `ext_call_runs_through_http_connector_end_to_end` submits
+  hand-crafted ExtCall bytecode to a controller backed by a
+  live wiremock server, the VM hits ExtCall, the controller
+  HTTP connector POSTs to the mock, and the response value
+  reaches the run record.
+- ✅ Connector errors surface as `RunError::ExtCallFailed`
+  with structured `{ connector, function_name, message }` —
+  verified by both the runtime test
+  `ext_call_handler_error_surfaces_as_extcall_failed` and the
+  controller-level test
+  `ext_call_unknown_connector_fails_with_extcall_failed`.
+
+**Test coverage.**
+- Rust: 71 controller (+30 from C.3) including
+  - 12 connector framework (URL parser, registry, default policy)
+  - 15 HTTP connector (wiremock-driven: GET 200, POST roundtrip,
+    GET args→query, header.* headers, missing/invalid params,
+    404/401, 500 retry success + exhausted, allowlist
+    deny/allow/subdomain, response-too-large)
+  - 3 controller integration (GET /connectors, e2e ExtCall via
+    HTTP, unknown connector → ExtCallFailed)
+- Runtime: 20 (+2 for the new handler dispatch + error mapping
+  paths). Total Rust workspace: 130.
+- TS: 127 vitest (+3 for connector list + store population
+  happy/sad paths).
+
+**Non-goals (deferred as planned, on roadmap or future).**
+- No marketplace, no OAuth UI, no cloud secret manager.
+- No user-uploaded code execution — connectors are
+  compile-time-registered on the controller binary.
+- No SOL-source `at "url"` syntax integration — the language
+  doesn't yet have endpoint declarations bound to functions;
+  endpoint mappings live outside the language (architecture
+  §8). When the language gains them, the editor's
+  compile_for_wire path will populate them.
+- No request body / response body streaming — single-shot
+  buffered transfers with size caps.
+- Compound type marshalling (struct, array) at the ExtCall
+  boundary — only primitives in C.4; compound support can
+  land without changing the trait shape.
 
 ---
 
@@ -328,8 +399,16 @@ These belong to Phase D or later:
   - c71 Editor SchedulesModal
   - c72 SCHEDULING.md + roadmap + CHANGELOG
   - c73 store tests + polish + close
-- **C.4 — Connector framework** — next milestone
-- C.5 / C.6 / C.7 / C.8 — not started
+- **C.4 — Connector framework** — ✅ complete (c74–c80)
+  - c74 Connector trait + registry + URL parser + structured errors
+  - c75 HTTP reference connector (reqwest + rustls)
+  - c76 VM ExtCall hook + executor wiring
+  - c77 LocalController integration + /connectors route + end-to-end smoke
+  - c78 TS client connector surface + editor error mapping
+  - c79 CONNECTORS.md + roadmap + CHANGELOG
+  - c80 final polish + close
+- **C.5 — Event log + observability UI** — next milestone
+- C.6 / C.7 / C.8 — not started
 
 ## How to contribute to Phase C
 

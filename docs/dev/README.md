@@ -16,6 +16,9 @@ compiler, or runtime.
   how-to-run + env vars + API reference + troubleshooting
 - **[Scheduling](./SCHEDULING.md)** — Phase C C.3 Timer + Event
   triggers, cron syntax, webhook ingress
+- **[Connectors](./CONNECTORS.md)** — Phase C C.4 connector
+  framework, HTTP reference connector, URL grammar, ExtCall
+  semantics, security boundaries
 - **[`CONTRIBUTING.md`](../../CONTRIBUTING.md)** — code style + test discipline
 
 ## Deep dives

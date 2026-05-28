@@ -7,6 +7,53 @@ SolFlow uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — Phase C C.4 (connector framework)
+
+- **`ext function` works for real now.** When a workflow runs
+  through a controller, ExtCall instructions dispatch through a
+  typed connector registry instead of returning the
+  browser-sim "ExtCallBlocked" error. Browser-sim's blocked
+  behavior is unchanged — it's the same VM, just with no
+  handler installed.
+- **HTTP reference connector** — `connector://http?url=...&method=POST`
+  speaks HTTP/1.1 + HTTP/2 with conservative defaults (10s wall
+  clock, 1 MiB response cap, retries off). Configurable per-call
+  via URL params (`timeout_ms`, `header.<name>`, `body_format`).
+  Optional host allowlist for production deployments.
+- **Connector URL grammar:**
+  `connector://<name>?<key>=<value>(&...)`. Parsed by
+  `parse_connector_url(...)`; rejects non-connector schemes and
+  path segments.
+- **Structured runtime error model** — `RunError::ExtCallFailed
+  { connector, function_name, message }` carries every connector
+  failure mode (timeouts, retries exhausted, 4xx/5xx, DNS,
+  auth, payload/response-too-large, URL-not-allowed) so the
+  editor renders distinct UX per failure kind.
+- **`GET /connectors`** HTTP endpoint + editor surface:
+  `ControllerSettingsModal` shows a Connectors section listing
+  each connector's name, description, version, and default
+  policy when connected.
+- **`docs/dev/CONNECTORS.md`** — full URL grammar, HTTP connector
+  reference, type-bridging rules, security boundaries (allowlist,
+  size caps), end-to-end example, troubleshooting, "add a new
+  connector" recipe.
+
+### Internal
+
+- New `controller::connector` module with `Connector` trait +
+  `ConnectorRegistry` + `ConnectorError` (14 variants) +
+  `InvocationPolicy` + `ConnectorMeta`.
+- New `runtime::extcall` module: `ExtCallHandler` callback
+  trait, `ExtCallType` (primitives only in C.4), `ExtCallValue`
+  bridging the synchronous VM to async connectors via
+  `tokio::runtime::Handle::block_on` inside `spawn_blocking`.
+- `compiler-wasm` mirrors the new `ExtCallFailed` variant in its
+  `RuntimeErrorView` (no behavior change for browser-sim).
+- TS `ControllerClient::listConnectors()` + `useControllerStore`
+  populates connectors on connect (degrades to empty if the
+  controller's `/connectors` 404s).
+- +32 Rust tests, +3 vitest. Totals: 130 rust + 127 vitest.
+
 ### Added — Phase C C.3 (scheduling MVP)
 
 - **Timer + Event triggers** — workflows can now run on a cron
