@@ -202,6 +202,85 @@ describe('useControllerStore — connection state machine', () => {
     expect(s.connectors).toEqual([]);
   });
 
+  // ----- Phase C C.7 c99 — bearer token persistence + auth UX -----
+
+  it('setAuthToken persists + invalidates cached client', async () => {
+    let lastHeaders: Headers | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: RequestInfo | URL, init?: RequestInit) => {
+        lastHeaders = new Headers((init?.headers as Record<string, string>) ?? {});
+        return Promise.resolve(jsonOk({
+          ok: true,
+          controller_version: '0.1.0',
+          host_spec_major: HOST_SPEC_MAJOR,
+        }));
+      }),
+    );
+    const s = useControllerStore();
+    s.setUrl('http://x.example');
+    s.setAuthToken('s3cret');
+    expect(localStorage.getItem('solflow.controller.auth_token')).toBe('s3cret');
+    await s.connect();
+    expect(lastHeaders?.get('authorization')).toBe('Bearer s3cret');
+  });
+
+  it('setAuthToken("") clears persisted token + drops Authorization', async () => {
+    let lastHeaders: Headers | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: RequestInfo | URL, init?: RequestInit) => {
+        lastHeaders = new Headers((init?.headers as Record<string, string>) ?? {});
+        return Promise.resolve(jsonOk({
+          ok: true,
+          controller_version: '0.1.0',
+          host_spec_major: HOST_SPEC_MAJOR,
+        }));
+      }),
+    );
+    const s = useControllerStore();
+    s.setUrl('http://x.example');
+    s.setAuthToken('first');
+    s.setAuthToken('');
+    expect(localStorage.getItem('solflow.controller.auth_token')).toBe(null);
+    await s.connect();
+    expect(lastHeaders?.get('authorization')).toBeNull();
+  });
+
+  it('connect → error{auth} on 401 response from controller', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ error: { code: 'auth_missing', message: 'missing' } }),
+          { status: 401, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+    const s = useControllerStore();
+    s.setUrl('http://x.example');
+    await s.connect();
+    expect(s.connection.kind).toBe('error');
+    if (s.connection.kind === 'error') {
+      expect(s.connection.reason.kind).toBe('auth');
+      if (s.connection.reason.kind === 'auth') {
+        expect(s.connection.reason.code).toBe('auth_missing');
+      }
+    }
+  });
+
+  it('setAuthToken clears stale error{auth} so the user can retry', () => {
+    const s = useControllerStore();
+    s.setUrl('http://x.example');
+    // Hand-set an error state matching what connect→401 produces.
+    (s as unknown as { connection: { kind: string; reason: object } }).connection = {
+      kind: 'error',
+      reason: { kind: 'auth', status: 401, code: 'auth_missing', message: 'm' },
+    };
+    s.setAuthToken('new-token');
+    expect(s.connection.kind).toBe('idle');
+  });
+
   it('connectors list degrades to empty when /connectors fails', async () => {
     const healthBody = {
       ok: true,

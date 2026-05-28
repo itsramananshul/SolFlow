@@ -602,6 +602,17 @@ function formatControllerError(phase: string, e: ControllerClientError): string 
       return `Controller response couldn't be parsed while ${phaseLabel}. ${e.message}`;
     case 'version':
       return `Host-spec major mismatch (controller=${e.controllerMajor}, editor=${e.editorMajor}). Reconnect from the controller settings modal after upgrading.`;
+    // Phase C C.7 c99 — bearer-token rejection mid-run. Most
+    // common cause: token rotated server-side, or the user just
+    // started a controller with auth on but hasn't set the
+    // token in the modal.
+    case 'auth':
+      return `Controller rejected your auth token while ${phaseLabel}. Open Controller Settings and set the correct token. (${e.code})`;
+    // Phase C C.7 c99 — URL became invalid between settings save
+    // and run dispatch (unusual; only happens if the user
+    // mutates the URL mid-run).
+    case 'invalid_url':
+      return `Controller URL is invalid (${e.reason}). Fix it in Controller Settings.`;
     case 'aborted':
       return 'Controller run cancelled.';
   }

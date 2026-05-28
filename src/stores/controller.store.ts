@@ -33,6 +33,14 @@ import type { ConnectorMeta, Health } from '@/runtime-host/types';
 
 const STORAGE_KEY_URL = 'solflow.controller.url';
 const STORAGE_KEY_AUTO = 'solflow.controller.auto_reconnect';
+/**
+ * Phase C C.7 c99 — bearer token persisted alongside the URL.
+ * The token is intentionally stored in plain localStorage with
+ * the URL: this is the editor's "I trust this device" model, the
+ * same model as how DevTools cookies are stored. Not appropriate
+ * for shared / kiosk environments — that's a Phase D concern.
+ */
+const STORAGE_KEY_TOKEN = 'solflow.controller.auth_token';
 
 export type ConnectionState =
   | { kind: 'idle' }
@@ -52,12 +60,17 @@ export type ConnectionState =
         | { kind: 'decode'; message: string }
         | { kind: 'version'; controllerMajor: number; editorMajor: number; message: string }
         | { kind: 'invalid_url'; message: string }
+        /** Phase C C.7 c99 — controller-side auth rejection. */
+        | { kind: 'auth'; status: number; code: string; message: string }
         | { kind: 'unknown'; message: string };
     };
 
 export const useControllerStore = defineStore('controller', () => {
   // ---- persistent state ----
   const url = ref<string>(loadStoredUrl());
+  /** Bearer token sent on every request when non-empty. Persists
+   *  across reloads alongside the URL. Phase C C.7 c99. */
+  const authToken = ref<string>(loadStoredToken());
   /** Did the last successful connection come from this URL? Used to
    *  decide whether to auto-reconnect on app mount. */
   const autoReconnect = ref<boolean>(loadAutoReconnectFlag());
@@ -70,13 +83,23 @@ export const useControllerStore = defineStore('controller', () => {
 
   let cachedClient: ControllerClient | null = null;
   let cachedFor: string | null = null;
+  let cachedForToken: string | null = null;
 
-  /** Build / re-use a `ControllerClient` for the current URL.
+  /** Build / re-use a `ControllerClient` for the current URL + token.
    *  Throws if the URL is invalid (e.g. missing scheme). */
   function getClient(): ControllerClient {
-    if (cachedClient && cachedFor === url.value) return cachedClient;
-    cachedClient = controllerClient(url.value);
+    if (
+      cachedClient
+      && cachedFor === url.value
+      && cachedForToken === authToken.value
+    ) {
+      return cachedClient;
+    }
+    cachedClient = controllerClient(url.value, {
+      authToken: authToken.value,
+    });
     cachedFor = url.value;
+    cachedForToken = authToken.value;
     return cachedClient;
   }
 
@@ -93,6 +116,7 @@ export const useControllerStore = defineStore('controller', () => {
     url.value = next;
     cachedClient = null;
     cachedFor = null;
+    cachedForToken = null;
     try {
       localStorage.setItem(STORAGE_KEY_URL, next);
     } catch {
@@ -111,6 +135,32 @@ export const useControllerStore = defineStore('controller', () => {
     }
   }
 
+  /** Update the bearer token. Persists to localStorage. Invalidates
+   *  the cached client so the next request picks up the new value.
+   *  Phase C C.7 c99. */
+  function setAuthToken(next: string): void {
+    if (next === authToken.value) return;
+    authToken.value = next;
+    cachedClient = null;
+    cachedFor = null;
+    cachedForToken = null;
+    try {
+      if (next.length > 0) {
+        localStorage.setItem(STORAGE_KEY_TOKEN, next);
+      } else {
+        localStorage.removeItem(STORAGE_KEY_TOKEN);
+      }
+    } catch {
+      // ignore — value stays in-memory for this session
+    }
+    // Token change doesn't itself drop the connection (it may
+    // still be valid); but if we're in `error{auth}` the user
+    // probably just fixed it, so let them re-try.
+    if (connection.value.kind === 'error' && connection.value.reason.kind === 'auth') {
+      connection.value = { kind: 'idle' };
+    }
+  }
+
   /** Attempt a healthz call. Updates `connection` to either
    *  `connected` or `error`. Safe to call repeatedly. */
   async function connect(): Promise<void> {
@@ -125,7 +175,10 @@ export const useControllerStore = defineStore('controller', () => {
     try {
       client = getClient();
     } catch (e) {
-      if (e instanceof ControllerClientErr && e.payload.kind === 'decode') {
+      if (
+        e instanceof ControllerClientErr
+        && (e.payload.kind === 'invalid_url' || e.payload.kind === 'decode')
+      ) {
         connection.value = {
           kind: 'error',
           reason: { kind: 'invalid_url', message: e.payload.message },
@@ -198,12 +251,14 @@ export const useControllerStore = defineStore('controller', () => {
 
   return {
     url,
+    authToken,
     autoReconnect,
     connection,
     connectors,
     isConnected,
     controllerVersion,
     setUrl,
+    setAuthToken,
     connect,
     disconnect,
     retry,
@@ -219,6 +274,14 @@ export const useControllerStore = defineStore('controller', () => {
 function loadStoredUrl(): string {
   try {
     return localStorage.getItem(STORAGE_KEY_URL) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function loadStoredToken(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEY_TOKEN) ?? '';
   } catch {
     return '';
   }
@@ -257,6 +320,15 @@ function connectionErrorFrom(e: unknown): Extract<ConnectionState, { kind: 'erro
         editorMajor: p.editorMajor,
         message: p.message,
       };
+    // Phase C C.7 c99 — bearer-token rejection lands here on
+    // every protected endpoint when token is missing / wrong.
+    case 'auth':
+      return { kind: 'auth', status: p.status, code: p.code, message: p.message };
+    // Invalid URL surfaces from controllerClient(...) construction
+    // BEFORE any request — but it can also reach connectionErrorFrom
+    // if a caller throws one mid-request, so handle it here too.
+    case 'invalid_url':
+      return { kind: 'invalid_url', message: p.message };
     case 'aborted':
       // Treat user-initiated abort during health-check as just
       // "back to idle" — but we wrap as unknown so the UX shows a

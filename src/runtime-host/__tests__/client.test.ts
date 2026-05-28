@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  classifyControllerUrl,
   ControllerClientErr,
   controllerClient,
   isControllerClientError,
@@ -490,5 +491,183 @@ describe('controllerClient — connectors (C.4)', () => {
     expect(got).toHaveLength(1);
     expect(got[0].name).toBe('http');
     expect(got[0].default_policy.timeout_ms).toBe(10_000);
+  });
+});
+
+// ----- C.7 c99 — auth + URL classification -----
+
+describe('controllerClient — bearer token injection (C.7)', () => {
+  it('sends Authorization: Bearer <token> when authToken is set', async () => {
+    let captured: Headers | undefined;
+    const c = controllerClient('http://x.example', {
+      authToken: 's3cret',
+      fetchImpl: fakeFetch((_url, init) => {
+        captured = new Headers((init?.headers as Record<string, string>) ?? {});
+        return jsonResponse({ ok: true, controller_version: '0', host_spec_major: HOST_SPEC_MAJOR });
+      }),
+    });
+    await c.healthz();
+    expect(captured?.get('authorization')).toBe('Bearer s3cret');
+  });
+
+  it('omits the Authorization header when authToken is empty', async () => {
+    let captured: Headers | undefined;
+    const c = controllerClient('http://x.example', {
+      authToken: '',
+      fetchImpl: fakeFetch((_url, init) => {
+        captured = new Headers((init?.headers as Record<string, string>) ?? {});
+        return jsonResponse({ ok: true, controller_version: '0', host_spec_major: HOST_SPEC_MAJOR });
+      }),
+    });
+    await c.healthz();
+    expect(captured?.get('authorization')).toBeNull();
+  });
+
+  it('sends Authorization on GETs (no body) too', async () => {
+    let captured: Headers | undefined;
+    const c = controllerClient('http://x.example', {
+      authToken: 's3cret',
+      fetchImpl: fakeFetch((_url, init) => {
+        captured = new Headers((init?.headers as Record<string, string>) ?? {});
+        return jsonResponse([]);
+      }),
+    });
+    await c.listConnectors();
+    expect(captured?.get('authorization')).toBe('Bearer s3cret');
+  });
+
+  it('maps controller 401 to ControllerClientError kind=auth', async () => {
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch(() =>
+        jsonResponse(
+          { error: { code: 'auth_missing', message: 'missing Authorization header' } },
+          401,
+        ),
+      ),
+    });
+    try {
+      await c.getConcurrencyMetrics();
+      expect.fail('should have thrown');
+    } catch (e) {
+      expect(isControllerClientError(e)).toBe(true);
+      const err = e as ControllerClientErr;
+      expect(err.payload.kind).toBe('auth');
+      if (err.payload.kind === 'auth') {
+        expect(err.payload.code).toBe('auth_missing');
+        expect(err.payload.status).toBe(401);
+      }
+    }
+  });
+
+  it('maps a wrong-token 401 to code=auth_mismatch', async () => {
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch(() =>
+        jsonResponse(
+          { error: { code: 'auth_mismatch', message: 'bearer token mismatch' } },
+          401,
+        ),
+      ),
+    });
+    await expect(c.createRun({ workflow_id: 'wf_a', trigger: { kind: 'Manual' } }))
+      .rejects.toMatchObject({
+        payload: { kind: 'auth', code: 'auth_mismatch', status: 401 },
+      });
+  });
+
+  it('falls back to code=unauthorized on bare 401', async () => {
+    const c = controllerClient('http://x.example', {
+      fetchImpl: fakeFetch(() => new Response('Unauthorized', { status: 401 })),
+    });
+    await expect(c.getRun('run_x')).rejects.toMatchObject({
+      payload: { kind: 'auth', code: 'unauthorized', status: 401 },
+    });
+  });
+});
+
+describe('classifyControllerUrl — Phase C C.7 URL safety', () => {
+  it('flags loopback HTTP as local without warnings', () => {
+    const c = classifyControllerUrl('http://127.0.0.1:3939');
+    expect(c.kind).toBe('local');
+    expect(c.warnings).toEqual([]);
+  });
+
+  it('treats localhost the same as 127.0.0.1', () => {
+    expect(classifyControllerUrl('http://localhost:3939').kind).toBe('local');
+    expect(classifyControllerUrl('http://[::1]:3939').kind).toBe('local');
+  });
+
+  it('treats HTTPS to a public host as https_remote without warning', () => {
+    const c = classifyControllerUrl('https://controller.example.com');
+    expect(c.kind).toBe('https_remote');
+    expect(c.warnings).toEqual([]);
+  });
+
+  it('flags HTTP to a public host as unsafe_remote with a warning', () => {
+    const c = classifyControllerUrl('http://controller.example.com');
+    expect(c.kind).toBe('unsafe_remote');
+    expect(c.warnings.length).toBeGreaterThan(0);
+    expect(c.warnings[0]).toMatch(/cleartext/i);
+  });
+
+  it('flags loopback HTTPS as fine (no warning)', () => {
+    expect(classifyControllerUrl('https://localhost:3939').kind).toBe('loopback_https');
+  });
+
+  it('flags URLs without a scheme as invalid + reason=no_scheme', () => {
+    const c = classifyControllerUrl('controller.example.com:3939');
+    expect(c.kind).toBe('invalid');
+    expect(c.reason).toBe('no_scheme');
+  });
+
+  it('flags wrong-scheme URLs (ws://, file://) as invalid + bad_scheme', () => {
+    expect(classifyControllerUrl('file:///tmp/x').reason).toBe('bad_scheme');
+    expect(classifyControllerUrl('ws://example.com').reason).toBe('bad_scheme');
+  });
+
+  it('flags empty / whitespace URLs as invalid + empty', () => {
+    expect(classifyControllerUrl('').reason).toBe('empty');
+    expect(classifyControllerUrl('   ').reason).toBe('empty');
+  });
+
+  it('flags structurally broken URLs as invalid + unparseable', () => {
+    // Smoke test — different runtimes throw at slightly different
+    // URLs; pick one that's reliably rejected by WHATWG URL.
+    const c = classifyControllerUrl('http://');
+    expect(c.kind).toBe('invalid');
+    expect(['unparseable', 'no_host']).toContain(c.reason);
+  });
+});
+
+describe('controllerClient — URL invalid_url errors (C.7)', () => {
+  it('throws kind=invalid_url with reason=no_scheme when scheme missing', () => {
+    try {
+      controllerClient('controller.example.com:3939');
+      expect.fail('should have thrown');
+    } catch (e) {
+      expect(isControllerClientError(e)).toBe(true);
+      const err = e as ControllerClientErr;
+      expect(err.payload.kind).toBe('invalid_url');
+      if (err.payload.kind === 'invalid_url') {
+        expect(err.payload.reason).toBe('no_scheme');
+      }
+    }
+  });
+
+  it('throws kind=invalid_url with reason=bad_scheme on file://', () => {
+    try {
+      controllerClient('file:///tmp/x');
+      expect.fail('should have thrown');
+    } catch (e) {
+      const err = e as ControllerClientErr;
+      expect(err.payload.kind).toBe('invalid_url');
+      if (err.payload.kind === 'invalid_url') {
+        expect(err.payload.reason).toBe('bad_scheme');
+      }
+    }
+  });
+
+  it('still normalizes trailing slashes after parsing', () => {
+    const c = controllerClient('http://x.example///', { fetchImpl: fakeFetch(() => jsonResponse({})) });
+    expect(c.baseUrl).toBe('http://x.example');
   });
 });

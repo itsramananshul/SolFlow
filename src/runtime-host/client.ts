@@ -95,6 +95,31 @@ export type ControllerClientError =
       controllerMajor: number;
       editorMajor: number;
     })
+  /**
+   * Phase C C.7 c99 — controller rejected the request because of
+   * missing / malformed / mismatched bearer token. Distinct from
+   * `http` so the editor can surface "set your token" UX without
+   * pattern-matching status codes everywhere.
+   *
+   * `code` mirrors the controller's `auth_missing` /
+   * `auth_malformed` / `auth_mismatch` discriminator so the modal
+   * can render distinct guidance per case.
+   */
+  | (ControllerClientErrorBase & {
+      kind: 'auth';
+      status: number;
+      code: 'auth_missing' | 'auth_malformed' | 'auth_mismatch' | 'unauthorized';
+    })
+  /**
+   * Phase C C.7 c99 — URL didn't parse as a controller URL we'll
+   * talk to. Carries a classification so the modal can render
+   * the right correction prompt. Thrown by `controllerClient()`
+   * construction, never from a request.
+   */
+  | (ControllerClientErrorBase & {
+      kind: 'invalid_url';
+      reason: 'no_scheme' | 'bad_scheme' | 'unparseable' | 'no_host';
+    })
   | (ControllerClientErrorBase & { kind: 'aborted' });
 
 export class ControllerClientErr extends Error {
@@ -130,6 +155,16 @@ export interface ControllerClientOptions {
    * globalThis.fetch.
    */
   fetchImpl?: typeof fetch;
+  /**
+   * Phase C C.7 c99 — bearer token injected as
+   * `Authorization: Bearer <token>` on every request. Empty
+   * string / undefined → no header. /healthz still works
+   * without a token (the controller leaves it open as the
+   * "is this controller alive + what does it require" probe),
+   * but every protected route requires this when the
+   * controller has `auth_required=true`.
+   */
+  authToken?: string;
 }
 
 export interface ControllerClient {
@@ -255,6 +290,9 @@ export function controllerClient(
   const baseUrl = normalizeBaseUrl(url);
   const defaultTimeoutMs = options.defaultTimeoutMs ?? 5_000;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const authToken = options.authToken && options.authToken.length > 0
+    ? options.authToken
+    : undefined;
 
   async function request<T>(
     method: string,
@@ -272,12 +310,16 @@ export function controllerClient(
       if (opts.signal.aborted) controller.abort(reasonAborted());
       else opts.signal.addEventListener('abort', externalListener);
     }
+    // Phase C C.7 c99 — assemble headers explicitly so the auth
+    // token rides on every request (including GETs with no body).
+    const headers: Record<string, string> = {};
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (authToken) headers['authorization'] = `Bearer ${authToken}`;
     let res: Response;
     try {
       res = await fetchImpl(url, {
         method,
-        headers:
-          body === undefined ? undefined : { 'content-type': 'application/json' },
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
@@ -513,20 +555,176 @@ export function controllerClient(
 // =============================================================
 
 function normalizeBaseUrl(url: string): string {
-  let trimmed = url.trim();
-  while (trimmed.endsWith('/')) trimmed = trimmed.slice(0, -1);
-  if (!/^https?:\/\//i.test(trimmed)) {
+  const trimmed = url.trim();
+  if (trimmed.length === 0) {
     throw new ControllerClientErr({
-      kind: 'decode',
+      kind: 'invalid_url',
+      reason: 'unparseable',
+      message: 'controller URL is empty',
+    });
+  }
+  // Reject URLs without an explicit scheme — silently rewriting
+  // them is a security footgun ("controller.example" is NOT the
+  // same as http://controller.example). Schemes are recognized
+  // by the `://` separator; bare-colon `host:port` lookalikes
+  // are treated as missing scheme since that's the user's
+  // common typo (and ambiguous with a future scheme).
+  if (/^https?:\/\//i.test(trimmed)) {
+    // fine — fall through to parse
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    throw new ControllerClientErr({
+      kind: 'invalid_url',
+      reason: 'bad_scheme',
+      message: `controller URL must use http:// or https:// (got "${url}")`,
+    });
+  } else {
+    throw new ControllerClientErr({
+      kind: 'invalid_url',
+      reason: 'no_scheme',
       message: `controller URL must start with http:// or https:// (got "${url}")`,
     });
   }
-  return trimmed;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch (cause) {
+    throw new ControllerClientErr({
+      kind: 'invalid_url',
+      reason: 'unparseable',
+      message: `controller URL did not parse (${(cause as Error).message ?? cause})`,
+    });
+  }
+  if (!parsed.hostname) {
+    throw new ControllerClientErr({
+      kind: 'invalid_url',
+      reason: 'no_host',
+      message: `controller URL has no host (got "${url}")`,
+    });
+  }
+  // URL.toString preserves any trailing slash on a pure-host URL
+  // (`http://x` → `http://x/`). Strip trailing slashes consistently
+  // so request joins produce a clean `<base><path>`.
+  let normalized = parsed.toString();
+  while (normalized.endsWith('/')) normalized = normalized.slice(0, -1);
+  return normalized;
+}
+
+// =============================================================
+//  Phase C C.7 c99 — URL classification helper
+// =============================================================
+
+/**
+ * Static classification of a controller URL. The modal renders
+ * intentional UX per class:
+ *
+ *   - `local`         — http://localhost / 127.0.0.1 / [::1] / *.local
+ *                       Fine for local dev. No HTTPS expected.
+ *   - `loopback_https`— HTTPS to localhost. Probably overkill, but
+ *                       fine; we don't warn about it.
+ *   - `https_remote`  — HTTPS to a non-loopback host. The good
+ *                       remote case.
+ *   - `unsafe_remote` — HTTP (not HTTPS) to a non-loopback host.
+ *                       Editor surfaces a "credentials + bytecode
+ *                       travel in cleartext" warning.
+ *   - `invalid`       — URL doesn't parse / has no scheme / no host.
+ *
+ * Returns a `warnings` array the modal can render verbatim. Callers
+ * MUST NOT silently upgrade `http://` to `https://` — the URL is
+ * the user's typed intent.
+ */
+export interface UrlClassification {
+  kind:
+    | 'local'
+    | 'loopback_https'
+    | 'https_remote'
+    | 'unsafe_remote'
+    | 'invalid';
+  url: string;
+  warnings: string[];
+  /** When `kind: 'invalid'`, why. */
+  reason?: 'no_scheme' | 'bad_scheme' | 'unparseable' | 'no_host' | 'empty';
+}
+
+const LOOPBACK_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '0.0.0.0',
+  '::1',
+  '[::1]',
+]);
+
+export function classifyControllerUrl(url: string): UrlClassification {
+  const trimmed = url.trim();
+  if (trimmed.length === 0) {
+    return { kind: 'invalid', url: trimmed, warnings: [], reason: 'empty' };
+  }
+  if (!/^https?:\/\//i.test(trimmed)) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+      return {
+        kind: 'invalid',
+        url: trimmed,
+        warnings: ['URL scheme must be http:// or https://'],
+        reason: 'bad_scheme',
+      };
+    }
+    return {
+      kind: 'invalid',
+      url: trimmed,
+      warnings: ['URL must start with http:// or https://'],
+      reason: 'no_scheme',
+    };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return {
+      kind: 'invalid',
+      url: trimmed,
+      warnings: ['URL could not be parsed'],
+      reason: 'unparseable',
+    };
+  }
+  if (!parsed.hostname) {
+    return {
+      kind: 'invalid',
+      url: trimmed,
+      warnings: ['URL has no host'],
+      reason: 'no_host',
+    };
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isLoopback =
+    LOOPBACK_HOSTS.has(host) || host.endsWith('.localhost') || host.endsWith('.local');
+  const isHttps = parsed.protocol === 'https:';
+  if (isLoopback && !isHttps) {
+    return { kind: 'local', url: trimmed, warnings: [] };
+  }
+  if (isLoopback && isHttps) {
+    return { kind: 'loopback_https', url: trimmed, warnings: [] };
+  }
+  if (!isHttps) {
+    return {
+      kind: 'unsafe_remote',
+      url: trimmed,
+      warnings: [
+        'Plain HTTP to a remote host transports your token and workflow bytecode in cleartext. Use https:// or tunnel locally.',
+      ],
+    };
+  }
+  return { kind: 'https_remote', url: trimmed, warnings: [] };
 }
 
 interface StructuredHttpError {
   error?: { code?: string; message?: string };
 }
+
+const AUTH_CODES = new Set([
+  'auth_missing',
+  'auth_malformed',
+  'auth_mismatch',
+  'unauthorized',
+]);
 
 function extractHttpError(
   status: number,
@@ -535,6 +733,32 @@ function extractHttpError(
   const wrapped = body as StructuredHttpError | null;
   const code = wrapped?.error?.code;
   const msg = wrapped?.error?.message;
+  // Phase C C.7 c99 — 401 with a known auth code maps to the
+  // discriminated `auth` kind so the UI can prompt the user to
+  // set / fix their token without pattern-matching status codes.
+  if (status === 401 && code && AUTH_CODES.has(code)) {
+    return {
+      kind: 'auth',
+      status,
+      code: code as 'auth_missing' | 'auth_malformed' | 'auth_mismatch' | 'unauthorized',
+      message: msg
+        ? `controller rejected auth (${code}): ${msg}`
+        : `controller rejected auth (${code})`,
+    };
+  }
+  // A bare 401 with no structured code still gets bucketed as
+  // `auth` since "401 means auth" by convention; the editor's
+  // fallback render path covers it.
+  if (status === 401) {
+    return {
+      kind: 'auth',
+      status,
+      code: 'unauthorized',
+      message: msg
+        ? `controller rejected auth: ${msg}`
+        : 'controller rejected auth',
+    };
+  }
   return {
     kind: 'http',
     status,
