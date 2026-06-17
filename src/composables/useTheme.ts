@@ -14,15 +14,16 @@ const STORAGE_KEY = 'solflow.theme';
 
 function readStored(): Theme {
   try {
-    return localStorage.getItem(STORAGE_KEY) === 'light' ? 'light' : 'dark';
+    return localStorage.getItem(STORAGE_KEY) === 'dark' ? 'dark' : 'light';
   } catch {
-    return 'dark';
+    return 'light';
   }
 }
 
 function applyToDom(t: Theme): void {
   const el = document.documentElement;
-  if (t === 'light') el.setAttribute('data-theme', 'light');
+  // Light is the default (:root); dark is the opt-in override.
+  if (t === 'dark') el.setAttribute('data-theme', 'dark');
   else el.removeAttribute('data-theme');
 }
 

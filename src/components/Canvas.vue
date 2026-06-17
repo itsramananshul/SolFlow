@@ -22,6 +22,7 @@ import { buildBuiltinPattern } from '@/graph/blocks';
 import { typeCssClass } from '@/graph/schema';
 import type { GraphEdge, NodeData, NodeKind, SolType } from '@/graph/schema';
 import { PALETTE, categoryForKind } from '@/graph/kinds';
+import { useTheme } from '@/composables/useTheme';
 import SolNode from './SolNode.vue';
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue';
 import QuickAddPalette, { type SourceContext } from './QuickAddPalette.vue';
@@ -29,6 +30,16 @@ import NodeSearchPalette from './NodeSearchPalette.vue';
 import ExecutionControls from './ExecutionControls.vue';
 import ExecutionTimeline from './ExecutionTimeline.vue';
 import { onMounted, onBeforeUnmount } from 'vue';
+
+// MiniMap mask + stroke adapt to the active theme (the raw canvas
+// render can't read CSS variables, so we bind reactive values).
+const { theme: appTheme } = useTheme();
+const minimapMaskColor = computed(() =>
+  appTheme.value === 'dark' ? 'rgba(0, 0, 0, 0.7)' : 'rgba(45, 43, 70, 0.12)',
+);
+const minimapStrokeColor = computed(() =>
+  appTheme.value === 'dark' ? 'rgba(255, 255, 255, 0.18)' : 'rgba(45, 43, 70, 0.16)',
+);
 
 const graph = useGraphStore();
 const ui = useUIStore();
@@ -1082,8 +1093,8 @@ onBeforeUnmount(() => {
         pannable
         zoomable
         :node-color="minimapNodeColor"
-        node-stroke-color="rgba(255, 255, 255, 0.18)"
-        mask-color="rgba(0, 0, 0, 0.78)"
+        :node-stroke-color="minimapStrokeColor"
+        :mask-color="minimapMaskColor"
       />
     </VueFlow>
     <div
@@ -1214,12 +1225,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  background: rgba(17, 17, 17, 0.7);
+  background: var(--sf-bg-2);
   border: 1px solid var(--sf-border);
   border-radius: 999px;
   color: var(--sf-text-2);
+  box-shadow: var(--sf-shadow-1);
   pointer-events: none;
-  opacity: 0.72;
+  opacity: 0.92;
   font-size: 0.6875rem;
   z-index: var(--sf-z-ambient);
   white-space: nowrap;
@@ -1280,7 +1292,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   padding: 4px 8px 4px 6px;
-  background: rgba(17, 17, 17, 0.92);
+  background: var(--sf-bg-2);
   border: 1px solid var(--sf-border-strong);
   border-radius: 999px;
   box-shadow: var(--sf-shadow-3);

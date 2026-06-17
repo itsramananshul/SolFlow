@@ -40,3 +40,5 @@ pkg-node/
 !compiler-wasm/pkg-node/
 !compiler-wasm/pkg-node/**
 **/*.rs.bk
+
+.vercel
