@@ -56,7 +56,25 @@ export function compile_source_json(source) {
 }
 
 /**
- * Tokenize + parse the given SOL source.
+ * @param {string} source
+ * @returns {string}
+ */
+export function format_source_json(source) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.format_source_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * @param {string} source
  * @returns {string}
  */
@@ -76,24 +94,6 @@ export function parse_source_json(source) {
 }
 
 /**
- * Compile + run a SOL source via the canonical VM.
- *
- * Envelope shape (extends the standard parse/analyze envelope):
- *   {
- *     ok: boolean,                  // compile-stage clean
- *     value: { instruction_count }, // present iff compile clean
- *     diagnostics: SolDiagnostic[], // compile diagnostics
- *     run: {                        // null iff compile failed
- *       return_value: i64 | null,
- *       output: string[],
- *       steps: number,
- *       runtime_error: RuntimeErrorView | null,
- *     } | null,
- *   }
- *
- * `ok` reflects compile-stage success only — `run.runtime_error`
- * may be non-null even when `ok: true`. The TS side typically
- * renders both layers (compile + runtime) independently.
  * @param {string} source
  * @returns {string}
  */
@@ -113,9 +113,6 @@ export function run_source_json(source) {
 }
 
 /**
- * Version stamp the JS side can read to detect when it's loaded
- * an older WASM than the one it expected. Pinned to the crate
- * version in Cargo.toml.
  * @returns {string}
  */
 export function version() {
@@ -129,6 +126,9 @@ export function version() {
     } finally {
         wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
     }
+}
+export function __wbg___wbindgen_throw_1506f2235d1bdba0(arg0, arg1) {
+    throw new Error(getStringFromWasm0(arg0, arg1));
 }
 export function __wbg_error_a6fa202b58aa1cd3(arg0, arg1) {
     let deferred0_0;

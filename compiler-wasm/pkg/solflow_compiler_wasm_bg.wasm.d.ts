@@ -4,6 +4,7 @@ export const memory: WebAssembly.Memory;
 export const analyze_source_json: (a: number, b: number) => [number, number];
 export const compile_for_wire_json: (a: number, b: number) => [number, number];
 export const compile_source_json: (a: number, b: number) => [number, number];
+export const format_source_json: (a: number, b: number) => [number, number];
 export const parse_source_json: (a: number, b: number) => [number, number];
 export const run_source_json: (a: number, b: number) => [number, number];
 export const version: () => [number, number];

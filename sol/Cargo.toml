@@ -1,0 +1,16 @@
+[package]
+name = "openprem-sol-v2"
+version = "0.1.0"
+edition = "2021"
+description = "Canonical SOL language: lexer, parser, bytecode compiler, VM, workflow executor. Vendored into SolFlow from open-prem (cleaning)."
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ed25519-dalek = "2"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+# wasm needs a browser randomness source for rand/ed25519
+getrandom = { version = "0.2", features = ["js"] }
