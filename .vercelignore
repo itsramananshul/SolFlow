@@ -1,0 +1,18 @@
+# Keep the Vercel upload to the frontend only. The Rust workspace,
+# local reference clones, and build artifacts are not needed to build
+# the Vite app (which consumes the committed compiler-wasm/pkg WASM).
+# Patterns are anchored with a leading slash so they only match the
+# repo root — they must NOT match src/compiler or src/runtime.
+/reference/
+/target/
+**/target/
+/dist/
+/dist-release/
+/docs/
+/sol/
+/compiler/
+/runtime/
+/controller/
+/host-spec/
+/Cargo.toml
+/Cargo.lock
