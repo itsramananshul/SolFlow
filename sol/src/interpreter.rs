@@ -389,10 +389,22 @@ impl Interpreter {
             }
             BinOp::Div => {
                 match (left, right) {
-                    (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
-                    (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-                    (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 / b)),
-                    (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a / *b as f64)),
+                    (Value::Int(a), Value::Int(b)) => {
+                        if *b == 0 { return Err("division by zero".into()); }
+                        Ok(Value::Int(a / b))
+                    }
+                    (Value::Float(a), Value::Float(b)) => {
+                        if *b == 0.0 { return Err("division by zero".into()); }
+                        Ok(Value::Float(a / b))
+                    }
+                    (Value::Int(a), Value::Float(b)) => {
+                        if *b == 0.0 { return Err("division by zero".into()); }
+                        Ok(Value::Float(*a as f64 / b))
+                    }
+                    (Value::Float(a), Value::Int(b)) => {
+                        if *b == 0 { return Err("division by zero".into()); }
+                        Ok(Value::Float(a / *b as f64))
+                    }
                     _ => Err(format!("cannot divide {} and {}", left, right)),
                 }
             }

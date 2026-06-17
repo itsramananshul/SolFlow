@@ -17,6 +17,7 @@ pub struct WorkflowState {
     pub completed: bool,
     pub pending_call: Option<(String, Value)>,
     pub stack: Vec<Value>,
+    pub pending_result: Option<Value>,
 }
 
 pub struct WorkflowExecutor {
@@ -76,6 +77,7 @@ impl WorkflowExecutor {
         exec.vm.pc = state.pc;
         exec.vm.stack = state.stack.clone();
         exec.vm.pending_call = state.pending_call.clone();
+        exec.vm.pending_result = state.pending_result.clone();
         exec.vm.completed = state.completed;
         exec.vm.step_count = state.step_count;
 
@@ -112,6 +114,7 @@ impl WorkflowExecutor {
             completed: self.completed || snap.pc >= self.chunk.instructions.len(),
             pending_call: self.vm.pending_call.clone(),
             stack: snap.stack,
+            pending_result: self.vm.pending_result.clone(),
         }
     }
 

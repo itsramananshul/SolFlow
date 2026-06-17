@@ -70,6 +70,13 @@ impl Compiler {
                         self.compile_target(obj, chunk, locals)?;
                         let field_idx = chunk.add_constant(Value::Str(field.clone()));
                         chunk.instructions.push(Instruction::StoreField(field_idx));
+                        // StoreField pushes the modified struct back; store to root local
+                        let root = self.root_target(obj);
+                        if let Some(root_name) = root {
+                            if let Ok(slot) = self.find_local(&root_name, locals) {
+                                chunk.instructions.push(Instruction::StoreLocal(slot));
+                            }
+                        }
                     }
                     Target::Index(_, _) => {
                         return Err("index assignment not supported".into());
@@ -335,6 +342,14 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    fn root_target(&self, target: &Target) -> Option<String> {
+        match target {
+            Target::Ident(name) => Some(name.clone()),
+            Target::MemberAccess(obj, _) => self.root_target(obj),
+            Target::Index(obj, _) => self.root_target(obj),
+        }
     }
 
     fn compile_target(&mut self, target: &Target, chunk: &mut Chunk, locals: &[String]) -> Result<(), String> {

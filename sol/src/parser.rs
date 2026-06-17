@@ -42,6 +42,22 @@ impl Parser {
         self.lookahead.as_ref()
     }
 
+    /// Convert an expression to an assignment target.
+    fn expr_to_target(expr: &Expr) -> Result<Target, String> {
+        match expr {
+            Expr::Ident(name) => Ok(Target::Ident(name.clone())),
+            Expr::MemberAccess(obj, field) => {
+                let target = Self::expr_to_target(obj)?;
+                Ok(Target::MemberAccess(Box::new(target), field.clone()))
+            }
+            Expr::Index(obj, index) => {
+                let target = Self::expr_to_target(obj)?;
+                Ok(Target::Index(Box::new(target), index.clone()))
+            }
+            _ => Err(format!("invalid assignment target: {:?}", expr)),
+        }
+    }
+
     /// Expect the next token to match `expected`, returning an error otherwise.
     fn expect(&mut self, expected: &Token) -> Result<(), String> {
         let tok = self.next_token();
@@ -289,10 +305,21 @@ impl Parser {
             }
             _ => {
                 let expr = self.parse_expr()?;
-                if matches!(self.peek(), Some(Token::Semicolon)) {
+                if matches!(self.peek(), Some(Token::Assign)) {
+                    // Assignment: `target = value;`
+                    let target = Self::expr_to_target(&expr)?;
                     self.next_token();
+                    let value = self.parse_expr()?;
+                    if matches!(self.peek(), Some(Token::Semicolon)) {
+                        self.next_token();
+                    }
+                    Ok(Stmt::Assign { target, value })
+                } else {
+                    if matches!(self.peek(), Some(Token::Semicolon)) {
+                        self.next_token();
+                    }
+                    Ok(Stmt::Expr(expr))
                 }
-                Ok(Stmt::Expr(expr))
             }
         }
     }
@@ -392,20 +419,30 @@ impl Parser {
                 Some(Token::DoubleColon) => {
                     self.next_token();
                     let name = self.expect_ident()?;
-                    self.expect(&Token::LParen)?;
-                    let mut args = Vec::new();
-                    while !matches!(self.peek(), Some(Token::RParen) | None) {
-                        args.push(self.parse_expr()?);
-                        if matches!(self.peek(), Some(Token::Comma)) {
-                            self.next_token();
+                    if matches!(self.peek(), Some(Token::LParen)) {
+                        // `expr::name(args)` — namespace call
+                        self.next_token();
+                        let mut args = Vec::new();
+                        while !matches!(self.peek(), Some(Token::RParen) | None) {
+                            args.push(self.parse_expr()?);
+                            if matches!(self.peek(), Some(Token::Comma)) {
+                                self.next_token();
+                            }
                         }
+                        self.expect(&Token::RParen)?;
+                        left = Expr::NamespaceCall {
+                            namespace: Box::new(left),
+                            name,
+                            args,
+                        };
+                    } else {
+                        // `EnumName::Variant` — enum variant
+                        let enum_name = match left {
+                            Expr::Ident(s) => s,
+                            _ => return Err("expected enum name before `::`".into()),
+                        };
+                        left = Expr::EnumVariant { enum_name, variant: name };
                     }
-                    self.expect(&Token::RParen)?;
-                    left = Expr::NamespaceCall {
-                        namespace: Box::new(left),
-                        name,
-                        args,
-                    };
                 }
                 Some(Token::LParen) => {
                     self.next_token();
@@ -1037,6 +1074,62 @@ mod tests {
                 }
             }
             _ => panic!("expected let"),
+        }
+    }
+
+    #[test]
+    fn test_enum_variant_expression() {
+        let source = r#"workflow "test" { let c: Color = Color::Red; }"#;
+        let program = parse(source).unwrap();
+        let wf = extract_workflow(&program);
+        match &wf.body.stmts[0] {
+            Stmt::Let { value, .. } => {
+                match value {
+                    Expr::EnumVariant { enum_name, variant } => {
+                        assert_eq!(enum_name, "Color");
+                        assert_eq!(variant, "Red");
+                    }
+                    _ => panic!("expected EnumVariant, got {:?}", value),
+                }
+            }
+            _ => panic!("expected let"),
+        }
+    }
+
+    #[test]
+    fn test_namespace_call_still_works_with_parens() {
+        let source = r#"workflow "test" { let _ = module::func(42); }"#;
+        let program = parse(source).unwrap();
+        let wf = extract_workflow(&program);
+        match &wf.body.stmts[0] {
+            Stmt::Let { value, .. } => {
+                match value {
+                    Expr::NamespaceCall { namespace, name, args } => {
+                        assert_eq!(name, "func");
+                        assert_eq!(args.len(), 1);
+                        match &**namespace {
+                            Expr::Ident(s) => assert_eq!(s, "module"),
+                            _ => panic!("expected Ident namespace"),
+                        }
+                    }
+                    other => panic!("expected NamespaceCall, got {:?}", other),
+                }
+            }
+            _ => panic!("expected let"),
+        }
+    }
+
+    #[test]
+    fn test_assignment_statement() {
+        let source = r#"workflow "test" { x = 42; }"#;
+        let program = parse(source).unwrap();
+        let wf = extract_workflow(&program);
+        match &wf.body.stmts[0] {
+            Stmt::Assign { target, value } => {
+                assert_eq!(*target, Target::Ident("x".into()));
+                assert!(matches!(value, Expr::Int(42)));
+            }
+            other => panic!("expected Assign, got {:?}", other),
         }
     }
 

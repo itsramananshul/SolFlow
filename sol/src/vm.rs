@@ -16,6 +16,7 @@ pub struct VmSnapshot {
     pub pc: usize,
     pub stack: Vec<Value>,
     pub locals: Vec<Value>,
+    pub pending_result: Option<Value>,
 }
 
 pub struct Vm {
@@ -25,7 +26,7 @@ pub struct Vm {
     pub locals: Vec<Value>,
     pub native_funcs: HashMap<String, NativeFunc>,
     pub pending_call: Option<(String, Value)>,
-    pending_result: Option<Value>,
+    pub pending_result: Option<Value>,
     pub completed: bool,
     pub step_count: u64,
     ignore_next_boundary: bool,
@@ -57,6 +58,7 @@ impl Vm {
             pc: self.pc,
             stack: self.stack.clone(),
             locals: self.locals.clone(),
+            pending_result: self.pending_result.clone(),
         }
     }
 
@@ -64,6 +66,7 @@ impl Vm {
         self.pc = snap.pc;
         self.stack = snap.stack.clone();
         self.locals = snap.locals.clone();
+        self.pending_result = snap.pending_result.clone();
     }
 
     pub fn reset(&mut self) {
@@ -260,8 +263,8 @@ impl Vm {
                     Value::Str(s) => s.clone(),
                     _ => return Err("field name constant must be a string".into()),
                 };
-                let val = self.stack.pop().ok_or_else(|| "stack empty for StoreField (val)".to_string())?;
                 let obj = self.stack.pop().ok_or_else(|| "stack empty for StoreField (obj)".to_string())?;
+                let val = self.stack.pop().ok_or_else(|| "stack empty for StoreField (val)".to_string())?;
                 match obj {
                     Value::Struct(mut map) => {
                         map.insert(field, val);
@@ -315,7 +318,31 @@ impl Vm {
             Instruction::Add => self.bin_op(|a, b| a + b, |a, b| a + b, "add"),
             Instruction::Sub => self.bin_op(|a, b| a - b, |a, b| a - b, "subtract"),
             Instruction::Mul => self.bin_op(|a, b| a * b, |a, b| a * b, "multiply"),
-            Instruction::Div => self.bin_op(|a, b| a / b, |a, b| a / b, "divide"),
+            Instruction::Div => {
+                let r = self.stack.pop().ok_or_else(|| "stack empty for divide".to_string())?;
+                let l = self.stack.pop().ok_or_else(|| "stack empty for divide".to_string())?;
+                let result = match (l, r) {
+                    (Value::Int(a), Value::Int(b)) => {
+                        if b == 0 { return Err("division by zero".into()); }
+                        Value::Int(a / b)
+                    }
+                    (Value::Float(a), Value::Float(b)) => {
+                        if b == 0.0 { return Err("division by zero".into()); }
+                        Value::Float(a / b)
+                    }
+                    (Value::Int(a), Value::Float(b)) => {
+                        if b == 0.0 { return Err("division by zero".into()); }
+                        Value::Float(a as f64 / b)
+                    }
+                    (Value::Float(a), Value::Int(b)) => {
+                        if b == 0 { return Err("division by zero".into()); }
+                        Value::Float(a / b as f64)
+                    }
+                    (l, r) => return Err(format!("cannot divide {} and {}", l, r)),
+                };
+                self.stack.push(result);
+                Ok(InsResult::Continue)
+            }
             Instruction::Eq => self.cmp_op(|a, b| a == b, |a, b| a == b),
             Instruction::Ne => self.cmp_op(|a, b| a != b, |a, b| a != b),
             Instruction::Lt => self.cmp_op(|a, b| a < b, |a, b| a < b),
@@ -428,6 +455,7 @@ impl Vm {
     fn exec_builtin(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
         match name {
             "print" => {
+                // Route to the capture buffer (WASM/browser have no stdout).
                 let mut line = String::new();
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 { line.push(' '); }
