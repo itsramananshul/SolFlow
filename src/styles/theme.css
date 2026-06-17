@@ -167,8 +167,10 @@ button.ghost:hover {
 
 /* Vue Flow theme override */
 .vue-flow__edge-path {
-  stroke-width: 1.6;
-  transition: stroke 0.12s ease;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 0.12s ease, stroke-width 0.12s ease;
 }
 .vue-flow__edge:hover .vue-flow__edge-path {
   filter: brightness(1.4);
