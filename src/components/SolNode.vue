@@ -35,6 +35,21 @@ const node = computed(() => props.data);
 const category = computed(() => categoryForKind(node.value.data.kind));
 const kindLabel = computed(() => labelForKind(node.value.data));
 const categoryDot = computed(() => categoryColor(category.value));
+
+// Per category line icons, so every node reads at a glance like the reference.
+const CATEGORY_ICONS: Record<string, string> = {
+  trigger: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg>',
+  flow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 6H13a2 2 0 0 1 2 2v2.5M8.5 18H13a2 2 0 0 0 2-2v-2.5"/></svg>',
+  variable: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M8 9l3 3-3 3M13 15h3"/></svg>',
+  operator: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 16h16"/><circle cx="9" cy="8" r="1.6" fill="currentColor" stroke="none"/><circle cx="15" cy="16" r="1.6" fill="currentColor" stroke="none"/></svg>',
+  literal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16M4 15h16M10 4l-2 16M16 4l-2 16"/></svg>',
+  access: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h2M16 4h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-2"/></svg>',
+  call: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="3"/><circle cx="9" cy="11" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="11" r="1.4" fill="currentColor" stroke="none"/><path d="M12 4V2M9 22h6"/></svg>',
+  io: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7 8 6 8-6"/></svg>',
+  annotation: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg>',
+  entry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"/></svg>',
+};
+const categoryIcon = computed(() => CATEGORY_ICONS[category.value] || CATEGORY_ICONS.flow);
 const simStatus = computed(() => sim.getNodeStatus(node.value.id));
 /**
  * Most recent runtime summary for this node, if a trace is loaded.
@@ -467,8 +482,7 @@ function formatLiteralPreview(t: string, v: string): string {
       @mouseenter="showTooltip"
       @mouseleave="hideTooltip"
     >
-      <span class="cat-dot" :style="{ background: categoryDot }" />
-      <span v-if="roleGlyph" class="role-glyph">{{ roleGlyph }}</span>
+      <span class="node-icon" :style="{ color: categoryDot }" v-html="categoryIcon" />
       <span class="title" :title="kindLabel">{{ kindLabel }}</span>
       <span v-if="headerBadge" class="header-badge">{{ headerBadge }}</span>
       <Transition name="tip">
@@ -696,17 +710,21 @@ function formatLiteralPreview(t: string, v: string): string {
 .header {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 10px;
+  gap: 9px;
+  padding: 9px 12px;
   border-bottom: 1px solid var(--sf-border);
 }
-.cat-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
+.node-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sf-bg-3);
   flex-shrink: 0;
-  opacity: 0.85;
 }
+.node-icon :deep(svg) { width: 14px; height: 14px; }
 .role-glyph {
   font-family: var(--sf-font-mono);
   font-size: 0.75rem;
@@ -717,13 +735,13 @@ function formatLiteralPreview(t: string, v: string): string {
 .title {
   flex: 1;
   color: var(--sf-text-0);
-  font-family: var(--sf-font-mono);
-  font-size: 0.6875rem;
-  font-weight: 500;
+  font-family: var(--sf-font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+  font-size: 0.82rem;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  letter-spacing: -0.1px;
+  letter-spacing: -0.2px;
 }
 .header-badge {
   font-family: var(--sf-font-mono);
