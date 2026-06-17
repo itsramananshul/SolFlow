@@ -29,6 +29,7 @@ import {
   controllerClient,
   type ControllerClient,
 } from '@/runtime-host/client';
+import { opremClient, type OpremRunOutcome } from '@/runtime-host/opremClient';
 import type { ConnectorMeta, Health } from '@/runtime-host/types';
 
 const STORAGE_KEY_URL = 'solflow.controller.url';
@@ -238,6 +239,34 @@ export const useControllerStore = defineStore('controller', () => {
   }
 
   /**
+   * Run a SOL workflow on the real OpenPrem controller
+   * (`openprem-controller-v2`) at the configured `url`.
+   *
+   * This uses the source based OpenPrem protocol (POST /workflow +
+   * poll GET /workflow/:id) via `opremClient`, independent of the
+   * legacy `connect()` / `healthz` path above (the real controller
+   * has no `/healthz`). The editor sends the workflow's emitted SOL
+   * source plus the entry workflow name; the controller compiles and
+   * runs it and returns the workflow's return value.
+   *
+   * Verified live against `openprem-controller-v2` (submit -> poll ->
+   * completed/error). Throws `OpremClientErr` on transport / submit
+   * failure; a controller run that fails resolves with
+   * `{ status: 'error', error }`.
+   */
+  function runOnOprem(
+    source: string,
+    workflow: string,
+    signal?: AbortSignal,
+  ): Promise<OpremRunOutcome> {
+    const client = opremClient(url.value);
+    return client.runWorkflow(source, workflow, {
+      signal,
+      overallTimeoutMs: 60_000,
+    });
+  }
+
+  /**
    * Best-effort silent reconnect on app mount. Only attempts when
    * `autoReconnect` is set (i.e. the URL previously succeeded);
    * never blocks app boot.
@@ -263,6 +292,7 @@ export const useControllerStore = defineStore('controller', () => {
     disconnect,
     retry,
     getClient,
+    runOnOprem,
     tryReconnectOnMount,
   };
 });
