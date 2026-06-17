@@ -440,6 +440,18 @@ textarea:focus-visible,
     0 0 0 3px var(--sf-accent-dim);
 }
 
+/* Light-theme adjustments for elements that hardcode white-on-dark
+   alpha (invisible on a light surface). */
+:root[data-theme='light'] ::-webkit-scrollbar-thumb {
+  background: rgba(45, 43, 70, 0.18);
+}
+:root[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(45, 43, 70, 0.30);
+}
+:root[data-theme='light'] .vue-flow__handle {
+  border-color: var(--sf-bg-2);
+}
+
 /* shared utility classes */
 .muted {
   color: var(--sf-text-2);

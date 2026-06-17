@@ -99,3 +99,45 @@
   --sf-z-modal: 100;
   --sf-z-modal-top: 120;
 }
+
+/*
+ * Light theme — the OpenPrem platform's light personality: lavender
+ * page, white cards, same purple accent. Toggled by setting
+ * `data-theme="light"` on <html> (see src/composables/useTheme.ts).
+ * Only the values change; the token names are identical to the dark
+ * defaults above, so every component flips with no markup change.
+ */
+:root[data-theme='light'] {
+  --sf-bg-0: #f4f5fb;
+  --sf-bg-1: #fafbff;
+  --sf-bg-2: #ffffff;
+  --sf-bg-3: #f1f2f9;
+  --sf-bg-4: #e8eaf3;
+  --sf-bg-5: #dde0ec;
+
+  --sf-canvas-bg: #eef0f7;
+  --sf-canvas-dot: rgba(45, 43, 70, 0.07);
+
+  --sf-text-0: #2c2a3a;
+  --sf-text-1: #56546b;
+  --sf-text-2: #8b90a3;
+  --sf-text-3: #aeb2c2;
+
+  --sf-border: rgba(45, 43, 70, 0.10);
+  --sf-border-strong: rgba(45, 43, 70, 0.17);
+  --sf-border-bright: rgba(45, 43, 70, 0.28);
+
+  --sf-accent: #6c5ce7;
+  --sf-accent-hover: #5b4bd6;
+  --sf-accent-dim: rgba(108, 92, 231, 0.12);
+  --sf-accent-ring: rgba(108, 92, 231, 0.30);
+
+  --sf-success: #1aa37f;
+  --sf-warning: #ef7c3c;
+  --sf-error: #e5484d;
+
+  /* soft, low-contrast shadows tuned for a light surface */
+  --sf-shadow-1: 0 1px 2px rgba(45, 43, 70, 0.06);
+  --sf-shadow-2: 0 6px 24px rgba(45, 43, 70, 0.10);
+  --sf-shadow-3: 0 26px 64px rgba(45, 43, 70, 0.18);
+}

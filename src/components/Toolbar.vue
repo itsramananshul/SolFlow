@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
 import { useUIStore } from '@/stores/ui.store';
+import { useTheme } from '@/composables/useTheme';
 import { useToastStore } from '@/stores/toast.store';
 import { SAMPLES } from '@/samples';
 import type { SolWorkflow } from '@/graph/schema';
@@ -22,6 +23,7 @@ const emit = defineEmits<{
 const graph = useGraphStore();
 const ui = useUIStore();
 const toasts = useToastStore();
+const { theme, toggleTheme } = useTheme();
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const sampleMenuOpen = ref(false);
@@ -242,6 +244,15 @@ function toggleSampleMenu() {
     </div>
 
     <div class="actions">
+      <button
+        class="ghost theme-toggle"
+        type="button"
+        :title="theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+        aria-label="Toggle color theme"
+        @click="toggleTheme"
+      >
+        <span aria-hidden="true">{{ theme === 'dark' ? '☀' : '☾' }}</span>
+      </button>
       <button class="ghost" @click="newWorkflow">New</button>
       <button class="ghost" @click="openFilePicker">Open</button>
       <button class="ghost" @click="downloadGraph" :title="`Save workflow JSON (${modKey}+S)`">
