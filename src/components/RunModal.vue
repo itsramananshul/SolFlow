@@ -7,22 +7,19 @@ import { useControllerStore } from '@/stores/controller.store';
 import { useControllerRunHistoryStore } from '@/stores/controller-run-history.store';
 import { recordTrace, type Trace } from '@/runtime/simulate';
 import { runSource } from '@/compiler/api';
-import { compileForController } from '@/runtime-host/encode';
 import {
   ControllerClientErr,
   type ControllerClientError,
 } from '@/runtime-host/client';
-import {
-  openRunEventStream,
-  type RunEventStreamHandle,
-} from '@/runtime-host/event-stream';
+import { isOpremClientError } from '@/runtime-host/opremClient';
+import type { RunEventStreamHandle } from '@/runtime-host/event-stream';
 import type {
   RunEnvelope,
   RuntimeError,
   SolDiagnostic,
   SourceSpan,
 } from '@/compiler/types';
-import type { RunEvent, RunRecord } from '@/runtime-host/types';
+import type { RunEvent, RunRecord, RunStatus } from '@/runtime-host/types';
 import { findNodeForSpan } from '@/graph/nodeLookup';
 
 const graph = useGraphStore();
@@ -119,8 +116,10 @@ function setMode(next: ExecutionMode) {
   }
 }
 
-/** Disabled when the controller isn't connected. Tooltip explains why. */
-const controllerModeDisabled = computed(() => !controller.isConnected);
+/** Enabled once a controller URL is set. The real OpenPrem controller
+ *  has no `/healthz` probe, so we gate on a URL being present rather
+ *  than a prior successful health check. */
+const controllerModeDisabled = computed(() => !controller.url.trim());
 
 // --- Legacy JS-trace path (canvas playback only) -----------
 //
@@ -175,129 +174,85 @@ async function executeControllerLocal() {
   controllerAbort = new AbortController();
   const abortSignal = controllerAbort.signal;
 
-  // 1. Compile for wire (WASM, same canonical pipeline as browser-sim).
-  controllerRun.value = { kind: 'compiling' };
-  const env = await compileForController(graph.emitted.source);
-  if (!env.ok || !env.value) {
-    controllerRun.value = {
-      kind: 'compile_failed',
-      diagnostics: env.diagnostics,
-    };
-    return;
-  }
-
-  // 2. Submit workflow + create run + poll until terminal.
+  // The real OpenPrem controller (openprem-controller-v2) is source
+  // based: it compiles + runs the SOL source itself. We submit the
+  // emitted source plus the entry workflow name and poll for the
+  // return value. No client side bytecode, no SSE in this path.
   controllerRun.value = { kind: 'submitting' };
-  const client = controller.getClient();
+  liveEvents.value = [];
   const submitStart = Date.now();
-  let workflowId: string | undefined;
-  let runId: string | undefined;
+  const workflowName = entryWorkflowName();
   try {
-    const submitRes = await client.submitWorkflow(
-      {
-        name: workflowDisplayName(),
-        bytecode: env.value.bytecode,
-        instruction_spans: env.value.instruction_spans,
-        source: graph.emitted.source,
-      },
-      { signal: abortSignal, timeoutMs: 10_000 },
+    const outcome = await controller.runOnOprem(
+      graph.emitted.source,
+      workflowName,
+      abortSignal,
     );
-    workflowId = submitRes.workflow_id;
-
-    const created = await client.createRun(
-      {
-        workflow_id: workflowId,
-        trigger: { kind: 'Manual' },
-      },
-      { signal: abortSignal, timeoutMs: 5_000 },
-    );
-    runId = created.run_id;
-    controllerRun.value = {
-      kind: 'running',
-      workflowId,
-      runId,
-      record: {
-        id: runId,
-        workflow_id: workflowId,
-        status: created.status,
-        trigger: { kind: 'Manual' },
-        inputs: {},
-        diagnostics: [],
-        created_at: submitStart,
-      },
-      startedAt: submitStart,
-    };
-
-    // c64: record into history as soon as we have a runId, so the
-    // user sees it even if poll fails partway through.
-    runHistory.record({
-      controllerUrl: controller.url,
-      workflowId,
-      runId,
-      workflowName: workflowDisplayName(),
-      status: created.status,
-      durationMs: null,
-      submittedAt: submitStart,
-    });
-
-    // 3a. Open SSE event stream — appends events to liveEvents
-    // in real time so the UI shows Print lines / ExtCall progress
-    // before the run terminates. The stream auto-closes on the
-    // terminal event.
-    closeLiveStream();
-    liveEvents.value = [];
-    liveStreamHandle = openRunEventStream({
-      baseUrl: controller.url,
-      runId,
-      onEvent: (ev) => liveEvents.value.push(ev),
-      onError: () => {
-        // Transport errors are usually benign (server closes the
-        // connection after the terminal event); the polling path
-        // below is the real source of truth for the final record.
-      },
-    });
-
-    // 3b. Poll until terminal.
-    const final = await client.pollRun(runId, {
-      intervalMs: 150,
-      overallTimeoutMs: 60_000,
-      signal: abortSignal,
-    });
     const durationMs = Date.now() - submitStart;
+    const status: RunStatus = outcome.status === 'completed' ? 'Succeeded' : 'Failed';
+    const record: RunRecord = {
+      id: outcome.workflowId,
+      workflow_id: outcome.workflowId,
+      status,
+      trigger: { kind: 'Manual' },
+      inputs: {},
+      output: {
+        return_value: typeof outcome.result === 'number' ? outcome.result : null,
+        // The controller does not return print output over HTTP; on
+        // failure it returns the reason, which we surface as a line.
+        output: outcome.error ? [`[controller] ${outcome.error}`] : [],
+        steps: outcome.stepCount ?? 0,
+      },
+      diagnostics: [],
+      created_at: submitStart,
+      started_at: submitStart,
+      completed_at: submitStart + durationMs,
+    };
     controllerRun.value = {
       kind: 'done',
-      workflowId,
-      runId,
-      record: final,
+      workflowId: outcome.workflowId,
+      runId: outcome.workflowId,
+      record,
       durationMs,
     };
-    // c64: update history with final status + duration.
-    runHistory.update(controller.url, runId, {
-      status: final.status,
-      durationMs,
-    });
   } catch (e) {
-    if (e instanceof ControllerClientErr) {
-      const phase: 'submit' | 'create' | 'poll' = workflowId
-        ? (runId ? 'poll' : 'create')
-        : 'submit';
-      controllerRun.value = {
-        kind: 'controller_error',
-        phase,
-        error: e.payload,
-        workflowId,
-        runId,
-      };
-    } else {
-      controllerRun.value = {
-        kind: 'controller_error',
-        phase: 'submit',
-        error: { kind: 'network', message: e instanceof Error ? e.message : String(e) },
-      };
-    }
+    const error: ControllerClientError = isOpremClientError(e)
+      ? opremErrorToControllerError(e.payload)
+      : { kind: 'network', message: e instanceof Error ? e.message : String(e) };
+    controllerRun.value = { kind: 'controller_error', phase: 'submit', error };
   } finally {
     controllerAbort = null;
-    closeLiveStream();
+  }
+}
+
+/** The runnable workflow name to submit to the controller — the entry
+ *  `workflow`, falling back to the first function. */
+function entryWorkflowName(): string {
+  const wf =
+    graph.workflow.functions.find((f) => f.isWorkflow)
+    ?? graph.workflow.functions[0];
+  return wf?.name ?? 'main';
+}
+
+/** Map an opremClient error onto the modal's existing
+ *  ControllerClientError display union. */
+function opremErrorToControllerError(
+  p: import('@/runtime-host/opremClient').OpremClientError,
+): ControllerClientError {
+  switch (p.kind) {
+    case 'timeout':
+      return { kind: 'timeout', message: p.message, timeoutMs: p.timeoutMs };
+    case 'http':
+      return { kind: 'http', status: p.status, message: p.message };
+    case 'decode':
+      return { kind: 'decode', message: p.message };
+    case 'invalid_url':
+      return { kind: 'invalid_url', reason: 'unparseable', message: p.message };
+    case 'aborted':
+      return { kind: 'aborted', message: p.message };
+    case 'network':
+    default:
+      return { kind: 'network', message: p.message };
   }
 }
 
