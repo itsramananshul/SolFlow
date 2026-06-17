@@ -88,10 +88,7 @@ export function buildPayments() {
     ctl(b, p1, 'next', p2, 'prev');
   }
 
-  // evaluate_payment(node, risk) -> PaymentStatus code (int).
-  // The canonical language has no enum-variant value syntax yet, so
-  // PaymentStatus states are modelled by their codes:
-  // Pending = 1, Running = 2, Approved = 201, Declined = 403.
+  // evaluate_payment(node, risk) -> PaymentStatus
   const evalFn = addFunction(
     b,
     'evaluate_payment',
@@ -99,7 +96,7 @@ export function buildPayments() {
       { name: 'node', type: { kind: 'named', name: 'PaymentNode' } },
       { name: 'risk_score', type: { kind: 'float' } },
     ],
-    { kind: 'int' },
+    { kind: 'named', name: 'PaymentStatus' },
     false, // helper fn
   );
   {
@@ -117,8 +114,8 @@ export function buildPayments() {
       kind: 'binaryOp', op: '>', valueType: { kind: 'float' },
     });
     const branch = node(b, 'branch', { x: 720, y: 60 }, { kind: 'branch', hasElse: true });
-    const decl = node(b, 'literal', { x: 720, y: 220 }, {
-      kind: 'literal', litType: 'int', value: '403', // Declined
+    const decl = node(b, 'enumVariant', { x: 720, y: 220 }, {
+      kind: 'enumVariant', enumName: 'PaymentStatus', variantName: 'Declined',
     });
     const ret1 = node(b, 'return', { x: 940, y: 60 }, { kind: 'return', hasValue: true });
     const ndForVer = node(b, 'varGet', { x: 940, y: 340 }, {
@@ -128,11 +125,11 @@ export function buildPayments() {
       kind: 'fieldAccess', structName: 'PaymentNode', fieldName: 'is_verified',
     });
     const branch2 = node(b, 'branch', { x: 1340, y: 260 }, { kind: 'branch', hasElse: true });
-    const appr = node(b, 'literal', { x: 1340, y: 420 }, {
-      kind: 'literal', litType: 'int', value: '201', // Approved
+    const appr = node(b, 'enumVariant', { x: 1340, y: 420 }, {
+      kind: 'enumVariant', enumName: 'PaymentStatus', variantName: 'Approved',
     });
-    const pend = node(b, 'literal', { x: 1340, y: 500 }, {
-      kind: 'literal', litType: 'int', value: '1', // Pending
+    const pend = node(b, 'enumVariant', { x: 1340, y: 500 }, {
+      kind: 'enumVariant', enumName: 'PaymentStatus', variantName: 'Pending',
     });
     const ret2 = node(b, 'return', { x: 1540, y: 260 }, { kind: 'return', hasValue: true });
     const ret3 = node(b, 'return', { x: 1540, y: 420 }, { kind: 'return', hasValue: true });
@@ -192,16 +189,16 @@ export function buildPayments() {
       kind: 'call', functionId: evalFn.id,
     });
     const letRes = node(b, 'let', { x: 1020, y: 60 }, {
-      kind: 'let', varName: 'result', varType: { kind: 'int' },
+      kind: 'let', varName: 'result', varType: { kind: 'named', name: 'PaymentStatus' },
     });
     const resGet = node(b, 'varGet', { x: 1020, y: 200 }, {
-      kind: 'varGet', varName: 'result', resolvedType: { kind: 'int' },
+      kind: 'varGet', varName: 'result', resolvedType: { kind: 'named', name: 'PaymentStatus' },
     });
-    const apprVar = node(b, 'literal', { x: 1020, y: 280 }, {
-      kind: 'literal', litType: 'int', value: '201', // Approved
+    const apprVar = node(b, 'enumVariant', { x: 1020, y: 280 }, {
+      kind: 'enumVariant', enumName: 'PaymentStatus', variantName: 'Approved',
     });
     const cmp = node(b, 'binaryOp', { x: 1220, y: 240 }, {
-      kind: 'binaryOp', op: '==', valueType: { kind: 'int' },
+      kind: 'binaryOp', op: '==', valueType: { kind: 'named', name: 'PaymentStatus' },
     });
     const branch = node(b, 'branch', { x: 1420, y: 60 }, { kind: 'branch', hasElse: false });
     const payGetGw = node(b, 'varGet', { x: 1420, y: 220 }, {

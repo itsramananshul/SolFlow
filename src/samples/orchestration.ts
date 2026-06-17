@@ -102,10 +102,6 @@ export function buildOrchestration() {
   //   if (current > node.threshold) return Degraded;
   //   else if (node.is_active) return Stable; else return Warming;
   // -----------------------------------------------------------
-  // Returns an AppHealth status *code* (int). The canonical language
-  // has no enum-variant value syntax yet (bare `AppHealth::Stable`
-  // parses as a namespace call), so the AppHealth states are modelled
-  // by their numeric codes: Warming = 1, Stable = 200, Degraded = 503.
   const verifyFn = addFunction(
     b,
     'verify_capacity',
@@ -113,7 +109,7 @@ export function buildOrchestration() {
       { name: 'node', type: { kind: 'named', name: 'ProcessNode' } },
       { name: 'current', type: { kind: 'float' } },
     ],
-    { kind: 'int' },
+    { kind: 'named', name: 'AppHealth' },
     false, // helper fn
   );
   {
@@ -131,8 +127,8 @@ export function buildOrchestration() {
       kind: 'binaryOp', op: '>', valueType: { kind: 'float' },
     });
     const branch1 = node(b, 'branch', { x: 700, y: 60 }, { kind: 'branch', hasElse: true });
-    const over = node(b, 'literal', { x: 900, y: 180 }, {
-      kind: 'literal', litType: 'int', value: '503', // Degraded
+    const over = node(b, 'enumVariant', { x: 900, y: 180 }, {
+      kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Degraded',
     });
     const ret1 = node(b, 'return', { x: 900, y: 60 }, { kind: 'return', hasValue: true });
     const isAct = node(b, 'fieldAccess', { x: 900, y: 320 }, {
@@ -142,11 +138,11 @@ export function buildOrchestration() {
       kind: 'varGet', varName: 'node', resolvedType: { kind: 'named', name: 'ProcessNode' },
     });
     const branch2 = node(b, 'branch', { x: 1120, y: 260 }, { kind: 'branch', hasElse: true });
-    const stable = node(b, 'literal', { x: 1320, y: 360 }, {
-      kind: 'literal', litType: 'int', value: '200', // Stable
+    const stable = node(b, 'enumVariant', { x: 1320, y: 360 }, {
+      kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Stable',
     });
-    const initz = node(b, 'literal', { x: 1320, y: 480 }, {
-      kind: 'literal', litType: 'int', value: '1', // Warming
+    const initz = node(b, 'enumVariant', { x: 1320, y: 480 }, {
+      kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Warming',
     });
     const ret2 = node(b, 'return', { x: 1320, y: 260 }, { kind: 'return', hasValue: true });
     const ret3 = node(b, 'return', { x: 1320, y: 420 }, { kind: 'return', hasValue: true });
@@ -209,16 +205,16 @@ export function buildOrchestration() {
     kind: 'call', functionId: verifyFn.id,
   });
   const letStatus = node(b, 'let', { x: 980, y: 60 }, {
-    kind: 'let', varName: 'status', varType: { kind: 'int' },
+    kind: 'let', varName: 'status', varType: { kind: 'named', name: 'AppHealth' },
   });
   const statusGet = node(b, 'varGet', { x: 980, y: 200 }, {
-    kind: 'varGet', varName: 'status', resolvedType: { kind: 'int' },
+    kind: 'varGet', varName: 'status', resolvedType: { kind: 'named', name: 'AppHealth' },
   });
-  const stableVar = node(b, 'literal', { x: 980, y: 280 }, {
-    kind: 'literal', litType: 'int', value: '200', // Stable
+  const stableVar = node(b, 'enumVariant', { x: 980, y: 280 }, {
+    kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Stable',
   });
   const cmpStatus = node(b, 'binaryOp', { x: 1180, y: 240 }, {
-    kind: 'binaryOp', op: '==', valueType: { kind: 'int' },
+    kind: 'binaryOp', op: '==', valueType: { kind: 'named', name: 'AppHealth' },
   });
   const branchMain = node(b, 'branch', { x: 1380, y: 60 }, { kind: 'branch', hasElse: true });
 
@@ -234,14 +230,14 @@ export function buildOrchestration() {
   });
 
   // else branch — check Degraded and call stop_service
-  const overVar = node(b, 'literal', { x: 1380, y: 420 }, {
-    kind: 'literal', litType: 'int', value: '503', // Degraded
+  const overVar = node(b, 'enumVariant', { x: 1380, y: 420 }, {
+    kind: 'enumVariant', enumName: 'AppHealth', variantName: 'Degraded',
   });
   const statusGet2 = node(b, 'varGet', { x: 1380, y: 350 }, {
-    kind: 'varGet', varName: 'status', resolvedType: { kind: 'int' },
+    kind: 'varGet', varName: 'status', resolvedType: { kind: 'named', name: 'AppHealth' },
   });
   const cmpOver = node(b, 'binaryOp', { x: 1580, y: 380 }, {
-    kind: 'binaryOp', op: '==', valueType: { kind: 'int' },
+    kind: 'binaryOp', op: '==', valueType: { kind: 'named', name: 'AppHealth' },
   });
   const branch2 = node(b, 'branch', { x: 1780, y: 340 }, { kind: 'branch', hasElse: false });
   const nodeForSvc2 = node(b, 'varGet', { x: 1780, y: 480 }, {
