@@ -1447,7 +1447,7 @@ const placeholderFor = (portId: string, kind: string): string => {
   border-radius: 2px;
 }
 .wire-pill {
-  background: rgba(50, 145, 255, 0.12);
+  background: rgba(108, 92, 231, 0.12);
   color: var(--sf-accent);
 }
 .inline-pill {
@@ -1680,7 +1680,7 @@ const placeholderFor = (portId: string, kind: string): string => {
   flex-shrink: 0;
 }
 .state-tag.wired {
-  background: rgba(50, 145, 255, 0.14);
+  background: rgba(108, 92, 231, 0.14);
   color: var(--sf-accent);
 }
 .state-tag.inline {

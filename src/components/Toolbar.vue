@@ -609,7 +609,7 @@ function toggleSampleMenu() {
 }
 .menu-size.size-tiny    { color: var(--sf-success); background: rgba(0, 204, 136, 0.10); }
 .menu-size.size-small   { color: var(--sf-text-1);  background: var(--sf-bg-3); }
-.menu-size.size-medium  { color: var(--sf-accent);  background: rgba(50, 145, 255, 0.12); }
+.menu-size.size-medium  { color: var(--sf-accent);  background: rgba(108, 92, 231, 0.12); }
 .menu-size.size-large   { color: var(--sf-warning); background: rgba(255, 184, 0, 0.10); }
 .menu-title {
   font-weight: 500;

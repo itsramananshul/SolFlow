@@ -167,9 +167,9 @@ function onDoubleClick() {
   background: var(--sf-accent);
 }
 .sf-splitter:hover {
-  background: rgba(50, 145, 255, 0.05);
+  background: rgba(108, 92, 231, 0.05);
 }
 .sf-splitter.dragging {
-  background: rgba(50, 145, 255, 0.1);
+  background: rgba(108, 92, 231, 0.1);
 }
 </style>

@@ -170,7 +170,7 @@ button.ghost:hover {
 .vue-flow__edge.selected .vue-flow__edge-path {
   stroke: var(--sf-accent) !important;
   stroke-width: 2.5;
-  filter: drop-shadow(0 0 4px rgba(50, 145, 255, 0.4));
+  filter: drop-shadow(0 0 4px rgba(108, 92, 231, 0.4));
 }
 /* Simulation playback: the currently-traversed edge animates a dashed
    stroke flowing along its length. */
@@ -184,12 +184,12 @@ button.ghost:hover {
   stroke-width: 2.6 !important;
   stroke-dasharray: 6 4;
   animation: sf-edge-flow 0.5s linear infinite;
-  filter: drop-shadow(0 0 6px rgba(50, 145, 255, 0.6));
+  filter: drop-shadow(0 0 6px rgba(108, 92, 231, 0.6));
 }
 /* Edges incident to the hovered node light up; unrelated edges dim back. */
 .vue-flow__edge.sf-edge-related .vue-flow__edge-path {
   stroke-width: 2.4;
-  filter: brightness(1.4) drop-shadow(0 0 3px rgba(50, 145, 255, 0.3));
+  filter: brightness(1.4) drop-shadow(0 0 3px rgba(108, 92, 231, 0.3));
 }
 .vue-flow__edge.sf-edge-dim .vue-flow__edge-path {
   opacity: 0.28;
@@ -201,7 +201,7 @@ button.ghost:hover {
   outline: none;
 }
 .vue-flow__selection {
-  background: rgba(50, 145, 255, 0.08);
+  background: rgba(108, 92, 231, 0.08);
   border: 1px solid var(--sf-accent);
   border-radius: 3px;
 }
@@ -214,14 +214,14 @@ button.ghost:hover {
   0%, 100% {
     box-shadow:
       0 0 0 1px var(--sf-accent),
-      0 0 0 6px rgba(50, 145, 255, 0.16),
-      0 0 16px rgba(50, 145, 255, 0.32);
+      0 0 0 6px rgba(108, 92, 231, 0.16),
+      0 0 16px rgba(108, 92, 231, 0.32);
   }
   50% {
     box-shadow:
       0 0 0 1px var(--sf-accent),
-      0 0 0 8px rgba(50, 145, 255, 0.08),
-      0 0 24px rgba(50, 145, 255, 0.55);
+      0 0 0 8px rgba(108, 92, 231, 0.08),
+      0 0 24px rgba(108, 92, 231, 0.55);
   }
 }
 .sf-node.is-running {
@@ -229,8 +229,8 @@ button.ghost:hover {
   animation: sf-running-pulse 1s ease-in-out infinite;
 }
 .sf-node.is-visited {
-  border-color: rgba(0, 204, 136, 0.45) !important;
-  box-shadow: 0 0 0 1px rgba(0, 204, 136, 0.18);
+  border-color: rgba(34, 193, 151, 0.45) !important;
+  box-shadow: 0 0 0 1px rgba(34, 193, 151, 0.18);
   transition: border-color 0.3s ease, box-shadow 0.3s ease;
 }
 .sf-node.is-failed {
@@ -261,7 +261,7 @@ button.ghost:hover {
   border-left: 2px solid var(--sf-cat-entry);
   background: linear-gradient(
     90deg,
-    rgba(0, 204, 136, 0.05) 0%,
+    rgba(34, 193, 151, 0.05) 0%,
     var(--sf-bg-2) 24%
   );
 }

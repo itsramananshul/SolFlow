@@ -829,7 +829,7 @@ function formatLiteralPreview(t: string, v: string): string {
   letter-spacing: 0.3px;
 }
 .pill.wire:hover {
-  background: rgba(50, 145, 255, 0.24);
+  background: rgba(108, 92, 231, 0.24);
   color: var(--sf-text-0);
 }
 .pill.override {
@@ -927,7 +927,7 @@ function formatLiteralPreview(t: string, v: string): string {
 }
 .sf-frame.selected {
   border-color: var(--sf-accent);
-  background: rgba(50, 145, 255, 0.04);
+  background: rgba(108, 92, 231, 0.04);
 }
 .frame-title {
   position: absolute;

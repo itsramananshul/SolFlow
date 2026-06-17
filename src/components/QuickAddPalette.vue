@@ -403,7 +403,7 @@ const headline = computed(() => {
   padding: 6px 12px;
   font-size: 0.625rem;
   color: var(--sf-accent);
-  background: rgba(50, 145, 255, 0.06);
+  background: rgba(108, 92, 231, 0.06);
   border-bottom: 1px solid var(--sf-border);
   text-transform: uppercase;
   letter-spacing: 0.6px;

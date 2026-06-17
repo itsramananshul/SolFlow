@@ -250,7 +250,7 @@ const orderedSamples = computed<Sample[]>(() => {
   inset: 0;
   background: radial-gradient(
       120% 80% at 50% 0%,
-      rgba(50, 145, 255, 0.05) 0%,
+      rgba(108, 92, 231, 0.05) 0%,
       transparent 70%
     ),
     var(--sf-bg-0);

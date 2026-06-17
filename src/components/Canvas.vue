@@ -1037,7 +1037,7 @@ onBeforeUnmount(() => {
       @node-context-menu="onNodeContextMenu"
       @edge-context-menu="onEdgeContextMenu"
       :connection-line-style="{
-        stroke: '#3291ff',
+        stroke: '#6c5ce7',
         strokeWidth: 2,
         strokeDasharray: '6 4',
       }"

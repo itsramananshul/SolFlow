@@ -1,66 +1,68 @@
 /*
- * SolFlow design tokens — Vercel-inspired dark theme.
- * One accent (blue), neutral grays only, no per-category rainbow.
+ * SolFlow design tokens — "platform" vibe (design/platform-vibe).
+ *
+ * Restyled to echo the OpenPrem platform-ts UI: a warm navy dark
+ * surface, a single purple accent (#6c5ce7), soft mint/amber/red
+ * status colors, generous rounding, and soft diffuse shadows.
+ * Same token names + structure as before, so every component picks
+ * up the new look without markup changes — only the values changed.
  */
 
 :root {
-  /* surfaces — true black to graphite */
-  --sf-bg-0: #000000;
-  --sf-bg-1: #0a0a0a;
-  --sf-bg-2: #111111;
-  --sf-bg-3: #171717;
-  --sf-bg-4: #1f1f1f;
-  --sf-bg-5: #2a2a2a;
+  /* surfaces — warm navy (platform dark mode), graphite steps up */
+  --sf-bg-0: #131319;
+  --sf-bg-1: #16171e;
+  --sf-bg-2: #1f2027;
+  --sf-bg-3: #25262f;
+  --sf-bg-4: #2c2e38;
+  --sf-bg-5: #353742;
 
-  --sf-canvas-bg: #000000;
-  --sf-canvas-dot: rgba(255, 255, 255, 0.05);
+  --sf-canvas-bg: #121218;
+  --sf-canvas-dot: rgba(255, 255, 255, 0.045);
 
-  /* text scale */
-  --sf-text-0: #ededed;
-  --sf-text-1: #a1a1a1;
-  --sf-text-2: #707070;
-  /* --sf-text-3 bumped from #4a4a4a → #5a5a5a so muted-but-real text
-     (helper blurbs, placeholders, secondary labels) meets WCAG AA
-     against the canvas-bg / bg-0 surfaces. */
-  --sf-text-3: #5a5a5a;
+  /* text scale — platform light-on-navy */
+  --sf-text-0: #e7e8ef;
+  --sf-text-1: #b4b8c7;
+  --sf-text-2: #8b90a3;
+  --sf-text-3: #6b7082;
 
-  /* borders */
-  --sf-border: rgba(255, 255, 255, 0.08);
-  --sf-border-strong: rgba(255, 255, 255, 0.14);
-  --sf-border-bright: rgba(255, 255, 255, 0.22);
+  /* borders — soft, slightly warm */
+  --sf-border: rgba(255, 255, 255, 0.09);
+  --sf-border-strong: rgba(255, 255, 255, 0.15);
+  --sf-border-bright: rgba(255, 255, 255, 0.24);
 
-  /* single accent (Vercel-ish blue) */
-  --sf-accent: #3291ff;
-  --sf-accent-hover: #52a8ff;
-  --sf-accent-dim: rgba(50, 145, 255, 0.14);
-  --sf-accent-ring: rgba(50, 145, 255, 0.32);
+  /* single accent — platform purple */
+  --sf-accent: #6c5ce7;
+  --sf-accent-hover: #7d6ef2;
+  --sf-accent-dim: rgba(108, 92, 231, 0.18);
+  --sf-accent-ring: rgba(108, 92, 231, 0.34);
 
-  /* status — used sparingly, only for diagnostics */
-  --sf-success: #00cc88;
-  --sf-warning: #f5a623;
-  --sf-error: #ff4d4f;
+  /* status — platform mint / amber / red */
+  --sf-success: #22c197;
+  --sf-warning: #ff9558;
+  --sf-error: #e5484d;
 
   /* type indicator colors — muted, only used for handle dots */
   --sf-type-int: #d4a76a;
   --sf-type-float: #bf8a5d;
-  --sf-type-bool: #a07ec3;
-  --sf-type-str: #7ea66a;
-  --sf-type-char: #7ea66a;
+  --sf-type-bool: #a78bfa;
+  --sf-type-str: #5fcf9f;
+  --sf-type-char: #5fcf9f;
   --sf-type-array: #d4a76a;
-  --sf-type-struct: #5d8acf;
-  --sf-type-enum: #4a9aac;
-  --sf-type-any: #888888;
+  --sf-type-struct: #7aa2f7;
+  --sf-type-enum: #4cc9d6;
+  --sf-type-any: #8b90a3;
 
-  /* category indicators — muted dots only, NOT used for big colored headers */
-  --sf-cat-trigger: #e8a657;
-  --sf-cat-flow: #5d8acf;
+  /* category indicators — muted dots only, NOT big colored headers */
+  --sf-cat-trigger: #ff9558;
+  --sf-cat-flow: #7aa2f7;
   --sf-cat-variable: #d4a76a;
-  --sf-cat-operator: #a07ec3;
-  --sf-cat-literal: #7ea66a;
-  --sf-cat-access: #4a9aac;
-  --sf-cat-call: #5d8acf;
-  --sf-cat-io: #c97e7e;
-  --sf-cat-entry: #00cc88;
+  --sf-cat-operator: #a78bfa;
+  --sf-cat-literal: #5fcf9f;
+  --sf-cat-access: #4cc9d6;
+  --sf-cat-call: #7aa2f7;
+  --sf-cat-io: #f08a8a;
+  --sf-cat-entry: #22c197;
 
   /* spacing scale (4px base) */
   --sf-space-1: 4px;
@@ -71,10 +73,10 @@
   --sf-space-6: 32px;
   --sf-space-7: 48px;
 
-  /* radii */
-  --sf-radius-sm: 4px;
-  --sf-radius-md: 6px;
-  --sf-radius-lg: 8px;
+  /* radii — rounder, platform feel (inputs/buttons 8-10, panels 14-16) */
+  --sf-radius-sm: 8px;
+  --sf-radius-md: 11px;
+  --sf-radius-lg: 16px;
 
   /* typography */
   --sf-font-sans:
@@ -82,19 +84,14 @@
   --sf-font-mono:
     'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
-  /* shadows — minimal, only for elevated panels */
-  --sf-shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
-  --sf-shadow-2: 0 4px 12px rgba(0, 0, 0, 0.5);
-  --sf-shadow-3: 0 12px 32px rgba(0, 0, 0, 0.6);
+  /* shadows — soft + diffuse (platform style) */
+  --sf-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --sf-shadow-2: 0 6px 24px rgba(0, 0, 0, 0.35);
+  --sf-shadow-3: 0 26px 64px rgba(0, 0, 0, 0.45);
 
   /*
    * Layered z-index scale. Components must use these vars instead of
    * arbitrary numbers so overlays don't collide.
-   *  Vue Flow's internal stack (1-5) covers canvas-bg / edges / nodes.
-   *  ambient = empty-state hint, ambient toasts
-   *  drawer  = diagnostics drawer
-   *  popover = context menu, quick-add, tooltips
-   *  modal / modal-top = Run modal / Help modal
    */
   --sf-z-ambient: 6;
   --sf-z-drawer: 10;

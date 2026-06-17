@@ -1026,7 +1026,7 @@ function onBackdrop(e: MouseEvent) {
   border-color: var(--sf-border-strong);
 }
 .example-chip {
-  border-color: rgba(50, 145, 255, 0.18);
+  border-color: rgba(108, 92, 231, 0.18);
 }
 
 .error-banner {
