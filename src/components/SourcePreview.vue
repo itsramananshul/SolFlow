@@ -499,7 +499,7 @@ function downloadEdited() {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--sf-bg-1);
+  background: var(--sf-bg-2);
 }
 .header {
   display: flex;

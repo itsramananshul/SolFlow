@@ -504,7 +504,7 @@ function downloadSol() {
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--sf-border);
-  background: var(--sf-bg-1);
+  background: var(--sf-bg-2);
   min-height: 0;
   min-width: 0;
   overflow: hidden;

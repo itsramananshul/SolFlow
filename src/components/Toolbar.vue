@@ -439,10 +439,10 @@ function toggleSampleMenu() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 clamp(8px, 1.5vw, 16px);
-  background: var(--sf-bg-0);
+  padding: 0 clamp(12px, 1.5vw, 20px);
+  background: var(--sf-bg-2);
   border-bottom: 1px solid var(--sf-border);
-  height: clamp(36px, 3.2vw, 44px);
+  height: clamp(52px, 4vw, 60px);
   flex-shrink: 0;
 }
 .brand {

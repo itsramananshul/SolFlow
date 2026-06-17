@@ -40,6 +40,9 @@ const minimapMaskColor = computed(() =>
 const minimapStrokeColor = computed(() =>
   appTheme.value === 'dark' ? 'rgba(255, 255, 255, 0.18)' : 'rgba(45, 43, 70, 0.16)',
 );
+const canvasDotColor = computed(() =>
+  appTheme.value === 'dark' ? 'rgba(255, 255, 255, 0.07)' : 'rgba(45, 43, 70, 0.13)',
+);
 
 const graph = useGraphStore();
 const ui = useUIStore();
@@ -1058,7 +1061,7 @@ onBeforeUnmount(() => {
       :zoom-on-double-click="false"
       :delete-key-code="['Backspace', 'Delete']"
     >
-      <Background variant="dots" :pattern-color="'rgba(255, 255, 255, 0.06)'" :gap="20" :size="1" />
+      <Background variant="dots" :pattern-color="canvasDotColor" :gap="22" :size="1.4" />
       <Controls :show-interactive="false">
         <!--
           Fit-to-selection button slotted into Vue Flow's built-in

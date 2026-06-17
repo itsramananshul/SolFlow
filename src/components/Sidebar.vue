@@ -94,7 +94,7 @@ const blocksCount = computed(() => blocks.count);
 .sidebar {
   display: flex;
   flex-direction: column;
-  background: var(--sf-bg-1);
+  background: var(--sf-bg-2);
   border-right: 1px solid var(--sf-border);
   min-height: 0;
 }

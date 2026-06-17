@@ -650,7 +650,7 @@ function formatLiteralPreview(t: string, v: string): string {
 <style scoped>
 .sf-node {
   background: var(--sf-bg-2);
-  border: 1px solid var(--sf-border);
+  border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-md);
   min-width: 220px;
   max-width: 400px;
@@ -658,9 +658,10 @@ function formatLiteralPreview(t: string, v: string): string {
   position: relative;
   user-select: none;
   cursor: grab;
+  box-shadow: var(--sf-shadow-1);
   transition:
     border-color 0.12s ease,
-    box-shadow 0.12s ease,
+    box-shadow 0.14s ease,
     transform 0.12s ease,
     background 0.12s ease;
 }
