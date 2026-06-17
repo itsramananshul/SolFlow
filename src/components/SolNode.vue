@@ -649,16 +649,30 @@ function formatLiteralPreview(t: string, v: string): string {
 
 <style scoped>
 .sf-node {
-  background: var(--sf-bg-2);
-  border: 1px solid var(--sf-border-strong);
-  border-radius: var(--sf-radius-md);
+  /* Clean white elevated card, like the reference. Local token overrides flip
+     the whole node subtree to a light surface with dark content, so the card
+     reads as white even on the dark canvas. */
+  --sf-bg-1: #f3f5fa;
+  --sf-bg-2: #ffffff;
+  --sf-bg-3: #eef1f7;
+  --sf-bg-4: #e6e9f2;
+  --sf-text-0: #20222e;
+  --sf-text-1: #474a5b;
+  --sf-text-2: #8b90a3;
+  --sf-text-3: #b4b8c6;
+  --sf-border: #edeef4;
+  --sf-border-strong: #e2e4ee;
+  background: #ffffff;
+  color: var(--sf-text-0);
+  border: 1px solid rgba(20, 22, 34, 0.06);
+  border-radius: 16px;
   min-width: 220px;
   max-width: 400px;
   font-size: 0.6875rem;
   position: relative;
   user-select: none;
   cursor: grab;
-  box-shadow: var(--sf-shadow-1);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.26), 0 2px 6px rgba(0, 0, 0, 0.14);
   transition:
     border-color 0.12s ease,
     box-shadow 0.14s ease,
@@ -669,14 +683,14 @@ function formatLiteralPreview(t: string, v: string): string {
   cursor: grabbing;
 }
 .sf-node:hover {
-  border-color: var(--sf-border-strong);
-  box-shadow: var(--sf-shadow-2);
+  border-color: rgba(20, 22, 34, 0.10);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.32), 0 3px 8px rgba(0, 0, 0, 0.18);
 }
 .sf-node.selected {
   border-color: var(--sf-accent);
   box-shadow:
-    0 0 0 1px var(--sf-accent-ring),
-    var(--sf-shadow-2);
+    0 0 0 2px var(--sf-accent-ring),
+    0 18px 40px rgba(0, 0, 0, 0.32);
 }
 
 .header {
