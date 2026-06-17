@@ -1,228 +1,187 @@
 /**
- * Typed mirror of the SOL compiler's AST.
+ * Typed mirror of the canonical SOL compiler's AST
+ * (`openprem-sol-v2`, crate `sol/`).
  *
  * These types match the JSON serde produces from
- * `compiler/src/parser.rs::Ast`, `compiler/src/parser.rs::Type`,
- * and `compiler/src/lexer.rs::Token`. The shape is pinned by the
- * `ast_json_shape_snapshot` test in `compiler/tests/serde_roundtrip.rs`
- * — any drift breaks that test and the importer in lockstep.
+ * `sol/src/ast.rs` (externally tagged enums). The shapes here were
+ * confirmed empirically by calling the WASM bridge's
+ * `parse_source_json` on representative programs and reading the
+ * returned `value` (the `Program`). If `sol/src/ast.rs` changes its
+ * serde shape, regenerate the import fixtures and update this file
+ * in lockstep.
  *
- * Why we mirror by hand:
- * - We deliberately don't ship Rust-generated types (`tsify`, etc.)
- *   yet because the AST shape is still in flux and a wrapper costs
- *   more than it saves at this stage.
- * - Keeping the unions narrow lets the importer pattern-match
- *   exhaustively with TS discriminated-union analysis.
+ * Serde encoding rules used here:
+ * - Enums are externally tagged: each variant is a single-key object
+ *   (`{ "Let": { ... } }`), or a plain string for unit variants
+ *   (`"Int"`, `"Add"`).
+ * - Tuple variants become JSON arrays:
+ *   `BinOp(Box<Expr>, BinOp, Box<Expr>)` → `{ "BinOp": [lhs, op, rhs] }`.
+ * - Struct fields keep their Rust names, including the trailing
+ *   underscore on `type_` (Rust reserves `type`).
+ *
+ * Keeping the unions narrow lets the importer pattern-match
+ * exhaustively with TS discriminated-union analysis.
  */
 
 // ----------------------------------------------------------------
-//  Type — `parser.rs::Type`
+//  Type — `ast.rs::Type`
 // ----------------------------------------------------------------
 
 /** Built-in primitive types — serialized as plain strings. */
-export type PrimitiveType =
-  | 'Void'
-  | 'Integer'
-  | 'Float'
-  | 'String'
-  | 'Char'
-  | 'Bool';
+export type PrimitiveType = 'Bool' | 'Int' | 'Float' | 'Char' | 'Str';
 
 export type SolType =
   | PrimitiveType
-  | { Tuple: SolType[] }
-  | { Array: { size: number | null; inner: SolType } }
-  | { Ident: string }
-  | { Function: { params: SolType[]; ret: SolType } };
+  | { Array: SolType } // `[]T` — array of T
+  | { Named: string }; // struct or enum reference
 
-/** Convenience type guards (TS narrowing). */
+/** Convenience type guard (TS narrowing). */
 export const isPrimitiveType = (t: SolType): t is PrimitiveType =>
   typeof t === 'string';
 
 // ----------------------------------------------------------------
-//  Token — `lexer.rs::Token` (only the variants used as op fields)
+//  Operators — `ast.rs::BinOp` / `ast.rs::UnaryOp`
 // ----------------------------------------------------------------
 
-/**
- * Operator tokens that appear inside `ExprBinary.op` and
- * `ExprUnary.op`. The lexer's Token enum has many more variants
- * (delimiters, keywords, literals) but those never appear in AST
- * op fields, so we keep the union narrow to what the importer
- * actually has to handle.
- */
-export type BinOpToken =
-  // Assignment (yes, `=` is a binary op in this AST — see notes)
+export type BinOp =
+  | 'Add'
+  | 'Sub'
+  | 'Mul'
+  | 'Div'
   | 'Eq'
-  // Arithmetic
-  | 'Plus' | 'Dash' | 'Star' | 'Slash'
-  // Comparison
-  | 'EqEq' | 'BangEq' | 'MoreThan' | 'LessThan' | 'MoreEq' | 'LessEq'
-  // Logical
-  | 'AmpAmp' | 'PipePipe'
-  // Bitwise
-  | 'Ampersand' | 'Pipe' | 'Caret' | 'LShift' | 'RShift';
+  | 'Ne'
+  | 'Lt'
+  | 'Gt'
+  | 'Le'
+  | 'Ge'
+  | 'And'
+  | 'Or';
 
-export type UnaryOpToken = 'Dash' | 'Bang' | 'Tilde';
+export type UnaryOp = 'Neg' | 'Not';
 
 // ----------------------------------------------------------------
-//  Ast — `parser.rs::Ast`
+//  Expr — `ast.rs::Expr`
+// ----------------------------------------------------------------
+
+export type Expr =
+  | { Int: number }
+  | { Float: number }
+  | { Bool: boolean }
+  | { Char: string } // serde serializes char as a 1-char string
+  | { Str: string }
+  | { Array: Expr[] }
+  | { StructInstance: { name: string; fields: [string, Expr][] } }
+  | { EnumVariant: { enum_name: string; variant: string } }
+  | { Ident: string }
+  | { MemberAccess: [Expr, string] }
+  | { Index: [Expr, Expr] }
+  | { BinOp: [Expr, BinOp, Expr] }
+  | { UnaryOp: [Expr, UnaryOp] }
+  | { Call: [Expr, Expr[]] }
+  | { WorkflowCall: { capability_expr: Expr; params: Expr } }
+  | { NamespaceCall: { namespace: Expr; name: string; args: Expr[] } };
+
+// ----------------------------------------------------------------
+//  Stmt / Target — `ast.rs::Stmt`, `ast.rs::Target`
 // ----------------------------------------------------------------
 
 /**
- * Top-level program is just `Vec<Ast>` — declarations + maybe stray
- * statements that the parser accepts.
+ * Assignment target. NOTE (2026-06): the canonical parser does not
+ * currently parse assignment statements at all (`parse_stmt` produces
+ * Let/If/While/For/Return/Emit/Expr only), so `Stmt::Assign` and
+ * `Target` are never present in real parser output yet. They are
+ * mirrored here to stay faithful to `ast.rs`; the importer tolerates
+ * but does not expect them.
  */
-export type Program = Ast[];
+export type Target =
+  | { Ident: string }
+  | { MemberAccess: [Target, string] }
+  | { Index: [Target, Expr] };
 
-/**
- * Tagged union mirroring `Ast`. Each variant is wrapped in a
- * single-key object (serde's external-tagging) so TS narrowing
- * works on the variant key:
- *
- *   if ('DeclFunc' in node) { node.DeclFunc.name; ... }
- *
- * Unit variants are plain strings (`"ExprUndefined"`).
- */
-export type Ast =
-  // ---------- Declarations ----------
-  | { DeclFunc: DeclFunc }
-  | { DeclExtFunc: DeclExtFunc }
-  | { DeclVar: DeclVar }
-  | { DeclStruct: DeclStruct }
-  | { DeclEnum: DeclEnum }
-
-  // ---------- Statements ----------
-  | { Block: Block }
-  | { StmtImport: StmtImport }
-  | { StmtIf: StmtIf }
-  | { StmtWhile: StmtWhile }
-  | { StmtFor: StmtFor }
-
-  // ---------- Expressions ----------
-  | { ExprAssign: { var_name: string; value: Ast } }
-  | { ExprBinary: { lhs: Ast; rhs: Ast; op: BinOpToken } }
-  | { ExprUnary: { child: Ast; op: UnaryOpToken } }
-  | { ExprFuncCall: { name: string; args: Ast[] } }
-  | { ExprMemAcc: { lhs: Ast; member: string } }
-  | { ExprEnumVar: { name: string; var: string } }
-  | { ExprArrAcc: { lhs: Ast; index: Ast } }
-  | { ExprReturn: { val: Ast | null } }
-  | { ExprInteger: number }
-  | { ExprFloat: number }
-  | { ExprString: string }
-  | { ExprChar: string } // serde serializes char as a 1-char string
-  | { ExprBool: boolean }
-  | 'ExprUndefined'
-  | { ExprVar: string }
-  | { ExprStructInit: { name: string; fields: [string, Ast][] } }
-  | { ExprArrayInit: { values: Ast[] } };
-
-// Struct payloads broken out for readability.
-
-/**
- * Source byte range (B.D c35). Optional on each variant below — the
- * parser populates it for these 10 struct variants; old AST JSON
- * (pre-spans) deserializes with `span = undefined` and the
- * analyzer + importer fall back to enclosing-block spans or textual
- * heuristics.
- */
-export interface AstSourceSpan {
-  start: number;
-  end: number;
-}
-
-export interface DeclFunc {
-  name: string;
-  /** Vec<(String, Type)> → array-of-pairs in JSON. */
-  params: [string, SolType][];
-  ret: SolType;
-  body: Ast;
-  /** TypeTableId; usize::MAX (large number) until the analyzer runs. */
-  scope: number;
-  span?: AstSourceSpan;
-}
-
-export interface DeclExtFunc {
-  name: string;
-  params: [string, SolType][];
-  ret: SolType;
-  span?: AstSourceSpan;
-}
-
-export interface DeclVar {
-  name: string;
-  kind: SolType;
-  value: Ast | null;
-  span?: AstSourceSpan;
-}
-
-export interface DeclStruct {
-  name: string;
-  /** HashMap<String, Type> → plain JSON object. Order is NOT stable
-   *  (serde + HashMap); importers should sort by name. */
-  fields: Record<string, SolType>;
-  span?: AstSourceSpan;
-}
-
-export interface DeclEnum {
-  name: string;
-  /** HashMap<String, isize> → plain JSON object. */
-  variants: Record<string, number>;
-  span?: AstSourceSpan;
-}
+export type Stmt =
+  | { Let: { name: string; type_: SolType; value: Expr } }
+  | { Assign: { target: Target; value: Expr } }
+  | { If: { condition: Expr; then: Block; else_: Block | null } }
+  | { While: { condition: Expr; body: Block } }
+  | { For: { item: string; iter: Expr; body: Block } }
+  | { Return: Expr | null }
+  | { Expr: Expr }
+  | { Emit: string };
 
 export interface Block {
-  block: Ast[];
-  scope: number;
-  span?: AstSourceSpan;
+  stmts: Stmt[];
 }
 
-export interface StmtImport {
-  path: string[];
-  alias: string | null;
-  span?: AstSourceSpan;
+// ----------------------------------------------------------------
+//  Top-level — `ast.rs::TopLevel` and friends
+// ----------------------------------------------------------------
+
+export interface Param {
+  name: string;
+  type_: SolType;
 }
 
-export interface StmtIf {
-  condition: Ast;
-  body: Ast;
-  alt: Ast | null;
-  span?: AstSourceSpan;
+export interface FunctionDecl {
+  name: string;
+  params: Param[];
+  /** `null` when the function declares no return type. */
+  return_type: SolType | null;
+  body: Block;
 }
 
-export interface StmtWhile {
-  condition: Ast;
-  body: Ast;
-  span?: AstSourceSpan;
+export interface Field {
+  name: string;
+  type_: SolType;
 }
 
-export interface StmtFor {
-  elem_name: string;
-  array: Ast;
-  body: Ast;
-  span?: AstSourceSpan;
+export interface StructDecl {
+  name: string;
+  /** Insertion order is preserved (Vec in Rust, not HashMap). */
+  fields: Field[];
+}
+
+export interface EnumDecl {
+  name: string;
+  /** Variant names only — the canonical enum has no explicit values. */
+  variants: string[];
+}
+
+export interface WorkflowDecl {
+  name: string;
+  body: Block;
+}
+
+export type ImportSpec =
+  | { Module: string }
+  | { Named: { name: string; module: string } };
+
+export interface ImportDecl {
+  spec: ImportSpec;
+}
+
+/**
+ * A top-level item — serde external tagging means exactly one key.
+ *
+ *   if ('Workflow' in item) { item.Workflow.name; ... }
+ */
+export type TopLevel =
+  | { Function: FunctionDecl }
+  | { Struct: StructDecl }
+  | { Enum: EnumDecl }
+  | { Workflow: WorkflowDecl }
+  | { Import: ImportDecl };
+
+/** A complete parsed program. */
+export interface Program {
+  items: TopLevel[];
 }
 
 // ----------------------------------------------------------------
 //  Narrow helpers
 // ----------------------------------------------------------------
 
-/** Return the variant key of an Ast node ("DeclFunc", "ExprInteger", etc.). */
-export function astKind(a: Ast): string {
-  if (typeof a === 'string') return a;
-  // Tagged-union: each variant is a single-key object.
-  for (const k of Object.keys(a)) return k;
+/** Return the variant key of a tagged-union node ("Workflow", "Let", "BinOp", …). */
+export function variantKey(node: object): string {
+  for (const k of Object.keys(node)) return k;
   return 'Unknown';
-}
-
-/** Quick test for "is this an assignment expression?" The parser
- *  encodes assignment as `ExprBinary { op: 'Eq' }` rather than
- *  `ExprAssign` in current builds, so the importer needs both. */
-export function isAssignment(
-  a: Ast,
-): a is { ExprBinary: { lhs: Ast; rhs: Ast; op: 'Eq' } } | { ExprAssign: { var_name: string; value: Ast } } {
-  if (typeof a === 'string') return false;
-  if ('ExprAssign' in a) return true;
-  if ('ExprBinary' in a && a.ExprBinary.op === 'Eq') return true;
-  return false;
 }

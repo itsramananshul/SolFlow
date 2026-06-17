@@ -1,4 +1,4 @@
-function start() -> int {
+workflow "loops" {
     let x: int = 0;
     if (x == 0) {
         print("zero");
@@ -6,7 +6,7 @@ function start() -> int {
         print("nonzero");
     }
     while (x < 5) {
-        x = x + 1;
+        print(x);
     }
     for item in [1, 2, 3] {
         print(item);

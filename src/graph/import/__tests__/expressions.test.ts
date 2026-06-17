@@ -1,152 +1,124 @@
 /**
- * Pure unit tests for the AST → SOL expression printer.
+ * Pure unit tests for the canonical AST → SOL expression printer.
  * No WASM needed — the printer takes typed AST values directly.
+ * Mirrors `sol/src/format.rs::fmt_expr`.
  */
 import { describe, expect, it } from 'vitest';
-import type { Ast } from '@/compiler/ast';
+import type { Expr } from '@/compiler/ast';
 import { stringifyExpr } from '../expressions';
 
 describe('stringifyExpr — primitives', () => {
   it('integers', () => {
-    expect(stringifyExpr({ ExprInteger: 42 } as Ast)).toBe('42');
-    expect(stringifyExpr({ ExprInteger: 0 } as Ast)).toBe('0');
-    expect(stringifyExpr({ ExprInteger: -7 } as Ast)).toBe('-7');
+    expect(stringifyExpr({ Int: 42 })).toBe('42');
+    expect(stringifyExpr({ Int: 0 })).toBe('0');
+    expect(stringifyExpr({ Int: -7 })).toBe('-7');
   });
   it('floats always carry a decimal point', () => {
-    expect(stringifyExpr({ ExprFloat: 3.14 } as Ast)).toBe('3.14');
+    expect(stringifyExpr({ Float: 3.14 })).toBe('3.14');
     // 1.0 → toString() drops the .0, printer must re-add it.
-    expect(stringifyExpr({ ExprFloat: 1.0 } as Ast)).toBe('1.0');
+    expect(stringifyExpr({ Float: 1.0 })).toBe('1.0');
   });
   it('strings are quoted + escaped', () => {
-    expect(stringifyExpr({ ExprString: 'hi' } as Ast)).toBe('"hi"');
-    expect(stringifyExpr({ ExprString: 'he said "x"' } as Ast)).toBe(
-      '"he said \\"x\\""',
-    );
-    expect(stringifyExpr({ ExprString: 'a\\b' } as Ast)).toBe('"a\\\\b"');
+    expect(stringifyExpr({ Str: 'hi' })).toBe('"hi"');
+    expect(stringifyExpr({ Str: 'he said "x"' })).toBe('"he said \\"x\\""');
+    expect(stringifyExpr({ Str: 'a\\b' })).toBe('"a\\\\b"');
   });
   it('chars are single-quoted', () => {
-    expect(stringifyExpr({ ExprChar: 'a' } as Ast)).toBe("'a'");
+    expect(stringifyExpr({ Char: 'a' })).toBe("'a'");
   });
   it('bools', () => {
-    expect(stringifyExpr({ ExprBool: true } as Ast)).toBe('true');
-    expect(stringifyExpr({ ExprBool: false } as Ast)).toBe('false');
+    expect(stringifyExpr({ Bool: true })).toBe('true');
+    expect(stringifyExpr({ Bool: false })).toBe('false');
   });
-  it('vars', () => {
-    expect(stringifyExpr({ ExprVar: 'count' } as Ast)).toBe('count');
+  it('idents', () => {
+    expect(stringifyExpr({ Ident: 'count' })).toBe('count');
   });
 });
 
 describe('stringifyExpr — operators', () => {
   it('binary ops are parenthesized', () => {
-    const ast: Ast = {
-      ExprBinary: {
-        lhs: { ExprInteger: 1 },
-        rhs: { ExprInteger: 2 },
-        op: 'Plus',
-      },
-    };
-    expect(stringifyExpr(ast)).toBe('(1 + 2)');
+    expect(stringifyExpr({ BinOp: [{ Int: 1 }, 'Add', { Int: 2 }] })).toBe('(1 + 2)');
   });
   it('every comparison op', () => {
     const cases: Array<[string, string]> = [
-      ['EqEq', '=='], ['BangEq', '!='], ['LessThan', '<'],
-      ['MoreThan', '>'], ['LessEq', '<='], ['MoreEq', '>='],
+      ['Eq', '=='],
+      ['Ne', '!='],
+      ['Lt', '<'],
+      ['Gt', '>'],
+      ['Le', '<='],
+      ['Ge', '>='],
     ];
-    for (const [token, surface] of cases) {
-      const ast = {
-        ExprBinary: {
-          lhs: { ExprVar: 'a' },
-          rhs: { ExprVar: 'b' },
-          op: token as never,
-        },
-      } as Ast;
-      expect(stringifyExpr(ast)).toBe(`(a ${surface} b)`);
+    for (const [op, surface] of cases) {
+      const expr = { BinOp: [{ Ident: 'a' }, op, { Ident: 'b' }] } as Expr;
+      expect(stringifyExpr(expr)).toBe(`(a ${surface} b)`);
     }
   });
-  it('unary ops', () => {
-    expect(
-      stringifyExpr({
-        ExprUnary: { child: { ExprBool: true }, op: 'Bang' },
-      } as Ast),
-    ).toBe('!(true)');
-    expect(
-      stringifyExpr({
-        ExprUnary: { child: { ExprInteger: 5 }, op: 'Dash' },
-      } as Ast),
-    ).toBe('-(5)');
+  it('unary ops (parenthesized, matches fmt_expr)', () => {
+    expect(stringifyExpr({ UnaryOp: [{ Bool: true }, 'Not'] })).toBe('(!true)');
+    expect(stringifyExpr({ UnaryOp: [{ Int: 5 }, 'Neg'] })).toBe('(-5)');
   });
 });
 
 describe('stringifyExpr — compound', () => {
   it('function call', () => {
-    const ast: Ast = {
-      ExprFuncCall: {
-        name: 'add',
-        args: [{ ExprInteger: 1 }, { ExprInteger: 2 }],
-      },
-    };
-    expect(stringifyExpr(ast)).toBe('add(1, 2)');
+    const expr: Expr = { Call: [{ Ident: 'add' }, [{ Int: 1 }, { Int: 2 }]] };
+    expect(stringifyExpr(expr)).toBe('add(1, 2)');
   });
   it('member access', () => {
-    expect(
-      stringifyExpr({
-        ExprMemAcc: { lhs: { ExprVar: 'p' }, member: 'x' },
-      } as Ast),
-    ).toBe('p.x');
+    expect(stringifyExpr({ MemberAccess: [{ Ident: 'p' }, 'x'] })).toBe('p.x');
+  });
+  it('index access', () => {
+    expect(stringifyExpr({ Index: [{ Ident: 'a' }, { Int: 0 }] })).toBe('a[0]');
   });
   it('array literal', () => {
-    expect(
-      stringifyExpr({
-        ExprArrayInit: {
-          values: [{ ExprInteger: 1 }, { ExprInteger: 2 }, { ExprInteger: 3 }],
-        },
-      } as Ast),
-    ).toBe('[1, 2, 3]');
+    expect(stringifyExpr({ Array: [{ Int: 1 }, { Int: 2 }, { Int: 3 }] })).toBe('[1, 2, 3]');
   });
   it('enum variant', () => {
     expect(
-      stringifyExpr({ ExprEnumVar: { name: 'Status', var: 'Active' } } as Ast),
+      stringifyExpr({ EnumVariant: { enum_name: 'Status', variant: 'Active' } }),
     ).toBe('Status::Active');
   });
-  it('struct init', () => {
+  it('named struct instance', () => {
     expect(
       stringifyExpr({
-        ExprStructInit: {
+        StructInstance: {
           name: 'Point',
           fields: [
-            ['x', { ExprInteger: 1 }],
-            ['y', { ExprInteger: 2 }],
+            ['x', { Int: 1 }],
+            ['y', { Int: 2 }],
           ],
         },
-      } as Ast),
+      }),
     ).toBe('Point { x: 1, y: 2 }');
   });
-  it('nested binary op recurses with parens', () => {
-    const ast: Ast = {
-      ExprBinary: {
-        lhs: {
-          ExprBinary: {
-            lhs: { ExprInteger: 1 },
-            rhs: { ExprInteger: 2 },
-            op: 'Plus',
-          },
+  it('anonymous struct instance (call params)', () => {
+    expect(
+      stringifyExpr({
+        StructInstance: { name: '', fields: [['msg', { Str: 'hi' }]] },
+      }),
+    ).toBe('{ msg: "hi" }');
+  });
+  it('workflow call', () => {
+    expect(
+      stringifyExpr({
+        WorkflowCall: {
+          capability_expr: { Str: 'alert.fire' },
+          params: { StructInstance: { name: '', fields: [['n', { Int: 3 }]] } },
         },
-        rhs: { ExprInteger: 3 },
-        op: 'Star',
-      },
+      }),
+    ).toBe('call("alert.fire", { n: 3 })');
+  });
+  it('namespace call', () => {
+    expect(
+      stringifyExpr({
+        NamespaceCall: { namespace: { Ident: 'math' }, name: 'abs', args: [{ Int: 5 }] },
+      }),
+    ).toBe('math::abs(5)');
+  });
+  it('nested binary op recurses with parens', () => {
+    const expr: Expr = {
+      BinOp: [{ BinOp: [{ Int: 1 }, 'Add', { Int: 2 }] }, 'Mul', { Int: 3 }],
     };
-    expect(stringifyExpr(ast)).toBe('((1 + 2) * 3)');
-  });
-});
-
-describe('stringifyExpr — degenerate', () => {
-  it('ExprUndefined renders as comment', () => {
-    expect(stringifyExpr('ExprUndefined' as Ast)).toBe('/* undefined */');
-  });
-  it('unprintable statement variant degrades gracefully', () => {
-    // Pass an actual Block AST — not an expression. Printer should
-    // not throw; it returns a sentinel comment.
-    const result = stringifyExpr({ Block: { block: [], scope: 0 } } as Ast);
-    expect(result).toMatch(/unprintable/);
+    expect(stringifyExpr(expr)).toBe('((1 + 2) * 3)');
   });
 });

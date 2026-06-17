@@ -1,144 +1,124 @@
 /**
- * AST expression → SOL string printer.
+ * Canonical AST expression → SOL string printer.
  *
- * Used by the importer to convert AST expressions back into SOL
- * text for inline-expression node fields (e.g. `let x: int = a + b;`
- * embeds `a + b` as the `value` port's inline expression).
+ * Used by the importer to convert AST expressions back into SOL text
+ * for inline-expression node fields (e.g. `let x: int = a + b;` embeds
+ * `(a + b)` as the `value` port's inline expression).
  *
- * Why we print rather than reconstruct as nodes:
- * - SolFlow's graph schema models expressions as inline strings on
- *   action/control nodes, not as a sub-graph. The expression IS the
- *   data, just expressed textually.
- * - Round-tripping through serialization preserves semantics; the
- *   user can break the expression apart into graph nodes later if
- *   they want, but the canonical compiler-parseable form is
- *   preserved as-is.
+ * This mirrors the canonical Rust pretty-printer `sol/src/format.rs`
+ * (`fmt_expr`) exactly so the text we embed re-parses to an equal
+ * expression. Round-trip stability depends on that match: if you
+ * change `fmt_expr`, change this in lockstep.
  *
- * Not goals (yet):
+ * Not goals:
  * - Source-text fidelity — we re-print from AST, so whitespace and
- *   parenthesization may differ from the original. Equivalent
- *   semantics, not byte-identical output.
- * - Operator-precedence-minimal parens — we always parenthesize
- *   nested binary ops to be safe rather than computing minimum
- *   precedence levels.
+ *   parenthesization may differ from the original input. Equivalent
+ *   semantics, not byte-identical to the user's typing.
  */
 
-import type { Ast, BinOpToken, UnaryOpToken } from '@/compiler/ast';
+import type { BinOp, Expr, UnaryOp } from '@/compiler/ast';
 
-/** Map BinOpToken → SOL surface syntax. */
-const BIN_OP_SYNTAX: Record<BinOpToken, string> = {
-  Eq: '=',
-  Plus: '+',
-  Dash: '-',
-  Star: '*',
-  Slash: '/',
-  EqEq: '==',
-  BangEq: '!=',
-  MoreThan: '>',
-  LessThan: '<',
-  MoreEq: '>=',
-  LessEq: '<=',
-  AmpAmp: '&&',
-  PipePipe: '||',
-  Ampersand: '&',
-  Pipe: '|',
-  Caret: '^',
-  LShift: '<<',
-  RShift: '>>',
+/** Map canonical BinOp → SOL surface syntax (mirrors fmt_binop). */
+const BIN_OP_SYNTAX: Record<BinOp, string> = {
+  Add: '+',
+  Sub: '-',
+  Mul: '*',
+  Div: '/',
+  Eq: '==',
+  Ne: '!=',
+  Lt: '<',
+  Gt: '>',
+  Le: '<=',
+  Ge: '>=',
+  And: '&&',
+  Or: '||',
 };
 
-const UNARY_OP_SYNTAX: Record<UnaryOpToken, string> = {
-  Dash: '-',
-  Bang: '!',
-  Tilde: '~',
+const UNARY_OP_SYNTAX: Record<UnaryOp, string> = {
+  Neg: '-',
+  Not: '!',
 };
 
-/**
- * Print an AST node as SOL source.
- *
- * Handles every expression variant; for declarations / statements
- * it produces a best-effort representation (the importer normally
- * passes expressions, but the printer doesn't crash on a statement).
- */
-export function stringifyExpr(a: Ast): string {
-  if (typeof a === 'string') {
-    // The only unit variant is `ExprUndefined`. It only appears in
-    // partially-initialized declarations — render as a comment so
-    // the result is still parse-clean.
-    return '/* undefined */';
+/** Print a canonical AST expression as SOL source. */
+export function stringifyExpr(e: Expr): string {
+  if ('Int' in e) return String(e.Int);
+  if ('Float' in e) {
+    // Always emit a decimal point so the lexer parses a Float.
+    const s = String(e.Float);
+    return s.includes('.') || s.includes('e') || s.includes('E') ? s : `${s}.0`;
+  }
+  if ('Bool' in e) return e.Bool ? 'true' : 'false';
+  if ('Char' in e) return `'${escapeChar(e.Char)}'`;
+  if ('Str' in e) return `"${escapeStr(e.Str)}"`;
+
+  if ('Array' in e) {
+    return `[${e.Array.map(stringifyExpr).join(', ')}]`;
   }
 
-  if ('ExprInteger' in a) return String(a.ExprInteger);
-  if ('ExprFloat' in a) {
-    // Always emit a decimal point so the SOL lexer parses it as Float
-    // (otherwise `1` becomes Integer and `let x: float = 1` is a type
-    // mismatch). Float.toString() drops trailing `.0` so we re-add it.
-    const s = String(a.ExprFloat);
-    return s.includes('.') ? s : `${s}.0`;
-  }
-  if ('ExprString' in a) return `"${escapeStr(a.ExprString)}"`;
-  if ('ExprChar' in a) return `'${a.ExprChar}'`;
-  if ('ExprBool' in a) return a.ExprBool ? 'true' : 'false';
-  if ('ExprVar' in a) return a.ExprVar;
-
-  if ('ExprEnumVar' in a) {
-    return `${a.ExprEnumVar.name}::${a.ExprEnumVar.var}`;
+  if ('StructInstance' in e) {
+    const { name, fields } = e.StructInstance;
+    const body = fields.map(([k, v]) => `${k}: ${stringifyExpr(v)}`).join(', ');
+    if (name === '') return body === '' ? '{}' : `{ ${body} }`;
+    return body === '' ? `${name} {}` : `${name} { ${body} }`;
   }
 
-  if ('ExprMemAcc' in a) {
-    return `${stringifyExpr(a.ExprMemAcc.lhs)}.${a.ExprMemAcc.member}`;
+  if ('EnumVariant' in e) {
+    return `${e.EnumVariant.enum_name}::${e.EnumVariant.variant}`;
   }
 
-  if ('ExprArrAcc' in a) {
-    return `${stringifyExpr(a.ExprArrAcc.lhs)}[${stringifyExpr(a.ExprArrAcc.index)}]`;
+  if ('Ident' in e) return e.Ident;
+
+  if ('MemberAccess' in e) {
+    return `${stringifyExpr(e.MemberAccess[0])}.${e.MemberAccess[1]}`;
   }
 
-  if ('ExprFuncCall' in a) {
-    const args = a.ExprFuncCall.args.map(stringifyExpr).join(', ');
-    return `${a.ExprFuncCall.name}(${args})`;
+  if ('Index' in e) {
+    return `${stringifyExpr(e.Index[0])}[${stringifyExpr(e.Index[1])}]`;
   }
 
-  if ('ExprBinary' in a) {
-    const op = BIN_OP_SYNTAX[a.ExprBinary.op] ?? '?';
-    // Always parenthesize children — safe rather than computing
-    // precedence (see file header).
-    return `(${stringifyExpr(a.ExprBinary.lhs)} ${op} ${stringifyExpr(a.ExprBinary.rhs)})`;
+  if ('BinOp' in e) {
+    const [lhs, op, rhs] = e.BinOp;
+    const sym = BIN_OP_SYNTAX[op] ?? '?';
+    // Always parenthesize — matches fmt_expr, avoids precedence math.
+    return `(${stringifyExpr(lhs)} ${sym} ${stringifyExpr(rhs)})`;
   }
 
-  if ('ExprUnary' in a) {
-    const op = UNARY_OP_SYNTAX[a.ExprUnary.op] ?? '?';
-    return `${op}(${stringifyExpr(a.ExprUnary.child)})`;
+  if ('UnaryOp' in e) {
+    const [child, op] = e.UnaryOp;
+    const sym = UNARY_OP_SYNTAX[op] ?? '?';
+    return `(${sym}${stringifyExpr(child)})`;
   }
 
-  if ('ExprAssign' in a) {
-    return `${a.ExprAssign.var_name} = ${stringifyExpr(a.ExprAssign.value)}`;
+  if ('Call' in e) {
+    const [callee, args] = e.Call;
+    return `${stringifyExpr(callee)}(${args.map(stringifyExpr).join(', ')})`;
   }
 
-  if ('ExprArrayInit' in a) {
-    const items = a.ExprArrayInit.values.map(stringifyExpr).join(', ');
-    return `[${items}]`;
+  if ('WorkflowCall' in e) {
+    return `call(${stringifyExpr(e.WorkflowCall.capability_expr)}, ${stringifyExpr(e.WorkflowCall.params)})`;
   }
 
-  if ('ExprStructInit' in a) {
-    const fields = a.ExprStructInit.fields
-      .map(([k, v]) => `${k}: ${stringifyExpr(v)}`)
-      .join(', ');
-    return `${a.ExprStructInit.name} { ${fields} }`;
+  if ('NamespaceCall' in e) {
+    const { namespace, name, args } = e.NamespaceCall;
+    return `${stringifyExpr(namespace)}::${name}(${args.map(stringifyExpr).join(', ')})`;
   }
 
-  if ('ExprReturn' in a) {
-    return a.ExprReturn.val === null
-      ? 'return'
-      : `return ${stringifyExpr(a.ExprReturn.val)}`;
-  }
-
-  // Statement / declaration variants — the importer rarely calls
-  // stringifyExpr on these, but render them as best-effort so the
-  // output is at least debuggable.
-  const variantKey = Object.keys(a)[0] ?? 'unknown';
-  return `/* unprintable: ${variantKey} */`;
+  // Exhaustive above; this is unreachable for well-formed Expr.
+  return '/* unprintable */';
 }
 
 function escapeStr(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t');
+}
+
+function escapeChar(c: string): string {
+  if (c === '\n') return '\\n';
+  if (c === '\t') return '\\t';
+  if (c === '\\') return '\\\\';
+  if (c === "'") return "\\'";
+  return c;
 }

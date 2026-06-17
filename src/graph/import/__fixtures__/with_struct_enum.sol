@@ -1,7 +1,14 @@
-struct Point { x: int, y: int }
-enum Status { Active, Inactive }
+struct Point {
+    x: int;
+    y: int;
+}
 
-function start() -> int {
-    let p: int = 0;
-    return p;
+enum Status {
+    Active;
+    Inactive;
+}
+
+workflow "main" {
+    let p: Point = Point { x: 1, y: 2 };
+    return 0;
 }

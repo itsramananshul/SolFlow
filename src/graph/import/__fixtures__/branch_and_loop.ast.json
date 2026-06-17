@@ -1,200 +1,147 @@
-[
-  {
-    "DeclFunc": {
-      "name": "start",
-      "params": [],
-      "ret": "Integer",
-      "body": {
-        "Block": {
-          "block": [
+{
+  "items": [
+    {
+      "Workflow": {
+        "name": "loops",
+        "body": {
+          "stmts": [
             {
-              "DeclVar": {
+              "Let": {
                 "name": "x",
-                "kind": "Integer",
+                "type_": "Int",
                 "value": {
-                  "ExprInteger": 0
-                },
-                "span": {
-                  "start": 30,
-                  "end": 45
+                  "Int": 0
                 }
               }
             },
             {
-              "StmtIf": {
+              "If": {
                 "condition": {
-                  "ExprBinary": {
-                    "lhs": {
-                      "ExprVar": "x"
+                  "BinOp": [
+                    {
+                      "Ident": "x"
                     },
-                    "rhs": {
-                      "ExprInteger": 0
-                    },
-                    "op": "EqEq"
-                  }
+                    "Eq",
+                    {
+                      "Int": 0
+                    }
+                  ]
                 },
-                "body": {
-                  "Block": {
-                    "block": [
-                      {
-                        "ExprFuncCall": {
-                          "name": "print",
-                          "args": [
+                "then": {
+                  "stmts": [
+                    {
+                      "Expr": {
+                        "Call": [
+                          {
+                            "Ident": "print"
+                          },
+                          [
                             {
-                              "ExprString": "zero"
+                              "Str": "zero"
                             }
                           ]
-                        }
+                        ]
                       }
-                    ],
-                    "scope": 18446744073709551615,
-                    "span": {
-                      "start": 62,
-                      "end": 92
                     }
-                  }
+                  ]
                 },
-                "alt": {
-                  "Block": {
-                    "block": [
-                      {
-                        "ExprFuncCall": {
-                          "name": "print",
-                          "args": [
+                "else_": {
+                  "stmts": [
+                    {
+                      "Expr": {
+                        "Call": [
+                          {
+                            "Ident": "print"
+                          },
+                          [
                             {
-                              "ExprString": "nonzero"
+                              "Str": "nonzero"
                             }
                           ]
-                        }
+                        ]
                       }
-                    ],
-                    "scope": 18446744073709551615,
-                    "span": {
-                      "start": 98,
-                      "end": 131
                     }
-                  }
-                },
-                "span": {
-                  "start": 50,
-                  "end": 131
+                  ]
                 }
               }
             },
             {
-              "StmtWhile": {
+              "While": {
                 "condition": {
-                  "ExprBinary": {
-                    "lhs": {
-                      "ExprVar": "x"
+                  "BinOp": [
+                    {
+                      "Ident": "x"
                     },
-                    "rhs": {
-                      "ExprInteger": 5
-                    },
-                    "op": "LessThan"
-                  }
-                },
-                "body": {
-                  "Block": {
-                    "block": [
-                      {
-                        "ExprBinary": {
-                          "lhs": {
-                            "ExprVar": "x"
-                          },
-                          "rhs": {
-                            "ExprBinary": {
-                              "lhs": {
-                                "ExprVar": "x"
-                              },
-                              "rhs": {
-                                "ExprInteger": 1
-                              },
-                              "op": "Plus"
-                            }
-                          },
-                          "op": "Eq"
-                        }
-                      }
-                    ],
-                    "scope": 18446744073709551615,
-                    "span": {
-                      "start": 150,
-                      "end": 176
+                    "Lt",
+                    {
+                      "Int": 5
                     }
-                  }
-                },
-                "span": {
-                  "start": 136,
-                  "end": 176
-                }
-              }
-            },
-            {
-              "StmtFor": {
-                "elem_name": "item",
-                "array": {
-                  "ExprArrayInit": {
-                    "values": [
-                      {
-                        "ExprInteger": 1
-                      },
-                      {
-                        "ExprInteger": 2
-                      },
-                      {
-                        "ExprInteger": 3
-                      }
-                    ]
-                  }
+                  ]
                 },
                 "body": {
-                  "Block": {
-                    "block": [
-                      {
-                        "ExprFuncCall": {
-                          "name": "print",
-                          "args": [
+                  "stmts": [
+                    {
+                      "Expr": {
+                        "Call": [
+                          {
+                            "Ident": "print"
+                          },
+                          [
                             {
-                              "ExprVar": "item"
+                              "Ident": "x"
                             }
                           ]
-                        }
+                        ]
                       }
-                    ],
-                    "scope": 18446744073709551615,
-                    "span": {
-                      "start": 203,
-                      "end": 231
                     }
-                  }
-                },
-                "span": {
-                  "start": 181,
-                  "end": 231
+                  ]
                 }
               }
             },
             {
-              "ExprReturn": {
-                "val": {
-                  "ExprVar": "x"
+              "For": {
+                "item": "item",
+                "iter": {
+                  "Array": [
+                    {
+                      "Int": 1
+                    },
+                    {
+                      "Int": 2
+                    },
+                    {
+                      "Int": 3
+                    }
+                  ]
+                },
+                "body": {
+                  "stmts": [
+                    {
+                      "Expr": {
+                        "Call": [
+                          {
+                            "Ident": "print"
+                          },
+                          [
+                            {
+                              "Ident": "item"
+                            }
+                          ]
+                        ]
+                      }
+                    }
+                  ]
                 }
+              }
+            },
+            {
+              "Return": {
+                "Ident": "x"
               }
             }
-          ],
-          "scope": 18446744073709551615,
-          "span": {
-            "start": 24,
-            "end": 247
-          }
+          ]
         }
-      },
-      "scope": 18446744073709551615,
-      "span": {
-        "start": 0,
-        "end": 247
       }
     }
-  }
-]
+  ]
+}

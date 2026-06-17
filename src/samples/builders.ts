@@ -90,6 +90,13 @@ export function addFunction(
   name: string,
   params: Param[] = [],
   returnType: SolType = { kind: 'void' },
+  /**
+   * True (default) emits the runnable `workflow "name" { }`; false
+   * emits a helper `fn name(params) <- ret { }`. The canonical
+   * language needs at least one workflow to run, so the entry of a
+   * sample should stay a workflow and helpers should be fns.
+   */
+  isWorkflow = true,
 ): FunctionGraph {
   const startNode: GraphNode = {
     id: nanoid(8),
@@ -102,6 +109,7 @@ export function addFunction(
     name,
     params,
     returnType,
+    isWorkflow,
     nodes: [startNode],
     edges: [],
   };

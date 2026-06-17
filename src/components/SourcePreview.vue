@@ -262,27 +262,14 @@ function focusSourceAt(loc: { start: number; end: number }) {
 const solLang = StreamLanguage.define({
   startState: () => ({ inBlock: false }),
   token(stream, state) {
-    if (state.inBlock) {
-      if (stream.match(/.*?\*\//)) {
-        state.inBlock = false;
-        return 'comment';
-      }
-      stream.skipToEnd();
-      return 'comment';
-    }
-    if (stream.match('//')) {
-      stream.skipToEnd();
-      return 'comment';
-    }
-    if (stream.match('/*')) {
-      state.inBlock = true;
+    if (stream.match('#')) {
       stream.skipToEnd();
       return 'comment';
     }
     if (stream.match(/"(?:[^"\\]|\\.)*"/)) return 'string';
     if (stream.match(/'(?:[^'\\]|\\.)*'/)) return 'string';
-    if (stream.match(/\b(?:function|let|if|else|while|for|in|return|struct|enum|import|as|true|false)\b/)) return 'keyword';
-    if (stream.match(/\b(?:int|float|bool|str|char|void)\b/)) return 'type';
+    if (stream.match(/\b(?:let|if|else|while|for|in|return|fn|struct|enum|import|from|workflow|emit|call|true|false)\b/)) return 'keyword';
+    if (stream.match(/\b(?:int|float|bool|str|char)\b/)) return 'type';
     if (stream.match(/\b\d+\.\d+\b/)) return 'number';
     if (stream.match(/\b\d+\b/)) return 'number';
     if (stream.match(/\b[A-Z][A-Za-z0-9_]*\b/)) return 'type-name';

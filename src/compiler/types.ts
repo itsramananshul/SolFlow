@@ -51,13 +51,21 @@ export interface CompileEnvelope<T> {
 }
 
 /**
- * AST shape — fully typed mirror of the Rust `parser::Program`.
- * See `./ast.ts` for the variant union. Pinned by a serde-snapshot
- * test in `compiler/tests/serde_roundtrip.rs` so the contract
- * can't silently drift.
+ * AST shape — fully typed mirror of the canonical Rust
+ * `ast::Program` (crate `openprem-sol-v2`). See `./ast.ts` for the
+ * variant union; the shapes are confirmed against the bridge's
+ * `parse_source_json` output.
  */
 import type { Program } from './ast';
-export type { Program, Ast, SolType, BinOpToken, UnaryOpToken } from './ast';
+export type {
+  Program,
+  TopLevel,
+  Stmt,
+  Expr,
+  SolType,
+  BinOp,
+  UnaryOp,
+} from './ast';
 
 export interface AnalyzedProgramView {
   program: Program;

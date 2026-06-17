@@ -1,14 +1,13 @@
-function add(a: int, b: int) -> int {
+fn add(a: int, b: int) <- int {
     return a + b;
 }
 
-function notify(msg: str) -> int {
+fn notify(msg: str) <- int {
     print(msg);
     return 0;
 }
 
-function start() -> int {
-    // Statement-level calls become `call` nodes.
+workflow "start" {
     notify("starting");
     notify("running");
     let result: int = 42;

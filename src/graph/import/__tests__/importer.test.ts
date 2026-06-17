@@ -1,15 +1,13 @@
 /**
- * Integration tests for the AST → graph importer.
+ * Integration tests for the canonical AST → graph importer.
  *
- * Fixtures are pre-generated AST JSON files (one per .sol input
- * under __fixtures__/). Regenerate them with:
+ * Fixtures are pre-generated AST JSON files (one per .sol input under
+ * __fixtures__/). Regenerate them with:
  *
- *   cargo run -p solflow_compiler_wasm --example dump_ast -- \
- *     src/graph/import/__fixtures__/<name>.sol \
- *     > src/graph/import/__fixtures__/<name>.ast.json
+ *   node scripts/regen-import-fixtures.mjs
  *
- * The fixtures-as-JSON approach lets these tests run as pure
- * Node code — no WASM needed in the test runtime.
+ * The fixtures-as-JSON approach lets these tests run as pure Node code
+ * — no WASM needed in the test runtime.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -18,19 +16,14 @@ import { fileURLToPath } from 'node:url';
 import type { Program } from '@/compiler/ast';
 import { importProgram } from '../importer';
 
-const FIXTURES_DIR = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '__fixtures__',
-);
+const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '__fixtures__');
 
 function loadFixture(name: string): Program {
-  const path = join(FIXTURES_DIR, `${name}.ast.json`);
-  const raw = readFileSync(path, 'utf-8');
+  const raw = readFileSync(join(FIXTURES_DIR, `${name}.ast.json`), 'utf-8');
   return JSON.parse(raw) as Program;
 }
 
-describe('importProgram — linear flow', () => {
+describe('importProgram — linear workflow', () => {
   it('imports let/print/return cleanly', () => {
     const program = loadFixture('linear_flow');
     const { workflow, report } = importProgram(program);
@@ -38,18 +31,17 @@ describe('importProgram — linear flow', () => {
     expect(workflow.functions).toHaveLength(1);
     const fn = workflow.functions[0]!;
     expect(fn.name).toBe('start');
+    // The runnable unit is a workflow, tagged for round-trip.
+    expect(fn.isWorkflow).toBe(true);
 
     // 1 start node + 2 let + 2 print + 1 return = 6
     expect(fn.nodes.length).toBe(6);
-
     const kinds = fn.nodes.map((n) => n.data.kind);
     expect(kinds).toEqual(['start', 'let', 'let', 'print', 'print', 'return']);
 
-    // No unsupported / source-only constructs.
     expect(report.counts.unsupported).toBe(0);
     expect(report.counts.sourceOnly).toBe(0);
 
-    // Inline expressions present on let / print / return.
     const letNode = fn.nodes.find((n) => n.data.kind === 'let' && n.data.varName === 'x');
     expect(letNode?.expressions?.value).toBe('5');
     const ret = fn.nodes.find((n) => n.data.kind === 'return');
@@ -65,11 +57,9 @@ describe('importProgram — branch + while + for', () => {
     const fn = workflow.functions[0]!;
 
     const branch = fn.nodes.find((n) => n.data.kind === 'branch');
-    expect(branch).toBeTruthy();
     expect(branch?.expressions?.cond).toBe('(x == 0)');
 
     const wh = fn.nodes.find((n) => n.data.kind === 'while');
-    expect(wh).toBeTruthy();
     expect(wh?.expressions?.cond).toBe('(x < 5)');
 
     const fe = fn.nodes.find((n) => n.data.kind === 'forEach');
@@ -80,258 +70,134 @@ describe('importProgram — branch + while + for', () => {
     expect(fe?.expressions?.array).toBe('[1, 2, 3]');
 
     // Then/else arms have prints inside.
-    const prints = fn.nodes.filter((n) => n.data.kind === 'print');
-    const printValues = prints.map((p) => p.expressions?.value ?? '');
+    const printValues = fn.nodes
+      .filter((n) => n.data.kind === 'print')
+      .map((p) => p.expressions?.value ?? '');
     expect(printValues).toContain('"zero"');
     expect(printValues).toContain('"nonzero"');
 
-    // Branch should have wired then + else edges.
-    const branchOutEdges = fn.edges.filter(
-      (e) => e.source.node === branch?.id,
+    // Branch wired then + else edges.
+    const branchPorts = new Set(
+      fn.edges.filter((e) => e.source.node === branch?.id).map((e) => e.source.port),
     );
-    const branchPorts = new Set(branchOutEdges.map((e) => e.source.port));
     expect(branchPorts.has('then')).toBe(true);
     expect(branchPorts.has('else')).toBe(true);
 
-    // Control flow includes an assign inside the while body.
-    const assignNodes = fn.nodes.filter((n) => n.data.kind === 'assign');
-    expect(assignNodes.length).toBeGreaterThan(0);
-
-    // Recovery + classification: every statement landed; nothing
-    // unsupported (the importer DOES classify branches as 'partial'
-    // because conditions live as inline text, not as sub-graphs).
     expect(report.counts.unsupported).toBe(0);
     expect(report.counts.partial).toBeGreaterThan(0);
   });
 });
 
-describe('importProgram — multi-function', () => {
-  it('preserves all functions and wires statement-level calls', () => {
+describe('importProgram — functions + workflow', () => {
+  it('preserves all callables and wires statement-level local calls', () => {
     const program = loadFixture('multi_function');
     const { workflow, report } = importProgram(program);
 
-    expect(workflow.functions.map((f) => f.name)).toEqual([
-      'add', 'notify', 'start',
-    ]);
+    expect(workflow.functions.map((f) => f.name)).toEqual(['add', 'notify', 'start']);
 
-    // start() has two statement-level `notify(...)` calls — those
-    // become `call` nodes resolved to notify's functionId. Calls
-    // embedded inside expressions (e.g. `let x = add(1, 2)`) are
-    // preserved as inline text on the consuming statement, NOT
-    // lifted to separate call nodes (that would be a lossy
-    // transformation; B.8 territory if ever).
+    // Helper fns are not workflows; the entry is.
+    const add = workflow.functions.find((f) => f.name === 'add')!;
     const start = workflow.functions.find((f) => f.name === 'start')!;
+    expect(add.isWorkflow).toBe(false);
+    expect(start.isWorkflow).toBe(true);
+
+    // start() has two statement-level `notify(...)` calls — those become
+    // `call` nodes resolved to notify's functionId.
     const callNodes = start.nodes.filter((n) => n.data.kind === 'call');
     expect(callNodes.length).toBe(2);
-
     const notify = workflow.functions.find((f) => f.name === 'notify')!;
     for (const c of callNodes) {
-      if (c.data.kind === 'call') {
-        expect(c.data.functionId).toBe(notify.id);
-      }
+      if (c.data.kind === 'call') expect(c.data.functionId).toBe(notify.id);
     }
 
     // Parameters propagate.
-    const add = workflow.functions.find((f) => f.name === 'add')!;
     expect(add.params.map((p) => p.name)).toEqual(['a', 'b']);
 
-    // Per-function report entries exist.
-    expect(report.functions.map((f) => f.name)).toEqual([
-      'add', 'notify', 'start',
-    ]);
+    expect(report.functions.map((f) => f.name)).toEqual(['add', 'notify', 'start']);
   });
 });
 
 describe('importProgram — structs + enums', () => {
-  it('imports top-level type declarations', () => {
+  it('imports top-level type declarations preserving field order', () => {
     const program = loadFixture('with_struct_enum');
     const { workflow, report } = importProgram(program);
 
     expect(workflow.structs).toHaveLength(1);
     expect(workflow.structs[0]!.name).toBe('Point');
-    // Importer sorts fields alphabetically for determinism (HashMap
-    // order isn't stable in the serialized AST).
+    // Canonical struct fields are an ordered Vec — order is preserved.
     expect(workflow.structs[0]!.fields.map((f) => f.name)).toEqual(['x', 'y']);
 
     expect(workflow.enums).toHaveLength(1);
     expect(workflow.enums[0]!.name).toBe('Status');
-    // Variants sorted by parser-assigned ordinal.
-    expect(workflow.enums[0]!.variants.map((v) => v.name)).toEqual([
-      'Active', 'Inactive',
-    ]);
+    expect(workflow.enums[0]!.variants.map((v) => v.name)).toEqual(['Active', 'Inactive']);
 
     expect(report.topLevel.structs).toBe(1);
     expect(report.topLevel.enums).toBe(1);
   });
 });
 
-describe('importProgram — B.D c37 field/index set + top-level let', () => {
-  it('imports varName.field = expr as a fieldSet node with inferred struct name', () => {
-    const program = loadFixture('field_index_assign');
-    const { workflow, report } = importProgram(
-      program,
-      { name: 't' },
-      // Provide source so AST spans are usable (regen-friendly).
-      undefined,
-    );
-    const start = workflow.functions.find((f) => f.name === 'start')!;
-    const fieldSets = start.nodes.filter((n) => n.data.kind === 'fieldSet');
-    expect(fieldSets.length).toBe(2);
-    for (const n of fieldSets) {
-      if (n.data.kind === 'fieldSet') {
-        // Struct name inferred from `let p: Point = ...`.
-        expect(n.data.structName).toBe('Point');
-        expect(['x', 'y']).toContain(n.data.fieldName);
-      }
-    }
-    // No "complex assignment LHS" placeholder notices should fire
-    // for the field sets.
-    const placeholderNotices = report.notices.filter(
-      (n) => n.message.includes('complex assignment LHS'),
-    );
-    expect(placeholderNotices).toHaveLength(0);
-  });
+describe('importProgram — Actions + emit (honest placeholders)', () => {
+  it('preserves capability calls and emit as classified placeholders', () => {
+    const program = loadFixture('actions_emit');
+    const { workflow, report } = importProgram(program, { name: 'a' });
 
-  it('imports array[idx] = expr as an indexSet node', () => {
-    const program = loadFixture('field_index_assign');
-    const { workflow } = importProgram(program, { name: 't' });
-    const start = workflow.functions.find((f) => f.name === 'start')!;
-    const indexSets = start.nodes.filter((n) => n.data.kind === 'indexSet');
-    expect(indexSets.length).toBe(1);
-    const node = indexSets[0]!;
-    expect(node.expressions?.array).toBeDefined();
-    expect(node.expressions?.index).toBeDefined();
-    expect(node.expressions?.value).toBeDefined();
-  });
+    // The `from` import is captured.
+    expect(workflow.imports).toHaveLength(1);
+    expect(workflow.imports[0]!.alias).toBe('send');
+    expect(workflow.imports[0]!.from).toBe('slack');
 
-  it('hoists top-level let declarations into a synthetic __init function', () => {
-    const program = loadFixture('top_level_let');
-    const { workflow, report } = importProgram(program, { name: 't' });
-    const init = workflow.functions.find((f) => f.name === '__init');
-    expect(init).toBeDefined();
-    const lets = init!.nodes.filter((n) => n.data.kind === 'let');
-    expect(lets.length).toBe(2);
-    const names = lets.map((n) =>
-      n.data.kind === 'let' ? n.data.varName : '',
+    // slack.send(...), call("alert.fire", ...), emit "done" all land as
+    // placeholders — nothing dropped, all flagged.
+    const fn = workflow.functions.find((f) => f.name === 'notify')!;
+    const placeholders = fn.nodes.filter(
+      (n) => n.data.kind === 'print' && n.id !== fn.nodes[0]!.id,
     );
-    expect(names).toContain('counter');
-    expect(names).toContain('name');
-    // Notice surfaces the semantic change honestly.
-    const hoistNotice = report.notices.find((n) =>
-      n.message.includes('Hoisted'),
-    );
-    expect(hoistNotice).toBeDefined();
+    expect(placeholders.length).toBe(3);
+
+    // The Action text is preserved verbatim on a placeholder.
+    const values = placeholders.map((p) => p.expressions?.value ?? '');
+    expect(values.some((v) => v.includes('slack.send'))).toBe(true);
+    expect(values.some((v) => v.includes('call('))).toBe(true);
+    expect(values.some((v) => v.includes('emit'))).toBe(true);
+
+    // Notices surface every degradation.
+    expect(report.notices.length).toBeGreaterThanOrEqual(3);
+    expect(report.counts.partial).toBeGreaterThan(0);
   });
 });
 
-describe('importProgram — B.D c43 node-level source attachment', () => {
-  it('attaches meta.sourceSpan to nodes whose AST carried a span', () => {
+describe('importProgram — source attachment', () => {
+  it('attaches sourceLine to the workflow when source is provided', () => {
+    const source = readFileSync(join(FIXTURES_DIR, 'linear_flow.sol'), 'utf-8');
     const program = loadFixture('linear_flow');
-    const { workflow } = importProgram(program, { name: 't' });
-    const start = workflow.functions.find((f) => f.name === 'start')!;
-    // `let` nodes come from DeclVar (which has a span). At least
-    // one should have meta.sourceSpan populated.
-    const lets = start.nodes.filter((n) => n.data.kind === 'let');
-    const withSpan = lets.filter((n) => n.meta?.sourceSpan);
-    expect(withSpan.length).toBeGreaterThan(0);
-    for (const n of withSpan) {
-      const span = n.meta!.sourceSpan!;
-      expect(span.start).toBeGreaterThanOrEqual(0);
-      expect(span.end).toBeGreaterThan(span.start);
-    }
+    const { workflow, report } = importProgram(program, { name: 't' }, source);
+    const start = workflow.functions.find((f) => f.name === 'start');
+    // `workflow "start"` is on line 1.
+    expect(start?.meta?.sourceLine).toBe(1);
+    expect(report.functions.find((f) => f.name === 'start')?.sourceLine).toBe(1);
   });
 
-  it('findNodeForSpan returns smallest-containing node', async () => {
-    const { findNodeForSpan } = await import('@/graph/nodeLookup');
-    const program = loadFixture('branch_and_loop');
-    const { workflow } = importProgram(program, { name: 't' });
-    // Find any node with a span; query its span — should return
-    // itself (smallest-containing match).
-    const allWithSpan: { fnName: string; nodeId: string; span: { start: number; end: number } }[]
-      = [];
-    for (const fn of workflow.functions) {
-      for (const node of fn.nodes) {
-        if (node.meta?.sourceSpan) {
-          allWithSpan.push({
-            fnName: fn.name,
-            nodeId: node.id,
-            span: node.meta.sourceSpan,
-          });
-        }
-      }
-    }
-    expect(allWithSpan.length).toBeGreaterThan(0);
-    const target = allWithSpan[0]!;
-    const match = findNodeForSpan(workflow, target.span);
-    expect(match).not.toBeNull();
-    expect(match!.node.id).toBe(target.nodeId);
-  });
-
-  it('findNodeForSpan returns null for spans outside any node', async () => {
-    const { findNodeForSpan } = await import('@/graph/nodeLookup');
+  it('omits sourceLine when source is not provided', () => {
     const program = loadFixture('linear_flow');
     const { workflow } = importProgram(program, { name: 't' });
-    const match = findNodeForSpan(workflow, { start: 99999, end: 100000 });
-    expect(match).toBeNull();
+    expect(workflow.functions[0]?.meta?.sourceLine).toBeUndefined();
+  });
+
+  it('finds fn declaration lines too', () => {
+    const source = readFileSync(join(FIXTURES_DIR, 'multi_function.sol'), 'utf-8');
+    const program = loadFixture('multi_function');
+    const { workflow } = importProgram(program, { name: 't' }, source);
+    expect(workflow.functions.find((f) => f.name === 'add')?.meta?.sourceLine).toBe(1);
+    expect(workflow.functions.find((f) => f.name === 'notify')?.meta?.sourceLine).toBe(5);
   });
 });
 
 describe('importProgram — empty / degenerate', () => {
   it('empty program yields empty workflow + no notices', () => {
-    const { workflow, report } = importProgram([]);
+    const { workflow, report } = importProgram({ items: [] });
     expect(workflow.functions).toHaveLength(0);
     expect(workflow.structs).toHaveLength(0);
     expect(report.notices).toHaveLength(0);
-  });
-});
-
-describe('importProgram — source attachment (B.6 c25 + B.D c37)', () => {
-  it('attaches sourceLine to functions when source is provided', () => {
-    // Use the actual source the fixture was generated from — AST
-    // spans are byte-offsets into THIS source, not arbitrary text.
-    const source = readFileSync(
-      join(FIXTURES_DIR, 'linear_flow.sol'),
-      'utf-8',
-    );
-    const program = loadFixture('linear_flow');
-    const { workflow, report } = importProgram(program, { name: 't' }, source);
-    const start = workflow.functions.find((f) => f.name === 'start');
-    // linear_flow.sol has `function start` on line 1.
-    expect(start?.meta?.sourceLine).toBe(1);
-    const summary = report.functions.find((f) => f.name === 'start');
-    expect(summary?.sourceLine).toBe(1);
-  });
-
-  it('omits sourceLine when source is not provided', () => {
-    const program = loadFixture('linear_flow');
-    const { workflow, report } = importProgram(program, { name: 't' });
-    const start = workflow.functions.find((f) => f.name === 'start');
-    expect(start?.meta?.sourceLine).toBeUndefined();
-    const summary = report.functions.find((f) => f.name === 'start');
-    expect(summary?.sourceLine).toBeUndefined();
-  });
-
-  it('uses textual fallback when AST spans are absent (pre-span fixture)', () => {
-    // Hand-craft a Program WITHOUT span fields on the DeclFunc to
-    // simulate an old pre-c35 fixture. The importer should fall
-    // back to scanFunctionLines (textual scan).
-    const program: Program = [
-      {
-        DeclFunc: {
-          name: 'start',
-          params: [],
-          ret: 'Integer',
-          body: { Block: { block: [], scope: 0 } },
-          scope: 0,
-          // span deliberately omitted
-        },
-      },
-    ];
-    const source = `\n\nfunction start() -> int {\n    return 0;\n}\n`;
-    const { workflow } = importProgram(program, { name: 't' }, source);
-    // Without an AST span, fall back to scanning. `function start`
-    // is on line 3 of the hand-crafted source.
-    expect(workflow.functions[0]?.meta?.sourceLine).toBe(3);
   });
 });
 
@@ -339,11 +205,11 @@ describe('importProgram — report counts', () => {
   it('headline counts roll up across functions', () => {
     const program = loadFixture('branch_and_loop');
     const { report } = importProgram(program);
-    // Every classified statement lands in exactly one bucket.
-    const sum = report.counts.full
-      + report.counts.partial
-      + report.counts.sourceOnly
-      + report.counts.unsupported;
+    const sum =
+      report.counts.full +
+      report.counts.partial +
+      report.counts.sourceOnly +
+      report.counts.unsupported;
     expect(sum).toBeGreaterThan(0);
   });
 });

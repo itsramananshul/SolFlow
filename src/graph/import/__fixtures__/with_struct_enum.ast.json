@@ -1,71 +1,69 @@
-[
-  {
-    "DeclStruct": {
-      "name": "Point",
-      "fields": {
-        "x": "Integer",
-        "y": "Integer"
-      },
-      "span": {
-        "start": 0,
-        "end": 31
+{
+  "items": [
+    {
+      "Struct": {
+        "name": "Point",
+        "fields": [
+          {
+            "name": "x",
+            "type_": "Int"
+          },
+          {
+            "name": "y",
+            "type_": "Int"
+          }
+        ]
       }
-    }
-  },
-  {
-    "DeclEnum": {
-      "name": "Status",
-      "variants": {
-        "Inactive": 1,
-        "Active": 0
-      },
-      "span": {
-        "start": 32,
-        "end": 64
+    },
+    {
+      "Enum": {
+        "name": "Status",
+        "variants": [
+          "Active",
+          "Inactive"
+        ]
       }
-    }
-  },
-  {
-    "DeclFunc": {
-      "name": "start",
-      "params": [],
-      "ret": "Integer",
-      "body": {
-        "Block": {
-          "block": [
+    },
+    {
+      "Workflow": {
+        "name": "main",
+        "body": {
+          "stmts": [
             {
-              "DeclVar": {
+              "Let": {
                 "name": "p",
-                "kind": "Integer",
-                "value": {
-                  "ExprInteger": 0
+                "type_": {
+                  "Named": "Point"
                 },
-                "span": {
-                  "start": 96,
-                  "end": 111
+                "value": {
+                  "StructInstance": {
+                    "name": "Point",
+                    "fields": [
+                      [
+                        "x",
+                        {
+                          "Int": 1
+                        }
+                      ],
+                      [
+                        "y",
+                        {
+                          "Int": 2
+                        }
+                      ]
+                    ]
+                  }
                 }
               }
             },
             {
-              "ExprReturn": {
-                "val": {
-                  "ExprVar": "p"
-                }
+              "Return": {
+                "Int": 0
               }
             }
-          ],
-          "scope": 18446744073709551615,
-          "span": {
-            "start": 90,
-            "end": 127
-          }
+          ]
         }
-      },
-      "scope": 18446744073709551615,
-      "span": {
-        "start": 66,
-        "end": 127
       }
     }
-  }
-]
+  ]
+}

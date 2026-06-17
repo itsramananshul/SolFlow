@@ -1,78 +1,64 @@
-[
-  {
-    "DeclFunc": {
-      "name": "start",
-      "params": [],
-      "ret": "Integer",
-      "body": {
-        "Block": {
-          "block": [
+{
+  "items": [
+    {
+      "Workflow": {
+        "name": "start",
+        "body": {
+          "stmts": [
             {
-              "DeclVar": {
+              "Let": {
                 "name": "x",
-                "kind": "Integer",
+                "type_": "Int",
                 "value": {
-                  "ExprInteger": 5
-                },
-                "span": {
-                  "start": 30,
-                  "end": 45
+                  "Int": 5
                 }
               }
             },
             {
-              "DeclVar": {
+              "Let": {
                 "name": "y",
-                "kind": "Integer",
+                "type_": "Int",
                 "value": {
-                  "ExprInteger": 10
-                },
-                "span": {
-                  "start": 50,
-                  "end": 66
+                  "Int": 10
                 }
               }
             },
             {
-              "ExprFuncCall": {
-                "name": "print",
-                "args": [
+              "Expr": {
+                "Call": [
                   {
-                    "ExprVar": "x"
-                  }
+                    "Ident": "print"
+                  },
+                  [
+                    {
+                      "Ident": "x"
+                    }
+                  ]
                 ]
               }
             },
             {
-              "ExprFuncCall": {
-                "name": "print",
-                "args": [
+              "Expr": {
+                "Call": [
                   {
-                    "ExprVar": "y"
-                  }
+                    "Ident": "print"
+                  },
+                  [
+                    {
+                      "Ident": "y"
+                    }
+                  ]
                 ]
               }
             },
             {
-              "ExprReturn": {
-                "val": {
-                  "ExprVar": "x"
-                }
+              "Return": {
+                "Ident": "x"
               }
             }
-          ],
-          "scope": 18446744073709551615,
-          "span": {
-            "start": 24,
-            "end": 110
-          }
+          ]
         }
-      },
-      "scope": 18446744073709551615,
-      "span": {
-        "start": 0,
-        "end": 110
       }
     }
-  }
-]
+  ]
+}

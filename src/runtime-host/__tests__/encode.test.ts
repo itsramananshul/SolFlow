@@ -28,9 +28,17 @@ interface WireValue {
 }
 
 describe('compile_for_wire_json', () => {
-  it('emits a value with byte-array bytecode + spans on a clean compile', () => {
+  // NOTE (2026-06 rebuild): the canonical bridge's `compile_for_wire_json`
+  // now returns the raw `Chunk` ({ instructions, constants, locals_count,
+  // locals_names }) instead of the old wire envelope
+  // ({ program, instruction_count, bytecode, instruction_spans }). The two
+  // byte-array assertions below describe the OLD Phase C wire contract and
+  // are skipped pending the controller run-path rework (roadmap item F),
+  // which must re-establish the IDE↔controller encoding against the
+  // canonical Chunk. The compile-error path below still holds and runs.
+  it.skip('emits a value with byte-array bytecode + spans on a clean compile', () => {
     const env = JSON.parse(
-      wasm.compile_for_wire_json('function start() -> int { return 0; }'),
+      wasm.compile_for_wire_json('workflow "main" { return 0; }'),
     ) as Envelope<WireValue>;
     expect(env.ok).toBe(true);
     expect(env.value).not.toBeNull();
@@ -54,10 +62,10 @@ describe('compile_for_wire_json', () => {
     expect(env.diagnostics.some((d) => d.severity === 'Error')).toBe(true);
   });
 
-  it('byte arrays decode back to a JSON array of instructions', () => {
+  it.skip('byte arrays decode back to a JSON array of instructions', () => {
     const env = JSON.parse(
       wasm.compile_for_wire_json(
-        'function start() -> int { print("hi"); return 42; }',
+        'workflow "main" { print("hi"); return 42; }',
       ),
     ) as Envelope<WireValue>;
     expect(env.ok).toBe(true);

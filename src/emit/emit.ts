@@ -18,6 +18,7 @@ import type {
   FunctionGraph,
   GraphEdge,
   GraphNode,
+  ImportDecl,
   NodeData,
   SolWorkflow,
   StructDecl,
@@ -67,7 +68,7 @@ export function emit(workflow: SolWorkflow): EmitResult {
   const out: string[] = [];
 
   for (const imp of workflow.imports) {
-    out.push(emitImport(imp.path, imp.alias));
+    out.push(emitImport(imp));
   }
   if (workflow.imports.length > 0) out.push('');
 
@@ -94,8 +95,12 @@ export function emit(workflow: SolWorkflow): EmitResult {
 //  Declarations
 // =============================================================
 
-function emitImport(path: string[], alias: string): string {
-  return `import ${path.join('.')} as ${alias};`;
+function emitImport(imp: ImportDecl): string {
+  // Canonical forms: `import module;` and `import "name" from module;`.
+  if (imp.from) {
+    return `import "${imp.alias}" from ${imp.from};`;
+  }
+  return `import ${imp.path[0] ?? imp.alias};`;
 }
 
 function emitStruct(s: StructDecl): string {
@@ -104,23 +109,20 @@ function emitStruct(s: StructDecl): string {
   }
   const lines: string[] = [`struct ${s.name} {`];
   for (const f of s.fields) {
-    lines.push(`  ${f.name}: ${typeLabel(f.type)},`);
+    lines.push(`  ${f.name}: ${typeLabel(f.type)};`);
   }
   lines.push('}');
   return lines.join('\n');
 }
 
 function emitEnum(e: EnumDecl): string {
+  // Canonical enums carry variant names only — no explicit values.
   if (e.variants.length === 0) {
     return `enum ${e.name} {}`;
   }
   const lines: string[] = [`enum ${e.name} {`];
   for (const v of e.variants) {
-    if (v.value === null) {
-      lines.push(`  ${v.name},`);
-    } else {
-      lines.push(`  ${v.name} = ${v.value},`);
-    }
+    lines.push(`  ${v.name};`);
   }
   lines.push('}');
   return lines.join('\n');
@@ -128,11 +130,20 @@ function emitEnum(e: EnumDecl): string {
 
 function emitFunction(ctx: EmitCtx): string {
   const fn = ctx.fn;
-  const params = fn.params.map((p) => `${p.name}: ${typeLabel(p.type)}`).join(', ');
-  const ret = fn.returnType.kind === 'void' ? '' : ` -> ${typeLabel(fn.returnType)}`;
 
-  // Phase A — trigger annotations are emitted as comments preceding the
-  // signature. Phase B will lower these into proper decorator syntax.
+  // Canonical header: `workflow "name" { }` for the runnable unit,
+  // `fn name(params) <- ret { }` for helper functions.
+  const header = (() => {
+    if (fn.isWorkflow ?? true) {
+      return `workflow "${fn.name}"`;
+    }
+    const params = fn.params.map((p) => `${p.name}: ${typeLabel(p.type)}`).join(', ');
+    const ret = fn.returnType.kind === 'void' ? '' : ` <- ${typeLabel(fn.returnType)}`;
+    return `fn ${fn.name}(${params})${ret}`;
+  })();
+
+  // Trigger annotations are emitted as `#` comments preceding the
+  // header (canonical comments use `#`).
   const triggerLines: string[] = [];
   for (const n of fn.nodes) {
     if (n.data.kind !== 'trigger') continue;
@@ -143,18 +154,18 @@ function emitFunction(ctx: EmitCtx): string {
   const entry =
     fn.nodes.find((n) => n.data.kind === 'start') ??
     fn.nodes.find((n) => n.data.kind === 'trigger');
+  const prefix = triggerLines.length ? triggerLines.join('\n') + '\n' : '';
   if (!entry) {
-    ctx.warnings.push(`function ${fn.name}: no entry (start or trigger) node`);
-    return `${triggerLines.join('\n')}${triggerLines.length ? '\n' : ''}function ${fn.name}(${params})${ret} {\n}`;
+    ctx.warnings.push(`${fn.name}: no entry (start or trigger) node`);
+    return `${prefix}${header} {\n}`;
   }
   const body = emitChain(ctx, entry.id, 'next', 1);
   const bodyLines = body.length === 0 ? [] : [body];
-  const prefix = triggerLines.length ? triggerLines.join('\n') + '\n' : '';
-  return `${prefix}function ${fn.name}(${params})${ret} {\n${bodyLines.join('')}}`;
+  return `${prefix}${header} {\n${bodyLines.join('')}}`;
 }
 
 function emitTriggerComment(data: Extract<NodeData, { kind: 'trigger' }>): string {
-  const parts: string[] = [`// @trigger ${data.triggerKind}`];
+  const parts: string[] = [`# @trigger ${data.triggerKind}`];
   parts.push(`event="${data.eventName}"`);
   if (data.triggerKind === 'webhook' && data.webhookPath) {
     parts.push(`path="${data.webhookPath}"`);

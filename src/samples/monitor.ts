@@ -45,6 +45,7 @@ export function buildMonitor() {
       { name: 'limit', type: { kind: 'float' } },
     ],
     { kind: 'bool' },
+    false, // helper fn, not the runnable workflow
   );
   const a_start = getStart(b);
   const a_node = node(b, 'varGet', { x: 80, y: 200 }, {
@@ -86,19 +87,20 @@ export function buildMonitor() {
   dat(b, a_false, 'value', a_retFalse, 'value');
 
   // -----------------------------------------------------------
-  // function start() -> int {
+  // workflow "start" {
   //   let limit: float = 85.0;
-  //   let counter: int = 1;
-  //   while (counter < 4) {
-  //     let cur: float = 78.5 + (counter * 3.0);
-  //     let nd: SystemNode = SystemNode { id: counter, threshold: cur };
-  //     let isd: bool = assess_node(nd, limit);
-  //     counter = counter + 1;
+  //   for counter in [1, 2, 3] {
+  //     let nd: SystemNode = SystemNode { id: counter, threshold: 90.0 };
+  //     assess_node(nd, limit);
   //   }
   //   return 0;
   // }
+  //
+  // The canonical language has no assignment statement, so the
+  // original `while (counter < 4) { ...; counter = counter + 1; }`
+  // is expressed as a `for` over a literal range instead.
   // -----------------------------------------------------------
-  const startFn = addFunction(b, 'start', [], { kind: 'int' });
+  const startFn = addFunction(b, 'start', [], { kind: 'int' }); // workflow entry
   setActiveFn(b, startFn.id);
   const s_start = getStart(b);
   const s_lit85 = node(b, 'literal', { x: 80, y: 200 }, {
@@ -107,54 +109,50 @@ export function buildMonitor() {
   const s_letLimit = node(b, 'let', { x: 280, y: 60 }, {
     kind: 'let', varName: 'limit', varType: { kind: 'float' },
   });
-  const s_lit1 = node(b, 'literal', { x: 280, y: 200 }, {
-    kind: 'literal', litType: 'int', value: '1',
+  const s_for = node(b, 'forEach', { x: 460, y: 60 }, {
+    kind: 'forEach', iteratorName: 'counter', iteratorType: { kind: 'int' },
   });
-  const s_letCounter = node(b, 'let', { x: 460, y: 60 }, {
-    kind: 'let', varName: 'counter', varType: { kind: 'int' },
-  });
-  const s_counterGet = node(b, 'varGet', { x: 460, y: 200 }, {
+  // Iterate a literal range via the inline-expression escape hatch.
+  s_for.expressions = { array: '[1, 2, 3]' };
+  const s_counterGet = node(b, 'varGet', { x: 700, y: 200 }, {
     kind: 'varGet', varName: 'counter', resolvedType: { kind: 'int' },
   });
-  const s_lit4 = node(b, 'literal', { x: 460, y: 280 }, {
-    kind: 'literal', litType: 'int', value: '4',
+  const s_thr = node(b, 'literal', { x: 700, y: 280 }, {
+    kind: 'literal', litType: 'float', value: '90.0',
   });
-  const s_cmp = node(b, 'binaryOp', { x: 620, y: 240 }, {
-    kind: 'binaryOp', op: '<', valueType: { kind: 'int' },
+  const s_struct = node(b, 'structLiteral', { x: 900, y: 120 }, {
+    kind: 'structLiteral', structName: 'SystemNode',
   });
-  const s_while = node(b, 'while', { x: 780, y: 60 });
-  const s_assignCounter = node(b, 'assign', { x: 1020, y: 60 }, {
-    kind: 'assign', varName: 'counter',
+  const s_letNd = node(b, 'let', { x: 1120, y: 60 }, {
+    kind: 'let', varName: 'nd', varType: { kind: 'named', name: 'SystemNode' },
   });
-  const s_counterRead = node(b, 'varGet', { x: 1020, y: 200 }, {
-    kind: 'varGet', varName: 'counter', resolvedType: { kind: 'int' },
+  const s_ndGet = node(b, 'varGet', { x: 1120, y: 220 }, {
+    kind: 'varGet', varName: 'nd', resolvedType: { kind: 'named', name: 'SystemNode' },
   });
-  const s_one = node(b, 'literal', { x: 1020, y: 280 }, {
-    kind: 'literal', litType: 'int', value: '1',
+  const s_limitGet = node(b, 'varGet', { x: 1120, y: 300 }, {
+    kind: 'varGet', varName: 'limit', resolvedType: { kind: 'float' },
   });
-  const s_add = node(b, 'binaryOp', { x: 1200, y: 240 }, {
-    kind: 'binaryOp', op: '+', valueType: { kind: 'int' },
+  const s_call = node(b, 'call', { x: 1340, y: 60 }, {
+    kind: 'call', functionId: assessFn.id,
   });
-  const s_lit0 = node(b, 'literal', { x: 780, y: 280 }, {
+  const s_lit0 = node(b, 'literal', { x: 460, y: 280 }, {
     kind: 'literal', litType: 'int', value: '0',
   });
-  const s_ret = node(b, 'return', { x: 940, y: 360 }, { kind: 'return', hasValue: true });
+  const s_ret = node(b, 'return', { x: 660, y: 360 }, { kind: 'return', hasValue: true });
 
   dat(b, s_lit85, 'value', s_letLimit, 'value');
-  dat(b, s_lit1, 'value', s_letCounter, 'value');
-  dat(b, s_counterGet, 'value', s_cmp, 'lhs');
-  dat(b, s_lit4, 'value', s_cmp, 'rhs');
-  dat(b, s_cmp, 'result', s_while, 'cond');
-  dat(b, s_counterRead, 'value', s_add, 'lhs');
-  dat(b, s_one, 'value', s_add, 'rhs');
-  dat(b, s_add, 'result', s_assignCounter, 'value');
+  dat(b, s_counterGet, 'value', s_struct, 'field:id');
+  dat(b, s_thr, 'value', s_struct, 'field:threshold');
+  dat(b, s_struct, 'value', s_letNd, 'value');
+  dat(b, s_ndGet, 'value', s_call, 'arg:node');
+  dat(b, s_limitGet, 'value', s_call, 'arg:limit');
   dat(b, s_lit0, 'value', s_ret, 'value');
 
   ctl(b, s_start, 'next', s_letLimit, 'prev');
-  ctl(b, s_letLimit, 'next', s_letCounter, 'prev');
-  ctl(b, s_letCounter, 'next', s_while, 'prev');
-  ctl(b, s_while, 'body', s_assignCounter, 'prev');
-  ctl(b, s_while, 'after', s_ret, 'prev');
+  ctl(b, s_letLimit, 'next', s_for, 'prev');
+  ctl(b, s_for, 'body', s_letNd, 'prev');
+  ctl(b, s_letNd, 'next', s_call, 'prev');
+  ctl(b, s_for, 'after', s_ret, 'prev');
 
   return finalize(b);
 }

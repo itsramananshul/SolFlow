@@ -69,7 +69,7 @@ describe('B.8 — emit output is structurally sound', () => {
       // literals before counting; if a fixture later needs them,
       // this can be loosened.
       const stripped = source
-        .replace(/\/\/.*$/gm, '')
+        .replace(/#.*$/gm, '')
         .replace(/"(?:[^"\\]|\\.)*"/g, '""');
       const opens = (stripped.match(/\{/g) ?? []).length;
       const closes = (stripped.match(/\}/g) ?? []).length;
@@ -81,7 +81,10 @@ describe('B.8 — emit output is structurally sound', () => {
       const { workflow, report } = importProgram(program, { name });
       const { source } = emit(workflow);
       for (const fn of report.functions) {
-        expect(source).toContain(`function ${fn.name}`);
+        // Workflows emit as `workflow "name"`, helpers as `fn name(...)`.
+        const wf = workflow.functions.find((f) => f.name === fn.name);
+        const header = wf?.isWorkflow ? `workflow "${fn.name}"` : `fn ${fn.name}`;
+        expect(source).toContain(header);
       }
     });
 

@@ -1,0 +1,77 @@
+{
+  "items": [
+    {
+      "Import": {
+        "spec": {
+          "Named": {
+            "name": "send",
+            "module": "slack"
+          }
+        }
+      }
+    },
+    {
+      "Workflow": {
+        "name": "notify",
+        "body": {
+          "stmts": [
+            {
+              "Expr": {
+                "Call": [
+                  {
+                    "MemberAccess": [
+                      {
+                        "Ident": "slack"
+                      },
+                      "send"
+                    ]
+                  },
+                  [
+                    {
+                      "StructInstance": {
+                        "name": "",
+                        "fields": [
+                          [
+                            "msg",
+                            {
+                              "Str": "hi"
+                            }
+                          ]
+                        ]
+                      }
+                    }
+                  ]
+                ]
+              }
+            },
+            {
+              "Expr": {
+                "WorkflowCall": {
+                  "capability_expr": {
+                    "Str": "alert.fire"
+                  },
+                  "params": {
+                    "StructInstance": {
+                      "name": "",
+                      "fields": [
+                        [
+                          "level",
+                          {
+                            "Int": 3
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "Emit": "done"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

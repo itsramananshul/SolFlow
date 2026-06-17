@@ -56,8 +56,16 @@ export interface SolWorkflow {
 
 export interface ImportDecl {
   id: string;
-  path: string[]; // ["EdgeRouter", "SecurityControl", ...]
-  alias: string; // local symbol name
+  path: string[]; // ["slack"] — canonical imports are single-segment
+  alias: string; // local symbol name (the capability name for `from` imports)
+  /**
+   * Set for canonical `import "name" from module;` imports. Holds the
+   * source module. When present the emitter produces the `from` form
+   * (`import "<alias>" from <from>;`); when absent it produces the
+   * plain module form (`import <path[0]>;`). Mirrors
+   * `ast.rs::ImportSpec` (Module vs Named).
+   */
+  from?: string;
 }
 
 export interface StructField {
@@ -95,16 +103,25 @@ export interface FunctionGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
   /**
+   * True when this graph represents a canonical `workflow "name" { }`
+   * (the runnable unit), false/undefined when it represents a helper
+   * `fn name(params) <- ret { }`. The emitter uses this to choose
+   * between `workflow "<name>" { }` and `fn <name>(...) <- <ret> { }`.
+   * Set by the AST→graph importer; hand-built graphs default to a
+   * workflow.
+   */
+  isWorkflow?: boolean;
+  /**
    * Optional source-attachment metadata, populated when this
-   * function was produced by the AST→graph importer (B.6 c25).
+   * function was produced by the AST→graph importer.
    *
-   * Phase-A workflows (hand-built in the editor) don't have this.
-   * Re-importing later overwrites it with fresh values.
+   * Hand-built workflows don't have this. Re-importing later
+   * overwrites it with fresh values.
    */
   meta?: {
-    /** 1-indexed line in the imported source where the function
-     *  declaration begins. Used by the import report panel to
-     *  scroll the source pane on click. */
+    /** 1-indexed line in the imported source where the function or
+     *  workflow declaration begins. Used by the import report panel
+     *  to scroll the source pane on click. */
     sourceLine?: number;
   };
 }

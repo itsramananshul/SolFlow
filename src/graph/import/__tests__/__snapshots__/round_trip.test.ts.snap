@@ -1,7 +1,7 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`B.8 — snapshot of canonical emit output > branch_and_loop: canonical emit snapshot 1`] = `
-"function start() -> int {
+"workflow "loops" {
   let x: int = 0;
   if ((x == 0)) {
     print("zero");
@@ -9,7 +9,7 @@ exports[`B.8 — snapshot of canonical emit output > branch_and_loop: canonical 
     print("nonzero");
   }
   while ((x < 5)) {
-    x = (x + 1);
+    print(x);
   }
   for item in [1, 2, 3] {
     print(item);
@@ -20,7 +20,7 @@ exports[`B.8 — snapshot of canonical emit output > branch_and_loop: canonical 
 `;
 
 exports[`B.8 — snapshot of canonical emit output > linear_flow: canonical emit snapshot 1`] = `
-"function start() -> int {
+"workflow "start" {
   let x: int = 5;
   let y: int = 10;
   print(x);
@@ -31,16 +31,16 @@ exports[`B.8 — snapshot of canonical emit output > linear_flow: canonical emit
 `;
 
 exports[`B.8 — snapshot of canonical emit output > multi_function: canonical emit snapshot 1`] = `
-"function add(a: int, b: int) -> int {
+"fn add(a: int, b: int) <- int {
   return (a + b);
 }
 
-function notify(msg: str) -> int {
+fn notify(msg: str) <- int {
   print(msg);
   return 0;
 }
 
-function start() -> int {
+workflow "start" {
   notify("starting");
   notify("running");
   let result: int = 42;
@@ -51,18 +51,18 @@ function start() -> int {
 
 exports[`B.8 — snapshot of canonical emit output > with_struct_enum: canonical emit snapshot 1`] = `
 "struct Point {
-  x: int,
-  y: int,
+  x: int;
+  y: int;
 }
 
 enum Status {
-  Active = 0,
-  Inactive = 1,
+  Active;
+  Inactive;
 }
 
-function start() -> int {
-  let p: int = 0;
-  return p;
+workflow "main" {
+  let p: Point = Point { x: 1, y: 2 };
+  return 0;
 }
 "
 `;
