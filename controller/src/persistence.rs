@@ -824,6 +824,8 @@ mod tests {
                 return_value: Some(42),
                 output: vec!["hi".into()],
                 steps: 12,
+                trace: Vec::new(),
+                trace_truncated: false,
             }),
             diagnostics: Vec::new(),
             created_at: 1_700_000_000_000,
@@ -862,6 +864,8 @@ mod tests {
             return_value: Some(7),
             output: vec![],
             steps: 3,
+            trace: Vec::new(),
+            trace_truncated: false,
         });
         record.completed_at = Some(1_700_000_000_500);
         p.put_run(&record).await.unwrap();
@@ -1099,6 +1103,8 @@ mod tests {
                     return_value: Some(0),
                     output: vec![],
                     steps: 1,
+                    trace: Vec::new(),
+                    trace_truncated: false,
                 },
             },
             Ev::Failed {

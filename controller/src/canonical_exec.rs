@@ -17,9 +17,9 @@
 //! `print` output accumulates in a thread-local buffer drained
 //! with `take_output()` after the run.
 
-use openprem_sol_v2::vm::take_output;
+use openprem_sol_v2::vm::{take_output, TraceKind};
 use openprem_sol_v2::{Parser, StepResult, TopLevel, Value, WorkflowExecutor};
-use solflow_host_spec::RuntimeErrorView;
+use solflow_host_spec::{RuntimeErrorView, SourceSpan, TraceStep};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -31,6 +31,16 @@ use tracing::info;
 /// sub-millisecond, large enough that the per-call overhead is
 /// negligible for compute-heavy workflows.
 const STEP_BUDGET: u64 = 10_000;
+
+/// Cap on trace events persisted in a run record. The VM bounds its
+/// in-memory trace at 50k, but the controller persists each run's trace
+/// in SQLite and returns it on every `GET /runs/:id`, so a tight loop's
+/// trace would bloat storage and responses. We keep the first
+/// `CONTROLLER_TRACE_CAP` events (enough to show the run's structure and
+/// helper boundaries) and set `trace_truncated`. The failing statement is
+/// surfaced separately via `error_span`, so a truncated trace still points
+/// at the error.
+const CONTROLLER_TRACE_CAP: usize = 2_000;
 
 /// Outcome of a canonical run, shaped so `execute_run` can map it
 /// straight onto `RunOutput` + `RunStatus`.
@@ -45,6 +55,13 @@ pub struct CanonicalOutcome {
     pub steps: u64,
     /// `Some` iff the run did not complete cleanly.
     pub error: Option<RuntimeErrorView>,
+    /// Real execution trace recorded by the VM, in order. Mirrors the
+    /// browser-sim `run.trace[]` so both run targets render identically.
+    pub trace: Vec<TraceStep>,
+    /// Whether the trace hit its cap and stopped recording.
+    pub trace_truncated: bool,
+    /// Source span of the failing statement, when the run errored.
+    pub error_span: Option<SourceSpan>,
 }
 
 /// The entry workflow name to run: the first `workflow "name" {}`
@@ -93,9 +110,13 @@ pub fn run_canonical(
                     function_name: "(compile)".into(),
                     message,
                 }),
+                trace: Vec::new(),
+                trace_truncated: false,
+                error_span: None,
             };
         }
     };
+    exec.enable_trace();
 
     let mut total_steps: u64 = 0;
     let mut error: Option<RuntimeErrorView> = None;
@@ -173,12 +194,57 @@ pub fn run_canonical(
         }
     }
 
+    // Map the VM trace onto the wire shape (with 1-based source lines)
+    // and surface the failing statement's span when the run errored.
+    let full_trace = exec.trace();
+    let mut trace = to_trace_steps(source, full_trace);
+    let trace_truncated = exec.trace_truncated() || trace.len() > CONTROLLER_TRACE_CAP;
+    trace.truncate(CONTROLLER_TRACE_CAP);
+    let error_span = exec
+        .trace()
+        .iter()
+        .rev()
+        .find(|e| matches!(e.kind, TraceKind::Error))
+        .and_then(|e| e.span)
+        .map(|(start, end)| SourceSpan { start, end });
+
     CanonicalOutcome {
         return_value: if error.is_some() { None } else { return_value },
         output: drain_output(),
         steps: total_steps,
         error,
+        trace,
+        trace_truncated,
+        error_span,
     }
+}
+
+/// 1-based line number that byte offset `off` falls on within `src`.
+fn line_of(src: &str, off: usize) -> usize {
+    1 + src.as_bytes().iter().take(off.min(src.len())).filter(|&&b| b == b'\n').count()
+}
+
+/// Map the VM's trace events onto the wire `TraceStep` shape, computing
+/// the 1-based source line each span starts on for click-to-highlight.
+fn to_trace_steps(src: &str, events: &[openprem_sol_v2::TraceEvent]) -> Vec<TraceStep> {
+    events
+        .iter()
+        .map(|e| TraceStep {
+            step: e.step,
+            kind: match e.kind {
+                TraceKind::Stmt => "stmt",
+                TraceKind::Call => "call",
+                TraceKind::Return => "return",
+                TraceKind::Error => "error",
+            }
+            .to_string(),
+            function: e.function.clone(),
+            span: e.span.map(|(start, end)| SourceSpan { start, end }),
+            line: e.span.map(|(start, _)| line_of(src, start)),
+            depth: e.depth,
+            detail: e.detail.clone(),
+        })
+        .collect()
 }
 
 /// Drain the thread-local print buffer into lines.
