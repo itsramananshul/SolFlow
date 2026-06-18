@@ -118,7 +118,15 @@ interface RunEnvelopeShape {
     steps: number;
     runtime_error: { kind: string; [k: string]: unknown } | null;
     runtime_error_source_span: { start: number; end: number } | null;
-    trace: Array<{ start: number; end: number }>;
+    trace: Array<{
+      step: number;
+      kind: 'stmt' | 'call' | 'return' | 'error';
+      function: string;
+      span: { start: number; end: number } | null;
+      line: number | null;
+      depth: number;
+      detail: string | null;
+    }>;
     trace_truncated: boolean;
   } | null;
 }
@@ -184,12 +192,41 @@ describe('canonical-VM execution via Node WASM', () => {
     expect(env.run!.runtime_error?.kind).toBe('ExtCallBlocked');
   });
 
-  it('trace is empty until source spans land (Phase 4 deferred)', () => {
+  it('records a real execution trace with source-mapped steps', () => {
     const env = runWasm(`workflow "main" { print("x"); return 1; }`);
     expect(env.ok).toBe(true);
-    expect(env.run!.trace).toEqual([]);
+    // A real run must never produce an empty trace.
+    expect(env.run!.trace.length).toBeGreaterThan(0);
     expect(env.run!.trace_truncated).toBe(false);
+    // Every step has a kind and a function; spanned steps carry a 1-based line.
+    const stmt = env.run!.trace.find((s) => s.kind === 'stmt');
+    expect(stmt).toBeDefined();
+    expect(stmt!.function).toBe('main');
+    expect(stmt!.line).toBe(1);
     expect(env.run!.runtime_error_source_span).toBeNull();
+  });
+
+  it('trace records helper call and return events', () => {
+    const env = runWasm(
+      `fn dbl(x: int) <- int { return x * 2; }
+       workflow "main" { return dbl(21); }`,
+    );
+    expect(env.ok).toBe(true);
+    expect(env.run!.return_value).toBe(42);
+    expect(env.run!.trace.some((s) => s.kind === 'call' && s.detail === 'dbl')).toBe(true);
+    expect(env.run!.trace.some((s) => s.kind === 'return' && s.function === 'dbl')).toBe(true);
+  });
+
+  it('runtime error trace points at the failing statement', () => {
+    const env = runWasm(
+      `fn risky(n: int) <- int { return n / 0; }
+       workflow "main" { return risky(10); }`,
+    );
+    expect(env.ok).toBe(true);
+    const errStep = env.run!.trace.find((s) => s.kind === 'error');
+    expect(errStep).toBeDefined();
+    expect(errStep!.detail).toContain('division by zero');
+    expect(env.run!.runtime_error_source_span).not.toBeNull();
   });
 
   it('canonical execution from EMITTED-back-from-graph source', () => {

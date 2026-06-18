@@ -99,10 +99,32 @@ export interface RunCreated {
   status: RunStatus;
 }
 
+/** What an execution-trace step records (mirrors the wire `TraceStep`). */
+export type TraceStepKind = 'stmt' | 'call' | 'return' | 'error';
+
+/**
+ * One step of a real execution trace recorded by the controller's VM.
+ * Identical in shape to the browser-sim trace so the Trace tab renders
+ * both run targets the same way.
+ */
+export interface TraceStep {
+  step: number;
+  kind: TraceStepKind;
+  function: string;
+  span: SourceSpan | null;
+  line: number | null;
+  depth: number;
+  detail: string | null;
+}
+
 export interface RunOutput {
   return_value: number | null;
   output: string[];
   steps: number;
+  /** Real execution trace recorded by the VM, in order. */
+  trace?: TraceStep[];
+  /** True when the controller's trace cap was hit. */
+  trace_truncated?: boolean;
 }
 
 /**

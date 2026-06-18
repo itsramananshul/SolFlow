@@ -512,6 +512,13 @@ const runResult = computed<UnifiedRunResult | null>(() => {
   const output = r.output;
   if (!output) return null;
   const isFailed = r.status === 'Failed';
+  // The controller now records a real execution trace (same VM as
+  // browser-sim), carried on the run output. Map it straight onto the
+  // unified shape so the Trace tab renders controller runs identically.
+  const trace = (output.trace ?? []) as UnifiedRunResult['trace'];
+  // Point at the failing statement: the last error step's span.
+  const errorSpan =
+    [...trace].reverse().find((s) => s.kind === 'error')?.span ?? null;
   return {
     return_value: output.return_value,
     output: output.output,
@@ -522,11 +529,9 @@ const runResult = computed<UnifiedRunResult | null>(() => {
     runtime_error: isFailed
       ? { kind: 'ExtCallBlocked', function_name: '(controller)', url: '(see output)' }
       : null,
-    runtime_error_source_span: null,
-    // Trace streaming lands in C.5. Empty here is honest, not a
-    // missing feature — the trace tab surfaces this explicitly.
-    trace: [],
-    trace_truncated: false,
+    runtime_error_source_span: errorSpan,
+    trace,
+    trace_truncated: output.trace_truncated ?? false,
   };
 });
 
@@ -790,9 +795,17 @@ const sourceLines = computed(() => graph.emitted.source.split('\n'));
 
 interface TraceRow {
   index: number;
-  span: SourceSpan;
-  line: number;
-  col: number;
+  /** Step kind: statement, helper call, return, or error. */
+  kind: 'stmt' | 'call' | 'return' | 'error';
+  /** Workflow or helper function executing at this step. */
+  fn: string;
+  /** Call depth (0 = workflow body) — drives row indentation. */
+  depth: number;
+  /** Callee name for `call`; error message for `error`. */
+  detail: string | null;
+  span: SourceSpan | null;
+  line: number | null;
+  col: number | null;
   snippet: string;
   /** If the span maps to a graph node, the node's id (canvas
    *  focus target). Null means source-only navigation. */
@@ -824,15 +837,28 @@ const traceRows = computed<TraceRow[]>(() => {
   const tr = runResult.value?.trace ?? [];
   if (tr.length === 0) return [];
   const source = graph.emitted.source;
-  return tr.map((span, index) => {
-    const { line, col } = lineColAt(source, span.start);
-    const match = findNodeForSpan(graph.workflow, span);
+  return tr.map((step, index) => {
+    const span = step.span;
+    // Prefer the VM-reported line; fall back to computing from the span.
+    const computed = span ? lineColAt(source, span.start) : null;
+    const line = step.line ?? computed?.line ?? null;
+    const col = computed?.col ?? null;
+    const match = span ? findNodeForSpan(graph.workflow, span) : null;
+    // Snippet: source slice for spanned steps; for a return/error with no
+    // span, fall back to the detail (callee name / error message).
+    const snippet = span
+      ? snippetFor(source, span)
+      : step.detail ?? `(${step.kind})`;
     return {
       index,
+      kind: step.kind,
+      fn: step.function,
+      depth: step.depth,
+      detail: step.detail,
       span,
       line,
       col,
-      snippet: snippetFor(source, span),
+      snippet,
       nodeId: match?.node.id ?? null,
       fnName: match?.fn.name ?? null,
     };
@@ -1261,21 +1287,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
             <template v-if="isRunning">
               <div class="empty">Running…</div>
             </template>
-            <template v-else-if="mode === 'controller-local'">
-              <div class="empty">
-                Open the <strong>Output</strong> tab for the program's
-                printed lines, or <strong>Live</strong> to follow the
-                controller's run events.
-              </div>
-            </template>
             <template v-else-if="!hasResult || compileFailed">
               <div class="empty">Run a program to see its result.</div>
             </template>
             <template v-else-if="traceRows.length === 0">
               <div class="empty">
-                The runtime does not emit a source-mapped step trace.
-                The <strong>Output</strong> tab shows the program's
-                printed lines in order, and it scrolls for long output.
+                No execution trace was recorded for this run.
               </div>
             </template>
             <template v-else>
@@ -1293,14 +1310,23 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
                   v-for="row in traceRows"
                   :key="row.index"
                   class="trace-row"
-                  :class="{ 'has-node': !!row.nodeId }"
+                  :class="{
+                    'has-node': !!row.nodeId,
+                    'is-call': row.kind === 'call',
+                    'is-return': row.kind === 'return',
+                    'is-error': row.kind === 'error',
+                  }"
+                  :style="{ paddingLeft: 8 + row.depth * 16 + 'px' }"
                 >
                   <span class="trace-step">#{{ row.index + 1 }}</span>
+                  <span class="trace-kind" :class="'k-' + row.kind">{{ row.kind }}</span>
+                  <span class="trace-fn" :title="`in ${row.fn}`">{{ row.fn }}</span>
                   <button
+                    v-if="row.line !== null"
                     class="trace-loc"
                     :title="`Show source line ${row.line}`"
-                    @click="focusSourceLine(row.line)"
-                  >line {{ row.line }}:{{ row.col }}</button>
+                    @click="focusSourceLine(row.line!)"
+                  >line {{ row.line }}<template v-if="row.col">:{{ row.col }}</template></button>
                   <code class="trace-snippet">{{ row.snippet }}</code>
                   <button
                     v-if="row.nodeId"
@@ -1308,7 +1334,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
                     :title="`Focus this node on the canvas (${row.fnName})`"
                     @click="jumpToNode(row.fnName, row.nodeId)"
                   >→ canvas</button>
-                  <span v-else class="trace-no-node">(no graph mapping)</span>
                 </li>
               </ul>
             </template>
@@ -1831,8 +1856,7 @@ function formatReturn(v: unknown): string {
 }
 .trace-list { list-style: none; padding: 0; margin: 0; }
 .trace-row {
-  display: grid;
-  grid-template-columns: 48px 88px 1fr auto;
+  display: flex;
   gap: 10px;
   align-items: baseline;
   padding: 4px 12px;
@@ -1841,9 +1865,39 @@ function formatReturn(v: unknown): string {
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
 }
 .trace-row.has-node { background: rgba(98, 154, 220, 0.04); }
+.trace-row.is-error {
+  background: rgba(232, 110, 110, 0.10);
+}
+.trace-row.is-call { background: rgba(120, 190, 140, 0.05); }
+.trace-row.is-return { background: rgba(160, 160, 200, 0.04); }
 .trace-step {
   color: var(--sf-text-3);
   text-align: right;
+  flex: 0 0 auto;
+  min-width: 40px;
+}
+.trace-kind {
+  flex: 0 0 auto;
+  font-size: 0.5625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  min-width: 48px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--sf-text-2);
+}
+.trace-kind.k-call { background: rgba(120, 190, 140, 0.20); color: #8fd6a6; }
+.trace-kind.k-return { background: rgba(160, 160, 200, 0.18); color: #b3b3d8; }
+.trace-kind.k-error { background: rgba(232, 110, 110, 0.22); color: #f0a0a0; }
+.trace-fn {
+  flex: 0 0 auto;
+  color: var(--sf-text-3);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .trace-loc {
   background: transparent;
@@ -1856,13 +1910,17 @@ function formatReturn(v: unknown): string {
   text-align: left;
 }
 .trace-loc:hover { text-decoration: underline; }
+.trace-loc { flex: 0 0 auto; }
 .trace-snippet {
   color: var(--sf-text-0);
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .trace-node {
+  flex: 0 0 auto;
   background: rgba(98, 154, 220, 0.14);
   border: 1px solid rgba(98, 154, 220, 0.3);
   color: var(--sf-text-0);

@@ -22,6 +22,31 @@ export interface SourceSpan {
   end: number;
 }
 
+/** What an execution-trace step records. */
+export type TraceStepKind = 'stmt' | 'call' | 'return' | 'error';
+
+/**
+ * One step of a real execution trace recorded by the VM as it ran.
+ * Emitted identically by Browser Simulation (WASM bridge) and the
+ * Local Controller, so the Trace tab renders both run targets the same.
+ */
+export interface TraceStep {
+  /** Monotonic index of this step in the trace (0-based). */
+  step: number;
+  /** Step kind: a statement, a helper call, a return, or an error. */
+  kind: TraceStepKind;
+  /** Workflow or helper function executing at this step. */
+  function: string;
+  /** Byte span into the source this step maps to, when known. */
+  span: SourceSpan | null;
+  /** 1-based source line the span starts on, for click-to-highlight. */
+  line: number | null;
+  /** Call depth (0 = workflow body, 1 = inside a helper, ...). */
+  depth: number;
+  /** Callee name for `call`; error message for `error`. */
+  detail: string | null;
+}
+
 export interface RelatedSpan {
   span: SourceSpan;
   message: string;
@@ -123,16 +148,16 @@ export interface RunResult {
    */
   runtime_error_source_span: SourceSpan | null;
   /**
-   * Executed-source-range trace (B.D c42). One entry per
-   * observable source position the VM visited, in order.
-   * Adjacent equal spans are de-duplicated by the bridge.
-   * Empty when no trace was recorded.
+   * Real execution trace recorded by the VM as it ran, in order.
+   * One entry per executed statement plus helper call/return and
+   * error events, each carrying the function, source span/line, and
+   * call depth. Never empty for a real run.
    */
-  trace: SourceSpan[];
+  trace: TraceStep[];
   /**
-   * True when the VM's trace cap was hit (default 10k entries).
-   * The UI surfaces "execution trace truncated" so users know
-   * the list isn't the full history.
+   * True when the trace cap was hit and recording stopped. The UI
+   * surfaces "execution trace truncated" so users know the list
+   * isn't the full history.
    */
   trace_truncated: boolean;
 }
