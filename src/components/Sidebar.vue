@@ -62,30 +62,13 @@ const blocksCount = computed(() => blocks.count);
       >
         Imports<span v-if="importsCount > 0" class="count">{{ importsCount }}</span>
       </button>
-      <button
-        class="tab"
-        :class="{ active: ui.sidebarTab === 'policies' }"
-        @click="ui.setSidebarTab('policies')"
-      >
-        Policies
-      </button>
     </nav>
     <div class="tab-body">
       <NodePalette v-if="ui.sidebarTab === 'palette'" />
       <OutlinePanel v-else-if="ui.sidebarTab === 'outline'" />
       <BlocksPanel v-else-if="ui.sidebarTab === 'blocks'" />
       <TypesPanel v-else-if="ui.sidebarTab === 'types'" />
-      <ImportsPanel v-else-if="ui.sidebarTab === 'imports'" />
-      <div v-else class="policies-placeholder">
-        <div class="policies-card">
-          <div class="policies-title">Policies</div>
-          <p class="policies-body">
-            Per-workflow guardrails — rate limits, retries, idempotency keys,
-            role-based access, audit logging.
-          </p>
-          <div class="policies-tag">Coming soon</div>
-        </div>
-      </div>
+      <ImportsPanel v-else />
     </div>
   </aside>
 </template>

@@ -17,8 +17,8 @@ function updatePath(id: string, value: string) {
         <button class="ghost" @click="graph.addImport()">+ Import</button>
       </div>
       <p class="note">
-        Imports are declarative in Phase A — SOL itself doesn't yet resolve
-        cross-peer endpoints. You'll see them at the top of the emitted SOL.
+        Imports declare the modules your workflow calls. They appear at the
+        top of the emitted SOL and are resolved by the controller at run time.
       </p>
       <div v-if="graph.workflow.imports.length === 0" class="empty">
         No imports.

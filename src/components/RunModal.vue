@@ -1211,9 +1211,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
             </template>
             <template v-else-if="mode === 'controller-local'">
               <div class="empty">
-                Execution trace doesn't stream from the controller
-                yet — that lands in Phase C C.5 (event log + live
-                stream). For trace, switch to Browser sim.
+                The step trace is available in Browser Simulation. For
+                controller runs, open the Live tab to follow streamed
+                run events.
               </div>
             </template>
             <template v-else-if="!hasResult || compileFailed">

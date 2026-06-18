@@ -150,7 +150,6 @@ const pollErrorMsg = computed(() => pollError.value?.message ?? null);
         <header class="modal-header">
           <div class="header-left">
             <span class="title">Active runs</span>
-            <span class="phase-tag">Phase C.6</span>
           </div>
           <button class="close" @click="emit('close')" aria-label="Close">✕</button>
         </header>
