@@ -283,8 +283,11 @@ function signatureTooltip(fn: { name: string; params: Param[]; returnType: SolTy
   gap: 4px;
   padding: 4px 12px;
   overflow-x: auto;
+  scrollbar-width: thin;
   min-height: 36px;
 }
+.fn-tabs::-webkit-scrollbar { height: 4px; }
+.fn-tabs::-webkit-scrollbar-thumb { background: var(--sf-border-strong); border-radius: 4px; }
 .fn-tab {
   display: flex;
   align-items: center;
@@ -295,6 +298,7 @@ function signatureTooltip(fn: { name: string; params: Param[]; returnType: SolTy
   border: 1px solid transparent;
   cursor: pointer;
   min-width: 0;
+  flex-shrink: 0;
   font-size: 0.75rem;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
@@ -355,6 +359,9 @@ function signatureTooltip(fn: { name: string; params: Param[]; returnType: SolTy
   background: transparent;
   border: 1px dashed var(--sf-border-strong);
   color: var(--sf-text-2);
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin-left: 4px;
 }
 .add-fn:hover {
   color: var(--sf-text-0);

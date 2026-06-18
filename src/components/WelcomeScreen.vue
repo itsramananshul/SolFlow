@@ -342,6 +342,8 @@ const orderedSamples = computed<Sample[]>(() => {
     box-shadow 0.16s ease;
   color: var(--sf-text-1);
   min-height: 188px;
+  min-width: 0;
+  overflow: hidden;
 }
 .card:hover {
   background: var(--sf-bg-2);
@@ -362,12 +364,20 @@ const orderedSamples = computed<Sample[]>(() => {
   font-weight: 600;
   color: var(--sf-text-0);
   letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
 .card-desc {
   font-size: 0.75rem;
   color: var(--sf-text-2);
   line-height: 1.55;
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .card-cta {
   font-size: 0.6875rem;
@@ -375,6 +385,10 @@ const orderedSamples = computed<Sample[]>(() => {
   color: var(--sf-text-1);
   margin-top: 4px;
   letter-spacing: 0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 .card:hover .card-cta {
   color: var(--sf-accent);
@@ -486,6 +500,10 @@ const orderedSamples = computed<Sample[]>(() => {
 .head-sub {
   font-size: 0.625rem;
   color: var(--sf-text-3);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sample-grid {
   display: grid;
@@ -505,6 +523,10 @@ const orderedSamples = computed<Sample[]>(() => {
   transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
   color: var(--sf-text-1);
 }
+.sample-card {
+  min-width: 0;
+  overflow: hidden;
+}
 .sample-card:hover {
   background: var(--sf-bg-2);
   border-color: var(--sf-border-strong);
@@ -514,12 +536,23 @@ const orderedSamples = computed<Sample[]>(() => {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--sf-text-0);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sample-desc {
   font-size: 0.6875rem;
   color: var(--sf-text-2);
   line-height: 1.5;
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .sample-cta {
   font-size: 0.625rem;

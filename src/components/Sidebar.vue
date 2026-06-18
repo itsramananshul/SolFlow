@@ -104,13 +104,19 @@ const blocksCount = computed(() => blocks.count);
   background: var(--sf-bg-0);
   padding: 0 4px;
   gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
+.tabs::-webkit-scrollbar { height: 4px; }
+.tabs::-webkit-scrollbar-thumb { background: var(--sf-border-strong); border-radius: 4px; }
 .tab {
-  flex: 1;
+  flex: 1 0 auto;
+  min-width: max-content;
+  white-space: nowrap;
   background: transparent;
   border: none;
   border-radius: 0;
-  padding: 9px 0;
+  padding: 9px 12px;
   color: var(--sf-text-2);
   font-size: 0.6875rem;
   font-weight: 500;
@@ -131,6 +137,7 @@ const blocksCount = computed(() => blocks.count);
 }
 .count {
   display: inline-block;
+  flex-shrink: 0;
   font-family: var(--sf-font-mono);
   font-size: 0.5625rem;
   color: var(--sf-text-2);
