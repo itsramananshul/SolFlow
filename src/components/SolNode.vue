@@ -50,6 +50,84 @@ const CATEGORY_ICONS: Record<string, string> = {
   entry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"/></svg>',
 };
 const categoryIcon = computed(() => CATEGORY_ICONS[category.value] || CATEGORY_ICONS.flow);
+
+// Collapsed by default; expand to the full edit form only when selected.
+const expanded = computed(() => props.selected === true);
+
+// Turn raw cron into a human phrase so the card never shows */5 * * * *.
+function humanizeCron(cron?: string): string {
+  if (!cron) return 'On schedule';
+  const c = cron.trim();
+  let m: RegExpMatchArray | null;
+  if ((m = c.match(/^\*\/(\d+) \* \* \* \*$/))) return `Every ${m[1]} min`;
+  if (c === '* * * * *') return 'Every minute';
+  if ((m = c.match(/^0 \*\/(\d+) \* \* \*$/))) return `Every ${m[1]} h`;
+  if (c === '0 * * * *') return 'Hourly';
+  if ((m = c.match(/^0 0 \*\/(\d+) \* \*$/))) return `Every ${m[1]} days`;
+  if (c === '0 0 * * *') return 'Daily';
+  if (c === '0 0 * * 0') return 'Weekly';
+  return 'On schedule';
+}
+
+// Clean human title for the collapsed card.
+const displayTitle = computed<string>(() => {
+  const d = node.value.data as any;
+  switch (d.kind) {
+    case 'start': return 'Start';
+    case 'note': return 'Note';
+    case 'frame': return d.title || 'Section';
+    case 'trigger':
+      return d.triggerKind === 'timer' ? 'Timer'
+        : d.triggerKind === 'webhook' ? 'Webhook'
+        : d.triggerKind === 'http' ? 'HTTP'
+        : d.triggerKind === 'manual' ? 'Manual' : 'Event';
+    case 'let': return d.varName || 'Variable';
+    case 'assign': return d.varName || 'Assign';
+    case 'varGet': return d.varName || 'Variable';
+    case 'print': return 'Print';
+    case 'return': return 'Return';
+    case 'branch': return d.hasElse ? 'If / Else' : 'If';
+    case 'while': return 'While';
+    case 'forEach': return 'For each';
+    case 'binaryOp': return 'Operator';
+    case 'unaryOp': return 'Operator';
+    case 'literal': return 'Value';
+    case 'arrayLiteral': return 'Array';
+    case 'call': return 'Action';
+    default: return kindLabel.value;
+  }
+});
+
+// Small muted subtitle, human readable, hidden when not meaningful.
+const displaySubtitle = computed<string | null>(() => {
+  const d = node.value.data as any;
+  if (simStatus.value === 'running') return 'Running';
+  switch (d.kind) {
+    case 'trigger':
+      if (d.triggerKind === 'timer') return humanizeCron(d.cronExpr);
+      if (d.triggerKind === 'webhook') return 'On webhook';
+      if (d.triggerKind === 'http') return `${d.httpMethod || 'POST'} request`;
+      if (d.triggerKind === 'event') return d.eventName || 'On event';
+      return 'Manual run';
+    case 'let':
+    case 'assign':
+    case 'varGet': return d.varType ? typeLabel(d.varType) : null;
+    case 'literal': return formatLiteralPreview(d.litType, d.value) || null;
+    case 'binaryOp':
+    case 'unaryOp': return d.op || null;
+    case 'forEach': return d.iteratorName ? `each ${d.iteratorName}` : null;
+    case 'start': return 'Entry';
+    default: return null;
+  }
+});
+
+const statusDot = computed<string | null>(() => {
+  if (simStatus.value === 'running') return 'var(--sf-accent)';
+  if (simStatus.value === 'failed') return 'var(--sf-error)';
+  if (simStatus.value === 'visited') return 'var(--sf-success, #22c197)';
+  return null;
+});
+const statusLabel = computed(() => simStatus.value || '');
 const simStatus = computed(() => sim.getNodeStatus(node.value.id));
 /**
  * Most recent runtime summary for this node, if a trace is loaded.
@@ -472,7 +550,7 @@ function formatLiteralPreview(t: string, v: string): string {
     :class="[
       'sf-node',
       `cat-${category}`,
-      { selected, 'is-running': simStatus === 'running', 'is-visited': simStatus === 'visited', 'is-failed': simStatus === 'failed' },
+      { selected, expanded, 'is-running': simStatus === 'running', 'is-visited': simStatus === 'visited', 'is-failed': simStatus === 'failed' },
     ]"
     @mouseenter="ui.setHovered(node.id)"
     @mouseleave="ui.setHovered(null)"
@@ -483,7 +561,11 @@ function formatLiteralPreview(t: string, v: string): string {
       @mouseleave="hideTooltip"
     >
       <span class="node-icon" :style="{ color: categoryDot }" v-html="categoryIcon" />
-      <span class="title" :title="kindLabel">{{ kindLabel }}</span>
+      <div class="sf-meta">
+        <span class="title" :title="displayTitle">{{ displayTitle }}</span>
+        <span v-if="displaySubtitle" class="sf-sub">{{ displaySubtitle }}</span>
+      </div>
+      <span v-if="statusDot" class="sf-status" :style="{ background: statusDot }" :title="statusLabel" />
       <span v-if="headerBadge" class="header-badge">{{ headerBadge }}</span>
       <Transition name="tip">
         <div v-if="tooltipVisible" class="node-tooltip">
@@ -550,7 +632,28 @@ function formatLiteralPreview(t: string, v: string): string {
       </div>
     </div>
 
-    <div v-if="dataIns.length > 0 || dataOuts.length > 0" class="body">
+    <!-- Collapsed: data ports as small dots on the card edges. -->
+    <template v-if="!expanded">
+      <Handle
+        v-for="(p, i) in dataIns"
+        :key="`din:${p.id}`"
+        :id="p.id"
+        type="target"
+        :position="Position.Left"
+        :class="['handle', 'dot', typeCssClass(p.type)]"
+        :style="{ top: `${((i + 0.5) / Math.max(dataIns.length, 1)) * 100}%` }"
+      />
+      <Handle
+        v-for="(p, i) in dataOuts"
+        :key="`dout:${p.id}`"
+        :id="p.id"
+        type="source"
+        :position="Position.Right"
+        :class="['handle', 'dot', typeCssClass(p.type)]"
+        :style="{ top: `${((i + 0.5) / Math.max(dataOuts.length, 1)) * 100}%` }"
+      />
+    </template>
+    <div v-if="expanded && (dataIns.length > 0 || dataOuts.length > 0)" class="body">
       <!-- Data inputs (left side) -->
       <div v-if="dataIns.length > 0" class="ports in">
         <div v-for="p in dataIns" :key="`in:${p.id}`" class="port-row">
@@ -644,7 +747,7 @@ function formatLiteralPreview(t: string, v: string): string {
       tight. Suppressed for single-out nodes (most statements) — `next`
       would just add noise.
     -->
-    <div v-if="showControlOutLabels" class="control-out-labels">
+    <div v-if="showControlOutLabels && expanded" class="control-out-labels">
       <div
         v-for="(p, i) in controlOuts"
         :key="`coutlbl:${p.id}`"
@@ -1186,4 +1289,41 @@ function formatLiteralPreview(t: string, v: string): string {
   opacity: 0;
   transform: translateX(-50%) translateY(4px);
 }
+
+/* ---- compact widget presentation ---- */
+.sf-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  flex: 1;
+  line-height: 1.15;
+}
+.sf-sub {
+  font-family: var(--sf-font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: var(--sf-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sf-status {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.12);
+}
+.handle.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--sf-text-3);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.handle.dot:hover { background: var(--sf-accent); }
+/* No labeled body unless expanded → header is the whole resting card */
+.sf-node:not(.expanded) .header { border-bottom: none; }
 </style>
