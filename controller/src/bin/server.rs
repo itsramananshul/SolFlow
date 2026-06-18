@@ -71,6 +71,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     tracing::info!(%bind, %db_path, "starting solflow-controller");
+    match std::env::var("SOLFLOW_CONNECTORS") {
+        Ok(v) if !v.trim().is_empty() => match serde_json::from_str::<
+            std::collections::HashMap<String, String>,
+        >(&v)
+        {
+            Ok(map) if !map.is_empty() => {
+                let mut names: Vec<&String> = map.keys().collect();
+                names.sort();
+                let list = names
+                    .iter()
+                    .map(|n| format!("{} -> {}", n, map[*n]))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                tracing::info!("connectors: {list}");
+            }
+            Ok(_) => tracing::info!("connectors: none registered (empty map)"),
+            Err(e) => tracing::warn!("connectors: SOLFLOW_CONNECTORS is not valid JSON: {e}"),
+        },
+        _ => tracing::info!(
+            "connectors: none registered (set SOLFLOW_CONNECTORS to enable external Actions)"
+        ),
+    }
     tracing::info!(
         step_limit = policy.step_limit,
         wall_clock_secs = policy.wall_clock_timeout.as_secs(),

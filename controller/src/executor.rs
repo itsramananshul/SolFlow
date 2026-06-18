@@ -172,16 +172,19 @@ pub async fn execute_run(
         .clone()
         .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let timeout_flag = Arc::new(AtomicBool::new(false));
-    // Connectors aren't bound into the canonical capability model
-    // yet; external Actions surface as ExtCallBlocked (the same
-    // honest signal as the browser sim). Consume the param so it
-    // doesn't read as unused.
+    // External Actions are executed by canonical_exec via HTTP
+    // connectors registered through the SOLFLOW_CONNECTORS env, so
+    // the legacy ConnectorRegistry isn't used on this path. Consume
+    // it so it doesn't read as unused.
     let _ = connectors;
     let step_limit = policy.step_limit as u64;
     let run_source = source.clone();
     let run_name = workflow_name.clone();
     let task_cancel = user_cancel.clone();
     let task_timeout = timeout_flag.clone();
+    // Captured on the async side so the blocking VM thread can drive
+    // connector HTTP calls via `Handle::block_on`.
+    let rt_handle = tokio::runtime::Handle::current();
     let mut vm_handle = tokio::task::spawn_blocking(move || {
         crate::canonical_exec::run_canonical(
             &run_source,
@@ -189,6 +192,7 @@ pub async fn execute_run(
             step_limit,
             task_cancel,
             task_timeout,
+            rt_handle,
         )
     });
     // Race the VM against the wall-clock budget. On timeout: flip

@@ -20,8 +20,10 @@
 use openprem_sol_v2::vm::take_output;
 use openprem_sol_v2::{Parser, StepResult, TopLevel, Value, WorkflowExecutor};
 use solflow_host_spec::RuntimeErrorView;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::runtime::Handle;
 
 /// Statements executed per `step()` call before we re-check the
 /// cancel / timeout flags. Small enough that cancel latency stays
@@ -67,7 +69,13 @@ pub fn run_canonical(
     step_limit: u64,
     user_cancel: Arc<AtomicBool>,
     timeout: Arc<AtomicBool>,
+    handle: Handle,
 ) -> CanonicalOutcome {
+    // Registered connectors: module name -> base HTTP URL, read from
+    // the SOLFLOW_CONNECTORS env (a JSON object). External Actions
+    // whose module is registered execute for real; the rest stay
+    // honestly blocked.
+    let connectors = load_connectors();
     // Clear any print residue left on this pooled blocking thread
     // by a previous run (the output buffer is thread-local).
     let _ = take_output();
@@ -111,16 +119,37 @@ pub fn run_canonical(
                     break;
                 }
             }
-            Ok(StepResult::RemoteCall { capability, .. }) => {
-                // External Action. No connector is bound to the
-                // canonical capability model on this local path,
-                // so we surface the same honest "blocked" signal
-                // the browser sim does rather than fake a result.
-                error = Some(RuntimeErrorView::ExtCallBlocked {
-                    function_name: capability,
-                    url: String::new(),
-                });
-                break;
+            Ok(StepResult::RemoteCall { capability, params }) => {
+                // External Action. Resolve the module to a registered
+                // connector endpoint and execute it for real. A module
+                // with no registered endpoint stays honestly blocked.
+                let (module, func) = split_capability(&capability);
+                match connectors.get(&module) {
+                    Some(base_url) => match invoke_connector(&handle, base_url, &func, &params) {
+                        Ok(result) => {
+                            if let Err(e) = exec.resolve_remote_call(&capability, result) {
+                                error = Some(classify(e));
+                                break;
+                            }
+                            // resumed — keep stepping the workflow
+                        }
+                        Err(message) => {
+                            error = Some(RuntimeErrorView::ExtCallFailed {
+                                connector: module,
+                                function_name: func,
+                                message,
+                            });
+                            break;
+                        }
+                    },
+                    None => {
+                        error = Some(RuntimeErrorView::ExtCallBlocked {
+                            function_name: capability,
+                            url: String::new(),
+                        });
+                        break;
+                    }
+                }
             }
             Ok(StepResult::Failed(message)) => {
                 error = Some(classify(message));
@@ -175,5 +204,104 @@ fn classify(message: String) -> RuntimeErrorView {
             function_name: "(runtime)".into(),
             message,
         }
+    }
+}
+
+
+/// Read the connector registry from the `SOLFLOW_CONNECTORS` env var.
+/// Format: a JSON object mapping a module name to its base HTTP URL,
+/// e.g. `{"weather_station":"http://127.0.0.1:8088"}`. Missing /
+/// empty / malformed yields an empty registry (all Actions block).
+fn load_connectors() -> HashMap<String, String> {
+    match std::env::var("SOLFLOW_CONNECTORS") {
+        Ok(s) if !s.trim().is_empty() => serde_json::from_str(&s).unwrap_or_default(),
+        _ => HashMap::new(),
+    }
+}
+
+/// Split a capability into (module, function). Handles both the
+/// `module::func` namespace form and the `module.func` member form.
+fn split_capability(cap: &str) -> (String, String) {
+    if let Some(i) = cap.rfind("::") {
+        (cap[..i].to_string(), cap[i + 2..].to_string())
+    } else if let Some(i) = cap.rfind('.') {
+        (cap[..i].to_string(), cap[i + 1..].to_string())
+    } else {
+        (cap.to_string(), String::new())
+    }
+}
+
+/// Invoke a connector endpoint over HTTP and return the response as a
+/// SOL `Value`. POSTs `{"function": <func>, "params": <params-json>}`
+/// to the module's base URL and parses the JSON response. Runs on the
+/// async runtime via `handle.block_on` (we are on a blocking thread).
+fn invoke_connector(
+    handle: &Handle,
+    base_url: &str,
+    func: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let body = serde_json::json!({
+        "function": func,
+        "params": value_to_json(params),
+    });
+    let url = base_url.to_string();
+    let resp: serde_json::Value = handle.block_on(async move {
+        let client = reqwest::Client::new();
+        let r = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("connector request failed: {e}"))?;
+        let status = r.status();
+        if !status.is_success() {
+            return Err(format!("connector returned HTTP {}", status.as_u16()));
+        }
+        r.json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("connector response was not JSON: {e}"))
+    })?;
+    Ok(json_to_value(resp))
+}
+
+/// Convert a SOL `Value` to plain JSON for a connector request body.
+fn value_to_json(v: &Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    match v {
+        Value::Bool(b) => J::Bool(*b),
+        Value::Int(i) => J::from(*i),
+        Value::Float(f) => serde_json::Number::from_f64(*f).map(J::Number).unwrap_or(J::Null),
+        Value::Char(c) => J::String(c.to_string()),
+        Value::Str(s) => J::String(s.clone()),
+        Value::Array(a) => J::Array(a.iter().map(value_to_json).collect()),
+        Value::Struct(m) => {
+            J::Object(m.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect())
+        }
+        Value::Enum(e, var) => J::String(format!("{e}::{var}")),
+        Value::Unit => J::Null,
+        Value::Module(p) => J::String(p.clone()),
+        Value::RemoteRef { id, .. } => J::String(id.clone()),
+    }
+}
+
+/// Convert a connector's plain JSON response back into a SOL `Value`.
+fn json_to_value(j: serde_json::Value) -> Value {
+    use serde_json::Value as J;
+    match j {
+        J::Null => Value::Unit,
+        J::Bool(b) => Value::Bool(b),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                Value::Unit
+            }
+        }
+        J::String(s) => Value::Str(s),
+        J::Array(a) => Value::Array(a.into_iter().map(json_to_value).collect()),
+        J::Object(m) => Value::Struct(m.into_iter().map(|(k, v)| (k, json_to_value(v))).collect()),
     }
 }
