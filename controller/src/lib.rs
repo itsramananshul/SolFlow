@@ -3,8 +3,8 @@
 //! **Phase C C.2 — local controller MVP.** Ships:
 //!   - the trait surface from C.1
 //!   - `SqlitePersistence` (real SQLite-backed `Persistence` impl)
-//!   - `LocalController` (real `Controller` using SQLite +
-//!     `solflow_runtime`)
+//!   - `LocalController` (real `Controller` using SQLite + the
+//!     canonical openprem-sol-v2 VM via `canonical_exec`)
 //!   - binary target `solflow-controller` (`src/bin/server.rs`)
 //!     hosting the HTTP API
 //!
