@@ -278,6 +278,23 @@ pub async fn execute_run(
     // subscriber that immediately fetches the record on the
     // terminal event sees the final state.
     if let Some(c) = &ctx {
+        // Surface each captured print line as a Print event before the
+        // terminal event so SSE subscribers see program output. The
+        // lines were collected by canonical_exec's print buffer and are
+        // already part of `final_output`; emitting them here changes no
+        // VM semantics, it just streams the already-captured output onto
+        // the event channel ahead of the terminal event.
+        for line in &final_output.output {
+            let seq = c.next_seq();
+            c.emit(RunEvent::Print {
+                run_id: c.run_id.clone(),
+                seq,
+                ts: now_ms(),
+                text: line.clone(),
+                source_span: None,
+            })
+            .await;
+        }
         if timed_out {
             c.emit(RunEvent::TimedOut {
                 run_id: c.run_id.clone(),
@@ -378,20 +395,15 @@ pub fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solflow_compiler::compile_source;
-    use solflow_host_spec::{encode_bytecode, encode_instruction_spans, RunTrigger};
+    use solflow_host_spec::RunTrigger;
 
-    /// Helper: compile + persist a workflow, return its id.
+    /// Helper: persist a workflow from its canonical SOL source,
+    /// carried as raw UTF-8 bytes exactly as the editor submits it
+    /// (the controller reads the source back out of the bytecode
+    /// blob and runs it through the canonical VM).
     async fn submit_test_workflow(p: &SqlitePersistence, source: &str) -> String {
-        let compiled = compile_source(source);
-        let cp = compiled.value.expect("compile clean");
-        let bytecode = encode_bytecode(&cp.bytecode).unwrap();
-        let host_spans: Vec<Option<solflow_host_spec::SourceSpan>> = cp
-            .instruction_spans
-            .iter()
-            .map(|s| s.map(Into::into))
-            .collect();
-        let spans = encode_instruction_spans(&host_spans).unwrap();
+        let bytecode = source.as_bytes().to_vec();
+        let spans = b"[]".to_vec();
         let id = format!("wf_test_{}", uuid::Uuid::new_v4());
         let meta = serde_json::json!({
             "name": "test",
@@ -409,7 +421,7 @@ mod tests {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let wf = submit_test_workflow(
             &p,
-            "function start() -> int { print(\"hi\"); return 42; }",
+            "workflow \"start\" { print(\"hi\"); return 42; }",
         )
         .await;
         let record = RunRecord {
@@ -438,7 +450,7 @@ mod tests {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let wf = submit_test_workflow(
             &p,
-            "function start() -> int { return 10 / 0; }",
+            "workflow \"start\" { return 10 / 0; }",
         )
         .await;
         let record = RunRecord {
@@ -468,7 +480,7 @@ mod tests {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let wf = submit_test_workflow(
             &p,
-            r#"function start() -> int {
+            r#"workflow "start" {
                  print("alpha");
                  print("beta");
                  return 7;
@@ -536,7 +548,7 @@ mod tests {
             // Long counting loop — plenty more than 100ms of
             // VM steps.
             r#"
-                function start() -> int {
+                workflow "start" {
                     let i: int = 0;
                     while (i < 5000000) {
                         i = i + 1;
@@ -653,9 +665,14 @@ mod tests {
     #[tokio::test]
     async fn execute_run_step_limit_enforced() {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
+        // A non-terminating loop whose body runs a statement each
+        // iteration. The canonical VM bounds `step()` by statements
+        // executed, so a bodied loop accumulates steps and trips the
+        // policy step_limit (an empty-body loop is caught by the
+        // wall-clock path instead, exercised by the timeout test).
         let wf = submit_test_workflow(
             &p,
-            "function start() -> int { while (1 == 1) { } return 0; }",
+            "workflow \"start\" { let i: int = 0; while (1 == 1) { i = i + 1; } return i; }",
         )
         .await;
         let record = RunRecord {

@@ -589,8 +589,14 @@ impl SqlitePersistence {
     /// RunManager needs to emit a post-execute event (e.g. cancel
     /// override) after the per-run RunEventCtx has dropped.
     pub async fn next_event_seq(&self, run_id: &str) -> ControllerResult<u64> {
+        // Fetch the highest seq actually present for this run. We
+        // select the last row rather than `MAX(seq)` because an
+        // aggregate over an empty set returns SQL NULL, which the
+        // sqlite driver decodes back to `0` — indistinguishable from
+        // a real seq-0 row. Selecting a concrete row makes "no prior
+        // events" return `None` (→ next seq 0) honestly.
         let row = sqlx::query(
-            "SELECT MAX(seq) AS max_seq FROM run_events WHERE run_id = ?",
+            "SELECT seq FROM run_events WHERE run_id = ? ORDER BY seq DESC LIMIT 1",
         )
         .bind(run_id)
         .fetch_optional(&self.pool)
@@ -600,10 +606,11 @@ impl SqlitePersistence {
         })?;
         let next = match row {
             Some(r) => {
-                let max: Option<i64> = r.try_get("max_seq").ok();
-                match max {
-                    Some(n) if n >= 0 => (n as u64) + 1,
-                    _ => 0,
+                let last: i64 = r.try_get("seq").unwrap_or(-1);
+                if last >= 0 {
+                    (last as u64) + 1
+                } else {
+                    0
                 }
             }
             None => 0,

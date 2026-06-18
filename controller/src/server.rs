@@ -585,26 +585,21 @@ mod tests {
     //  Phase C C.3 — schedule + event-ingress route tests
     // =============================================================
 
-    use solflow_compiler::compile_source;
-    use solflow_host_spec::{encode_bytecode, WorkflowSubmission};
+    use solflow_host_spec::WorkflowSubmission;
 
     async fn app_with_workflow() -> (Router, String) {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let c = LocalController::new(p);
         // Submit a clean workflow so schedules can reference it.
-        let cp = compile_source(
-            "function start() -> int { print(\"sched\"); return 0; }",
-        )
-        .value
-        .expect("clean");
-        let bc = encode_bytecode(&cp.bytecode).unwrap();
+        let source = "workflow \"start\" { print(\"sched\"); return 0; }";
+        let bc = source.as_bytes().to_vec();
         let resp = c
             .submit_workflow(WorkflowSubmission {
                 name: "sched-test".into(),
                 description: None,
                 bytecode: bc,
-                instruction_spans: serde_json::to_vec::<Vec<()>>(&vec![]).unwrap(),
-                source: None,
+                instruction_spans: b"[]".to_vec(),
+                source: Some(source.to_string()),
             })
             .await
             .unwrap();
@@ -818,33 +813,24 @@ mod tests {
         let controller = LocalController::new(p);
 
         // Compile a workflow that runs hundreds of ms.
-        let cp = compile_source(
-            r#"
-                function start() -> int {
+        let source = r#"
+                workflow "start" {
                     let i: int = 0;
                     while (i < 1000000) {
                         i = i + 1;
                     }
                     return i;
                 }
-            "#,
-        )
-        .value
-        .expect("clean");
-        let bc = encode_bytecode(&cp.bytecode).unwrap();
-        let host_spans: Vec<Option<solflow_host_spec::SourceSpan>> =
-            cp.instruction_spans
-                .iter()
-                .map(|s| s.map(Into::into))
-                .collect();
-        let spans = solflow_host_spec::encode_instruction_spans(&host_spans).unwrap();
+            "#;
+        let bc = source.as_bytes().to_vec();
+        let spans = b"[]".to_vec();
         let wf = controller
             .submit_workflow(WorkflowSubmission {
                 name: "slow".into(),
                 description: None,
                 bytecode: bc,
                 instruction_spans: spans,
-                source: None,
+                source: Some(source.to_string()),
             })
             .await
             .unwrap()
@@ -935,12 +921,7 @@ mod tests {
         // resolve. The run never actually executes (we manually
         // append events instead) — that lets the test be
         // hermetic (no VM, no timing).
-        let cp = compile_source(
-            "function start() -> int { print(\"hi\"); return 0; }",
-        )
-        .value
-        .expect("clean");
-        let bc = encode_bytecode(&cp.bytecode).unwrap();
+        let bc = b"workflow \"start\" { print(\"hi\"); return 0; }".to_vec();
         let wf_id = controller
             .submit_workflow(WorkflowSubmission {
                 name: "sse-test".into(),
@@ -1024,10 +1005,7 @@ mod tests {
     async fn sse_replay_honors_after_query_param() {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let controller = LocalController::new(p);
-        let cp = compile_source("function start() -> int { return 0; }")
-            .value
-            .expect("clean");
-        let bc = encode_bytecode(&cp.bytecode).unwrap();
+        let bc = b"workflow \"start\" { return 0; }".to_vec();
         let wf_id = controller
             .submit_workflow(WorkflowSubmission {
                 name: "sse-after".into(),
