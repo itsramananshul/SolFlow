@@ -391,17 +391,9 @@ function collect(
       return;
     }
   }
-  const m = scan.match(METHOD_CALL_PATTERN);
-  if (m) {
-    out.push({
-      nodeId,
-      field,
-      kind: 'method_call',
-      offender: m[0],
-      message: `Inline expression looks like a method call ("${m[0]}"). SOL's "." is field access only; methods do not exist.`,
-    });
-    return;
-  }
+  // Method-call shape is allowed now: `module.func(args)` is a valid
+  // import-qualified capability call in the new SOL grammar.
+  void METHOD_CALL_PATTERN;
   for (const p of JS_SYNTAX_PATTERNS) {
     if (p.re.test(scan)) {
       out.push({

@@ -32,7 +32,7 @@ export interface Diagnostic {
 export function validateWorkflow(wf: SolWorkflow): Diagnostic[] {
   const diags: Diagnostic[] = [];
 
-  const hasStart = wf.functions.some((f) => f.name === 'start');
+  const hasStart = wf.functions.some((f) => f.name === 'start' || f.isWorkflow === true);
   const hasTrigger = wf.functions.some((f) =>
     f.nodes.some((n) => n.data.kind === 'trigger'),
   );

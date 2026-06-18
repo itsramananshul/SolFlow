@@ -191,15 +191,11 @@ export function lintInlineExpression(expr: string): LintError | null {
     }
   }
 
-  // 3. Method-call shape.
-  const methodMatch = scan.match(METHOD_CALL_PATTERN);
-  if (methodMatch) {
-    return {
-      code: 'lint-method-call',
-      offender: methodMatch[0],
-      message: `Inline expression looks like a method call ("${methodMatch[0]}"). SOL's \`.\` is field access only; methods do not exist. Rewrite as a free-function call or declare an \`ext function\`.`,
-    };
-  }
+  // 3. Method-call shape: NO LONGER FLAGGED. In the new SOL grammar,
+  //    `module.func(args)` is a valid import-qualified capability call
+  //    (and `a.b(args)` compiles to capability "a.b"). The canonical
+  //    compiler resolves these, so the editor must not reject them.
+  void METHOD_CALL_PATTERN;
 
   // 4. JS-only syntax patterns.
   for (const { pattern, offender, description } of JS_SYNTAX_PATTERNS) {
