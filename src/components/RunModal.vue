@@ -1250,21 +1250,25 @@ function formatReturn(v: unknown): string {
   z-index: var(--sf-z-modal);
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 32px;
-  /* Shift the dialog left on wide screens so it clears the right-docked
-     trace panel and inspector, instead of covering them. */
-  padding-right: clamp(32px, 30vw, 420px);
+  /* Pin the dialog to the left on wide screens. The trace panel and inspector
+     dock on the right, so a centered dialog covers them. Left-pinning plus the
+     capped modal width below keeps the right side fully visible. */
+  justify-content: flex-start;
+  padding: 32px clamp(32px, 30vw, 460px) 32px clamp(20px, 4vw, 56px);
 }
 @media (max-width: 900px) {
-  .backdrop { padding-right: 32px; }
+  .backdrop {
+    justify-content: center;
+    padding: 24px;
+  }
+  .modal { width: min(720px, calc(100% - 32px)); }
 }
 .modal {
   background: var(--sf-bg-1);
   border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-lg);
   box-shadow: var(--sf-shadow-3);
-  width: min(720px, calc(100% - 32px));
+  width: min(640px, calc(100vw - 440px));
   max-height: 80vh;
   display: flex;
   flex-direction: column;
