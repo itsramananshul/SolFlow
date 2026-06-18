@@ -10,13 +10,21 @@ Set `SOLFLOW_CONNECTORS` to a JSON object mapping each module name to its
 base URL before starting the controller:
 
 ```
-# PowerShell
+# PowerShell — route a specific module
 $env:SOLFLOW_CONNECTORS = '{"weather_station":"http://127.0.0.1:8088"}'
-./target/release/solflow-controller
+
+# PowerShell — route EVERY Action to one endpoint with the "*" wildcard
+# (easiest for demos; you don't need to know each module's name)
+$env:SOLFLOW_CONNECTORS = '{"*":"http://127.0.0.1:8088"}'
+
+.\target\release\solflow-controller.exe
 ```
 
-A module with no registered endpoint stays honestly blocked
-(`ExtCallBlocked`), exactly like the browser sim.
+A specific module name takes priority; `*` catches everything else. A
+module with no match and no `*` fallback stays honestly blocked
+(`ExtCallBlocked`), exactly like the browser sim. Each Action is logged
+on the controller (`action <module>.<fn>: calling connector <url>` or
+`... blocked`) so you can see exactly what is resolving.
 
 ## Endpoint contract
 
@@ -26,7 +34,7 @@ For each Action the controller sends:
 POST <base-url>
 Content-Type: application/json
 
-{ "function": "<rpc name>", "params": { ...call args... } }
+{ "module": "<module>", "function": "<rpc name>", "params": { ...call args... } }
 ```
 
 Your endpoint returns a JSON body. That body becomes the SOL return value

@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::runtime::Handle;
+use tracing::info;
 
 /// Statements executed per `step()` call before we re-check the
 /// cancel / timeout flags. Small enough that cancel latency stays
@@ -124,25 +125,35 @@ pub fn run_canonical(
                 // connector endpoint and execute it for real. A module
                 // with no registered endpoint stays honestly blocked.
                 let (module, func) = split_capability(&capability);
-                match connectors.get(&module) {
-                    Some(base_url) => match invoke_connector(&handle, base_url, &func, &params) {
-                        Ok(result) => {
-                            if let Err(e) = exec.resolve_remote_call(&capability, result) {
-                                error = Some(classify(e));
+                // Resolve the module to an endpoint; fall back to a "*"
+                // wildcard connector that catches every Action regardless
+                // of module name (handy for demos / a single gateway).
+                let endpoint = connectors.get(&module).or_else(|| connectors.get("*"));
+                match endpoint {
+                    Some(base_url) => {
+                        info!("action {capability}: calling connector {base_url}");
+                        match invoke_connector(&handle, base_url, &module, &func, &params) {
+                            Ok(result) => {
+                                if let Err(e) = exec.resolve_remote_call(&capability, result) {
+                                    error = Some(classify(e));
+                                    break;
+                                }
+                                // resumed — keep stepping the workflow
+                            }
+                            Err(message) => {
+                                error = Some(RuntimeErrorView::ExtCallFailed {
+                                    connector: module,
+                                    function_name: func,
+                                    message,
+                                });
                                 break;
                             }
-                            // resumed — keep stepping the workflow
                         }
-                        Err(message) => {
-                            error = Some(RuntimeErrorView::ExtCallFailed {
-                                connector: module,
-                                function_name: func,
-                                message,
-                            });
-                            break;
-                        }
-                    },
+                    }
                     None => {
+                        info!(
+                            "action {capability}: no connector registered (module `{module}`, no `*` fallback) — blocked"
+                        );
                         error = Some(RuntimeErrorView::ExtCallBlocked {
                             function_name: capability,
                             url: String::new(),
@@ -238,10 +249,12 @@ fn split_capability(cap: &str) -> (String, String) {
 fn invoke_connector(
     handle: &Handle,
     base_url: &str,
+    module: &str,
     func: &str,
     params: &Value,
 ) -> Result<Value, String> {
     let body = serde_json::json!({
+        "module": module,
         "function": func,
         "params": value_to_json(params),
     });
