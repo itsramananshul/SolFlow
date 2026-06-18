@@ -360,8 +360,9 @@ button.ghost:hover {
   background: #ffffff;
   color: #20222e;
   border: 1px solid rgba(20, 22, 34, 0.06);
-  border-radius: 16px;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.30), 0 2px 6px rgba(0, 0, 0, 0.16);
+  border-radius: 14px;
+  min-width: 0;
+  box-shadow: 0 6px 18px rgba(40, 40, 70, 0.10), 0 1px 3px rgba(40, 40, 70, 0.07);
 }
 .sf-node .header { border-bottom-color: #eef0f5 !important; }
 

@@ -678,15 +678,16 @@ function formatLiteralPreview(t: string, v: string): string {
   --sf-border-strong: #e2e4ee;
   background: #ffffff;
   color: var(--sf-text-0);
-  border: 1px solid rgba(20, 22, 34, 0.06);
-  border-radius: 16px;
-  min-width: 220px;
-  max-width: 400px;
+  border: 1px solid rgba(20, 22, 34, 0.08);
+  border-radius: 14px;
+  min-width: 0;
+  width: max-content;
+  max-width: 360px;
   font-size: 0.6875rem;
   position: relative;
   user-select: none;
   cursor: grab;
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.26), 0 2px 6px rgba(0, 0, 0, 0.14);
+  box-shadow: 0 6px 18px rgba(40, 40, 70, 0.10), 0 1px 3px rgba(40, 40, 70, 0.07);
   transition:
     border-color 0.12s ease,
     box-shadow 0.14s ease,
@@ -697,14 +698,14 @@ function formatLiteralPreview(t: string, v: string): string {
   cursor: grabbing;
 }
 .sf-node:hover {
-  border-color: rgba(20, 22, 34, 0.10);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.32), 0 3px 8px rgba(0, 0, 0, 0.18);
+  border-color: rgba(20, 22, 34, 0.14);
+  box-shadow: 0 10px 26px rgba(40, 40, 70, 0.14), 0 2px 5px rgba(40, 40, 70, 0.09);
 }
 .sf-node.selected {
   border-color: var(--sf-accent);
   box-shadow:
     0 0 0 2px var(--sf-accent-ring),
-    0 18px 40px rgba(0, 0, 0, 0.32);
+    0 10px 26px rgba(40, 40, 70, 0.16);
 }
 
 .header {
