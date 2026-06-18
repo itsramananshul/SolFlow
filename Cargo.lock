@@ -2093,14 +2093,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solflow_compiler"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "solflow_compiler_wasm"
 version = "0.2.0"
 dependencies = [
@@ -2122,15 +2114,14 @@ dependencies = [
  "chrono",
  "cron",
  "hex",
+ "openprem-sol-v2",
  "rcgen",
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
  "sha2",
- "solflow_compiler",
  "solflow_host_spec",
- "solflow_runtime",
  "sqlx",
  "tempfile",
  "thiserror 1.0.69",
@@ -2151,15 +2142,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "solflow_compiler",
-]
-
-[[package]]
-name = "solflow_runtime"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "solflow_compiler",
 ]
 
 [[package]]

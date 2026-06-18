@@ -676,15 +676,14 @@ impl RunManager {
 mod tests {
     use super::*;
     use crate::event_sink::PersistentEventSink;
-    use solflow_compiler::compile_source;
-    use solflow_host_spec::{encode_bytecode, RunTrigger};
+    use solflow_host_spec::RunTrigger;
     use std::time::Duration;
     use tokio::time::sleep;
 
     async fn fresh_workflow(p: &SqlitePersistence) -> WorkflowId {
         fresh_workflow_from(
             p,
-            r#"function start() -> int { print("hi"); return 0; }"#,
+            r#"workflow "start" { print("hi"); return 0; }"#,
         )
         .await
     }
@@ -692,14 +691,8 @@ mod tests {
     /// Compile + persist a workflow with a custom SOL source so
     /// tests can install slow programs the cancel path can race.
     async fn fresh_workflow_from(p: &SqlitePersistence, source: &str) -> WorkflowId {
-        let cp = compile_source(source).value.expect("compile clean");
-        let bytecode = encode_bytecode(&cp.bytecode).unwrap();
-        let host_spans: Vec<Option<solflow_host_spec::SourceSpan>> =
-            cp.instruction_spans
-                .iter()
-                .map(|s| s.map(Into::into))
-                .collect();
-        let spans = solflow_host_spec::encode_instruction_spans(&host_spans).unwrap();
+        let bytecode = source.as_bytes().to_vec();
+        let spans = b"[]".to_vec();
         let id = format!("wf_{}", uuid::Uuid::new_v4().simple());
         let meta = serde_json::json!({
             "name": "test",
@@ -868,7 +861,7 @@ mod tests {
             // total steps — runs hundreds of ms even in release.
             // Comfortably longer than the cancel-arrival latency.
             r#"
-                function start() -> int {
+                workflow "start" {
                     let i: int = 0;
                     while (i < 1000000) {
                         i = i + 1;
@@ -913,7 +906,7 @@ mod tests {
             // second run sits in the queue / permit-wait while
             // we cancel it.
             r#"
-                function start() -> int {
+                workflow "start" {
                     let i: int = 0;
                     while (i < 1000000) {
                         i = i + 1;

@@ -1,380 +1,325 @@
-# 22 — Cross-Layer Assumptions
+# 22. Cross-Layer Assumptions
 
-> **Status:** Substantive (commit 10). Each layer of the SOL
-> toolchain makes assumptions about the layer below it. When an
-> assumption is violated — typically by a tool that bypasses the
-> normal pipeline — the result is silent corruption, undefined
-> behavior, or a deep stack panic that surfaces in code that had
-> nothing to do with the original violation.
->
-> This chapter catalogues every such assumption that is not
-> defended against by explicit runtime checks. It is the reference
-> a future "verified pipeline" or "bytecode verifier" would build
-> against, and the safety guide for anyone writing a tool that
-> sits anywhere in the pipeline.
+> **Status:** Rewritten against the canonical `openprem-sol-v2` crate
+> (the `sol/` crate). This chapter describes the real cross-layer
+> contract of the current system: the editor graph, the SOL source
+> it emits, the `compiler-wasm` bridge, the canonical crate, the
+> controller that runs that same crate natively, and the `host-spec`
+> wire types. The old standalone compiler and runtime crates were
+> deleted; this chapter no longer references them, the analyzer
+> phase, or any `E0xxx` / `T90xx` code system.
 
-The toolchain has six layers:
+SolFlow has one canonical language implementation (`openprem-sol-v2`)
+and several layers that wrap, feed, or invoke it. Each layer assumes
+specific things of its neighbors. This chapter catalogues those
+assumptions so anyone writing a tool that sits between two layers
+knows the contract they must honor.
 
-```
-Source text
-   ↓ (lexer)
-Token stream
-   ↓ (parser)
-AST (Program = Vec<Ast>)
-   ↓ (analyzer, pass 1 + pass 2)
-AST + populated TypeTable arena (tt_arena)
-   ↓ (bytecode emitter)
-Instruction stream (Vec<Inst>) + function table
-   ↓ (VM)
-Observable behavior (stdout, host responses, exit code)
-```
-
-Plus three editor-side layers:
+The layers, end to end:
 
 ```
-SolFlow graph (SolWorkflow)
-   ↓ (validate.ts)
-"Valid" graph
-   ↓ (emit.ts)
-SOL source text  →  feeds into the source pipeline above
-
-[Sol Man spec]
-   ↓ (applyGraph.ts: repairSpec + specToWorkflow)
-SolFlow graph  →  feeds into the validator
+Editor graph (src/graph/*)
+   |  emit (src/emit/emit.ts)
+SOL source text (canonical: `<-`, `#`, `[]T`, `fn`, `workflow "name" {}`)
+   |  compiler-wasm bridge (parse / compile / run JSON envelope)
+Canonical crate openprem-sol-v2 (sol/src/*): Lexer, Parser, Compiler, Vm
+   |
+   |== in-browser: compiled to WASM, run via run_source_json
+   |== controller: same crate, native (controller/src/canonical_exec.rs)
+                     |  host-spec wire types (host-spec/src/lib.rs)
+                     v
+                Editor runtime-host client (src/runtime-host/*)
 ```
 
-This chapter lists what each producer guarantees and what each
-consumer assumes. Mismatches are marked.
+There is exactly one execution engine. The browser sim and the
+controller run the *same* crate; the only difference is whether it
+is compiled to WASM or native, and whether external Actions are
+resolved or blocked.
 
 ---
 
-## 22.1 Lexer → Parser
+## 22.1 Editor graph to emitted SOL source
 
-### What the lexer guarantees
+### What the editor emitter guarantees
 
-| Guarantee | Confidence | Source |
-|---|---|---|
-| Output is a `Vec<Token>` (possibly empty) | **Specified** | `lexer.rs:206–208` |
-| Each token's variant matches its `TokenKind` (the `get_kind()` map is total) | **Current-impl** | `lexer.rs:122–183` — case-for-case match |
-| `Integer(i128)` holds a parsed integer, possibly value `0` on parse failure | **Current-impl** | `lexer.rs:380–386` (`unwrap_or(0)`) |
-| `Float(f64)` holds a parsed float, possibly value `0.0` on parse failure | **Current-impl** | `lexer.rs:380–386` (`unwrap_or(0.0)`) |
-| `String(s)` holds the raw characters between the delimiting `"` — no escape interpretation | **Specified** | `lexer.rs:224–233` |
-| `Char(c)` holds the *next* source character after `'`; the closing `'` is not validated | **Current-impl** | `lexer.rs:218–223` |
-| `Ident(s)` holds an `is_alphabetic()`-started, alphanumeric+underscore identifier | **Specified** | `lexer.rs:333–339` |
-| Keywords are returned as their dedicated `Token` variants, not as `Ident` | **Specified** | `lexer.rs:341–356` |
-| Two-char operators are produced maximally (`==`, not `=` + `=`) | **Specified** | `lexer.rs:238–296` |
-| The lexer exits the process if it sees an unrecognized character | **Current-impl** | `lexer.rs:298` |
+The emitter (`src/emit/emit.ts`) is producer-only: it turns a
+validated `SolWorkflow` graph into canonical SOL text.
 
-### What the parser assumes
-
-| Assumption | Defended? | What breaks if violated |
-|---|---|---|
-| `tokens` is non-empty at the start | No | `parser.rs:181` reads `self.tokens[self.index]` directly; an empty vec passes the index check but indexing panics |
-| Tokens between expressions are syntactically reachable from a `primary()` entry | Partial — `primary()` has a catch-all (`parser.rs:740–744`) | Catch-all prints and exits; downstream code stops |
-| `Integer(_)` and `Float(_)` token payloads are usable as-is | Yes | Parser just stores into AST nodes; no semantic check at parse |
-| `Token::Eq` only ever appears in assignment / `let` initializer positions | No | Could appear anywhere; the precedence chain handles it at level 1 only |
-| Identifiers in type position match primitive names exactly (`int`, `float`, etc.) | No | Anything else becomes `Type::Ident(name)` — T9009 |
-
-**Cross-layer concern:** The parser is reasonably defensive
-against malformed token streams (via `eat()` checking
-`TokenKind`), but the **defense is via `process::exit(1)`**, not
-via structured errors. Any future tool that consumes the lexer
-in-process without expecting `exit(1)` to be a control-flow
-operator must wrap the parser call in a panic boundary.
-
----
-
-## 22.2 Parser → Analyzer
-
-### What the parser guarantees
-
-| Guarantee | Confidence | Source |
-|---|---|---|
-| Output is a `Program` (= `Vec<Ast>`) | **Specified** | `parser.rs:26, 177–179` |
-| Every `Ast::DeclFunc.body` is `Box<Ast::Block { … }>` | **Specified** | `parser.rs:322, 347–360` |
-| Every `Ast::Block.scope` is `usize::MAX` (placeholder) | **Current-impl** | `parser.rs:356` |
-| Every `Ast::DeclFunc.scope` is `usize::MAX` (placeholder) | **Current-impl** | `parser.rs:324` |
-| Every `Ast::ExprBinary.op` is one of the operator tokens permitted at the relevant precedence level | **Current-impl** | `parser.rs:560–583` |
-| Every `Ast::DeclStruct.fields` is a populated `HashMap<String, Type>` (possibly empty) | **Specified** | `parser.rs:498–516` |
-| Top-level declarations are exactly one of: `DeclFunc`, `DeclExtFunc`, `DeclVar`, `DeclStruct`, `DeclEnum`, `StmtImport` | **Specified** | `parser.rs:180–194` |
-| The AST contains no `Ast::ExprUndefined` (this variant exists for VM use only) | **Current-impl** | No parser path emits it |
-
-### What the analyzer assumes
-
-| Assumption | Defended? | What breaks if violated |
-|---|---|---|
-| `scope: usize::MAX` will be replaced by the analyzer via `*scope = self.new_table()` | No — the analyzer mutates the AST in place | A second walk over the same AST sees the previously-assigned scope and reuses the wrong table |
-| `ExprBinary.op` is a known operator token | Partial — explicit match arms cover the recognized ops, with a fallthrough `_ => panic!` (`analyzer.rs:300–302`) | Panic with `unsupported binary operator: <op>` |
-| Function bodies always reach the analyzer with `Block` at the top (not a bare statement) | Yes — parser guarantees this | n/a |
-| `DeclVar.value` is `Option<Box<Ast>>` and **may be ignored** | Yes — the analyzer ignores it (`analyzer.rs:138–141`) | Hides analyzer-side type checking; documented as a known hole (chapter 06 §6.1) |
-| Forward references between top-level functions resolve via pass-1 registration | Yes — by design | n/a |
-
-**Cross-layer concern:** The analyzer **mutates** the AST in
-place (writing to `Block.scope`, `DeclFunc.scope`). Tools that
-pass the same AST through two analyzer runs will see stale
-scope IDs. Any caller that wants to re-analyze must clone the
-program first.
-
-**Subtle:** the parser's `usize::MAX` sentinel for unanalyzed
-scopes is a numeric value, not an `Option`. The bytecode emitter
-later checks `if scope_id < self.type_tables.len()` to gate
-scope use — but this means a *bug* in the analyzer that left a
-scope as `usize::MAX` is silently tolerated by the emitter (no
-scope is opened; no symbols are visible). The analyzer's
-correctness is load-bearing.
-
----
-
-## 22.3 Analyzer → Bytecode emitter
-
-### What the analyzer guarantees
-
-| Guarantee | Confidence | Source |
-|---|---|---|
-| `tt_arena: Vec<TypeTable>` is populated with at least the globals (function signatures) | **Specified** | `analyzer.rs:67, 80–98` |
-| Every `Ast::Block.scope` and `Ast::DeclFunc.scope` is a valid index into `tt_arena` (not `usize::MAX`) | **Specified** | `analyzer.rs:113, 152` |
-| Names referenced in `ExprVar`, `ExprFuncCall`, `ExprMemAcc`, `ExprEnumVar`, `ExprArrAcc` resolve in scope | **Current-impl** — enforced by `get_entry().unwrap_or_else(exit)` | Without this, the codegen would emit `LoadLocal(0)` for an unresolved name — see T9014 mechanism |
-| Operator types match at every `ExprBinary` (except `Token::Eq` whose LHS may be a varname/field/index) | **Specified** | `analyzer.rs:241–303` |
-| Argument count and types match function signatures at every `ExprFuncCall` | **Specified** | `analyzer.rs:391–404` |
-| `ExprStructInit` and `ExprArrayInit` reach the codegen **unchecked** (analyzer's `todo!()` fallthrough) | **Current-impl** | `analyzer.rs:499–500` |
-| `let`-initializer types and function return-path correctness reach the codegen **unchecked** | **Current-impl** | `analyzer.rs:138–141` (let), `analyzer.rs:120–132` (return — commented out) |
-
-### What the bytecode emitter assumes
-
-| Assumption | Defended? | What breaks if violated |
-|---|---|---|
-| Every name in `ExprFuncCall` resolves to either a built-in, an `ext function`, or a `function` | Partial — falls back to `pending_calls` for unresolved names | If the name is never registered, the pending-call patch loop doesn't match; the placeholder `Inst::Call(0, count)` stays in the bytecode and the VM re-enters from instruction 0 (T9014-adjacent infinite loop) |
-| Every `ExprVar` name is in either `locals` or `type_tables` | Yes — falls through `find_local_offset` to auto-create a slot defaulting to `Type::Integer` | T9014 (top-level let) is the prototype of "this silently does the wrong thing" |
-| Every `ExprMemAcc.lhs` resolves to a `Type::Ident(struct_name)` whose layout is in `struct_layouts` | No | If lhs type is something else, `field_idx` defaults to 0, and the emit is `GetField(0)` — reads the first field's slot, semantically wrong |
-| Every `ExprBinary` operands' types are equal and known | No | `emit_binary_op` matches on the inferred type via `infer_type`; unknown ops fall through to `_ => {}` (silent no-op — `bytecode.rs:670`) and emit *nothing*. The stack discipline downstream is then broken |
-| `print`, `rpc_*` arg counts match the analyzer's checks | No — but the analyzer already enforces them | A bypassed analyzer + emitter would emit malformed `Inst::SerializeRequest` etc. |
-| `Codegen.fn_returns` has every regular function's return type by the time it's needed for `display_type` / `infer_type` | **No** — see T9015 | Returns `Integer` by default; affects `print` dispatch and ext-call arg-type inference |
-| Struct layouts (`struct_layouts`) are populated before any struct literal or field access emits | Yes — pre-pass | n/a |
-
-**Cross-layer concern:** Several emit-time fallbacks
-(`unwrap_or(Type::Integer)`, `unwrap_or(0)` for field index,
-silent no-ops for unknown operators) mask analyzer bugs as
-runtime symptoms in unrelated code. Any improvement to the
-analyzer's coverage should be paired with stricter emitter
-assertions to surface analyzer regressions directly.
-
-**Subtle:** the emitter's `find_local_offset` looks up unknown
-names in `type_tables` (linear scan) and creates a fresh slot.
-This is **deliberately permissive** — it lets the emitter run
-even when the analyzer has been bypassed — but it also means
-the emitter cannot distinguish "analyzer ran but missed this
-name" from "name doesn't exist". A stricter mode would refuse
-to emit for unresolved names.
-
----
-
-## 22.4 Bytecode emitter → VM
-
-### What the emitter guarantees
-
-| Guarantee | Confidence | Source |
-|---|---|---|
-| Output is a `Vec<Inst>` | **Specified** | `bytecode.rs:115–164` |
-| `Inst::Jump(target)` and `Inst::JumpFalse(target)` target indices are < `insts.len()` | **Current-impl** | All emitted jumps point into the same function or program-end (no jumps off the end) |
-| `Inst::Call(target, n)`'s `target` points at the first instruction of a function body (after the `Jump`-over) | **Current-impl** | `bytecode.rs:397–398, 467–472` |
-| `Inst::Ret` / `Inst::RetVal` are reached exactly once per `Call` frame | **Current-impl** | Implicit `Ret` epilogue at every function's end guarantees this for well-emitted code |
-| Stack discipline: each emitted instruction pushes / pops exactly what the per-op contract specifies | **Current-impl** | The emitter tracks this implicitly through statement-vs-expression classification |
-| `Inst::NewStruct(n)` is preceded by exactly `n` value pushes | **Current-impl** | `bytecode.rs:494–507` walks the struct layout |
-| `Inst::ExtCall(types, ret)`'s stack has args, name, URL in that order | **Current-impl** | `bytecode.rs:461–466` |
-| `Inst::GetField(idx)` / `Inst::SetField(idx)` use the alphabetical-layout position | **Current-impl** | `bytecode.rs:126–131, 508–520` |
-| `Inst::PushConst(ast)` only passes constant-AST variants the VM recognizes (`ExprInteger`, `ExprFloat`, `ExprChar`, `ExprString`, `ExprBool`, `ExprUndefined`) | **Current-impl** | `bytecode.rs:182–187, 500` |
-
-### What the VM assumes
-
-| Assumption | Defended? | What breaks if violated |
-|---|---|---|
-| `pop` is called with at least one stack value | Yes — explicit `expect("Runtime Error: Stack underflow")` (`vm.rs:77`) | Panic |
-| `LoadLocal(offset)` indexes a valid stack position | No — direct `self.stack[idx]` (`vm.rs:120`) | Rust `Vec` panics on out-of-bounds → session aborts |
-| `StoreLocal(offset)`'s offset is reasonable | Partially — the VM pushes `0` until the index is reachable (`vm.rs:127–129`), so any offset is "valid" in the sense of not panicking, but writes to absurd offsets balloon the stack with zeros |
-| `Jump(target)` and `JumpFalse(target)` are valid program indices | No — direct `inst_ptr = target` (`vm.rs:264–272`) | Next `step()` reads `program[inst_ptr]`; panics if out of bounds |
-| `Call(target, n)` has `n` argument values on the stack and `target` is a function entry | No | Sets `fp = stack.len() - n` (could underflow!) and jumps. Wrong arg count corrupts every subsequent `LoadLocal` |
-| `Ret` / `RetVal` see a corresponding frame on the call stack | Partial — `if let Some(frame) = self.call_stack.pop()` (`vm.rs:284, 297`); the `else` branch finalizes the run | A missing frame ends the program prematurely |
-| Heap indices in op operands point at the correct `HeapObject` variant | No — silent fall-through on the `if let` (T9010) | Stack underflow downstream |
-| `PushConst(Ast::ExprX)` only receives `X` ∈ the supported set | Partial — the catch-all `panic!("Runtime Error: Invalid constant AST node passed to VM")` (`vm.rs:113`) | Panic |
-| `Inst::Dup` is called on a non-empty stack | Yes — `expect("Runtime Error: Cannot DUP empty stack")` (`vm.rs:138`) | Panic |
-| Integer arithmetic operands are `i64`-cast-safe (e.g. division RHS is not 0) | Partial — division is unchecked, others wrap silently | `IntDiv` by zero panics (E2001); overflow wraps in release / panics in debug |
-| `PrintChar`'s operand is a valid Unicode scalar | Yes — `char::from_u32(...).unwrap_or(...)` would panic; the VM uses `unwrap_or(?)` via `if let Some(c)` (`vm.rs:322`) | The print silently does nothing if the value isn't a valid char |
-| RPC `Inst::Serialize*` / `Deserialize*` operands match the declared shape | No | Panic with one of: `expects a string for …`, `failed to parse JSON in …`, etc. |
-| `ExtCall`'s URL string is a valid HTTP/1.1 endpoint | No | `TcpStream::connect` panics with the error string |
-
-**Cross-layer concern:** The VM is intentionally minimalist. Most
-of its assumptions are "the emitter knows what it's doing". A
-direct-bytecode-injection tool (debugger, hot-patcher, future
-bytecode loader from disk) must replicate every emit-time
-guarantee or trigger silent corruption.
-
-The most dangerous category is the **silent no-op family** —
-ops like `GetField`/`SetField`/`ConcatStr`/`EqStr` that match on
-heap-object shape via `if let` and do nothing if the shape is
-wrong. These produce no panic, no error, and break the stack
-discipline of every subsequent instruction. T9010 covers them.
-
----
-
-## 22.5 SolFlow validator → SolFlow emitter
-
-### What the validator guarantees
-
-| Guarantee | Confidence |
+| Guarantee | Source |
 |---|---|
-| Every required input port has either a wired data edge or a non-empty inline expression string | **Specified** (post commit `3aab8e0`) |
-| Every `call` node's `functionId` resolves to a known function | **Specified** |
-| Every `structLiteral` / `fieldAccess` / `fieldSet` node's `structName` resolves to a known struct | **Specified** |
-| Every `enumVariant` node's `enumName` + `variantName` both resolve | **Specified** |
-| Every `assign` node's `varName` is non-empty | **Specified** |
-| The graph has either a `start` function or a `trigger` node (warning) | **Specified** |
-| Data-edge endpoint types are compatible (warning on mismatch) | **Specified** |
+| The runnable unit emits as `workflow "name" { ... }` (name is a string literal) | `emit.ts:134-138` |
+| Helper functions emit as `fn name(params) <- RetType { ... }`; void return omits the `<- RetType` | `emit.ts:135-142` |
+| Return types use the canonical arrow `<-`, never `->` | `emit.ts:141` |
+| Trigger annotations emit as `#` line comments preceding the header (canonical comments are `#`) | `emit.ts:145-168` |
+| Struct fields and enum variants are `;`-terminated; struct/call arguments are comma-separated | `emit.ts:110-129` |
+| Array types use the canonical prefix form `[]T` via `typeLabel` | `src/graph/schema.ts` (`typeLabel`) |
 
-### What the validator does NOT check (and the emitter assumes anyway)
+### What the bridge / canonical crate assumes of the emitted source
 
-| Unchecked property | What the emitter does anyway |
+| Assumption | What breaks if violated |
 |---|---|
-| Inline expression string is parseable as SOL (T9018) | Inserts verbatim |
-| Inline expression string's type matches the port's declared type | Inserts verbatim |
-| `if`/`while`/`for-in` conditions are `bool`-typed | Emits as-is; analyzer rejects later if mismatch |
-| Literal node's `value` text matches `litType` (T9021) | Light formatting only |
-| Struct literal supplies every declared field | Walks the layout; missing fields become `/* missing */` or fall through to default (depends on missing-input path) |
-| Type annotations are valid SOL primitives (not `string`, `any`, etc.) | Emits whatever `typeLabel` produces — T9009 / T9019 |
-| Function call's argument count matches signature | Validator's port system enforces structurally, but a stale graph (after the target function changed) can pass validation while violating arity |
+| The source is canonical SOL the `Lexer`/`Parser` accept (`sol/src/lexer.rs`, `sol/src/parser.rs`) | The bridge returns an `E_PARSE` diagnostic; nothing runs |
+| Comments are `#` to end of line; there are no `//` or block comments | `//` lexes as `Minus`/`Minus`-adjacent tokens and fails to parse |
+| Return arrows are `<-`; `->` is not a token | `->` lexes as two tokens and fails to parse |
+| Every workflow declaration carries a string-literal name | A bare-identifier name fails to parse |
 
-**Cross-layer concern:** The emitter is positioned as "produce
-SOL from a validated graph"; in practice, "validated" means
-"structurally valid". Content validation — the SOL-side
-semantic checks the canonical analyzer performs — is deferred
-entirely to the compiler. A graph that validates and emits
-successfully can still fail at SOL parse or analyze time.
+**Cross-layer concern:** the editor is the *only* SOL producer in
+the system, and it has no SOL importer. The emitter must stay inside
+the canonical grammar because the bridge has no repair pass: a single
+non-canonical construct turns the whole run into an `E_PARSE`
+failure. Emitter correctness is the entire contract here.
 
 ---
 
-## 22.6 Sol Man store → SolFlow validator
+## 22.2 Emitted source to compiler-wasm bridge envelope
 
-### What `applyGraph.ts` (`specToWorkflow` / `specToInsertSnapshot`) guarantees
+The bridge (`compiler-wasm/src/lib.rs`) is a thin wasm-bindgen
+wrapper over the canonical crate. Every entry point returns a
+stable JSON envelope.
 
-| Guarantee |
-|---|
-| The returned `SolWorkflow` has the schema-required shape (one or more functions, structs/enums as declared) |
-| The repair pass has rewritten every `call` node whose `callTarget` doesn't resolve to a known function into a `print` placeholder |
-| Edges that would reference non-existent ports (because the call→print rewrite changed the available port set) are dropped |
-| Warnings collected from the repair pass are returned alongside the workflow |
+### What the bridge guarantees
 
-### What the validator assumes
+| Guarantee | Source |
+|---|---|
+| Every entry point returns `Envelope { ok, value, diagnostics }`; `run_source_json` adds a `run` object | `lib.rs:36-48, 170-180` |
+| `ok` is true only when no `Error`-severity diagnostic is present | `lib.rs:43-47` |
+| On any internal panic the bridge returns a hand-built `ICE0001` envelope rather than crashing the host | `lib.rs:39-55` (`ice`, `guarded`) |
+| Exported functions: `version`, `parse_source_json`, `analyze_source_json`, `compile_source_json`, `compile_for_wire_json`, `format_source_json`, `run_source_json` | `lib.rs:57-180` |
 
-| Assumption | Defended? | Notes |
+### The complete diagnostic vocabulary
+
+The bridge emits exactly five codes. There is no analyzer pass and
+no `E0xxx` / `T90xx` code family in the live pipeline.
+
+| Severity | Phase | Code | Emitted when |
+|---|---|---|---|
+| Error | Parser | `E_PARSE` | `Parser::parse()` returns `Err` (`lib.rs:63-66`) |
+| Error | Codegen | `E_CODEGEN` | `Compiler::compile()` or `WorkflowExecutor::new` returns `Err` (`lib.rs:99, 124, 142-144`) |
+| Error | Analyzer | `E_NO_WORKFLOW` | `run_source_json` finds no `workflow` declaration (`lib.rs:143`) |
+| Warning | Runtime | `E_RUNTIME` | a run ends in `Failed(reason)` or a stepping `Err` (`lib.rs:162-163`) |
+| Error | Internal | `ICE0001` | the bridge caught a panic or a serialization failure (`lib.rs:39-55`) |
+
+The `Analyzer` *phase* string survives only as the carrier for
+`E_NO_WORKFLOW`; it does not imply a semantic-analysis pass. Type
+mismatches are not caught at compile time anywhere; they surface at
+run time as `E_RUNTIME` (the canonical crate returns plain string
+errors, per `sol/src/vm.rs`).
+
+### What the editor assumes of the envelope
+
+| Assumption | Source |
+|---|---|
+| The TypeScript `CompileEnvelope<T>` / `RunEnvelope` shapes match the bridge's JSON byte for byte | `src/compiler/types.ts:45-150` |
+| `DiagnosticPhase` is one of `Lexer \| Parser \| Analyzer \| Codegen \| Runtime \| Internal`; `Lexer` is reserved and never emitted today | `src/compiler/types.ts:12-18` |
+| `run.runtime_error` is the `RuntimeError` union tagged on `kind` | `src/compiler/types.ts:88-101` |
+| `run_source_json` in-browser only ever emits the `ExtCallBlocked` and `StepLimit` runtime-error variants | `lib.rs:129-134, 154, 161` |
+
+**Cross-layer concern:** the envelope shape is the editor's hard
+contract, not the internal AST. The editor mirrors the canonical
+`ast::Program` in `src/compiler/ast.ts`, but the load-bearing
+guarantee is the envelope wrapper plus the five-code vocabulary.
+
+---
+
+## 22.3 Bridge run loop to canonical VM
+
+`run_source_json` drives the canonical `WorkflowExecutor` in-browser.
+
+### What the canonical crate guarantees
+
+| Guarantee | Source |
+|---|---|
+| `WorkflowExecutor::new(source, name)` ties parse + compile for one workflow; `step(budget)` runs up to `budget` statements | `sol/src/workflow.rs`, `sol/src/vm.rs` |
+| `step` returns `Completed(Value) \| Yielded(steps) \| RemoteCall { capability, params } \| Failed(String)` | `sol/src/vm.rs` (`StepResult`) |
+| `print` output accumulates in a thread-local buffer drained by `take_output()` | `sol/src/vm.rs` (`take_output`) |
+| External Actions (`call("m.f", p)`, imported `m.f(args)`, `m::rpc(args)`) each surface as a `RemoteCall` carrying a capability string and one params value | `sol/src/vm.rs`, `sol/src/analysis.rs` |
+| Errors are plain strings; there are no codes or spans inside the crate | `sol/src/vm.rs` |
+
+### What the bridge run loop assumes
+
+| Assumption | Source |
+|---|---|
+| A `RemoteCall` in-browser cannot be resolved, so it is mapped to `ExtCallBlocked { function_name: capability }` and the run stops | `lib.rs:161` |
+| A statement budget of 64 per `step` plus an outer guard of 200000 iterations bounds infinite loops, surfacing as `StepLimit { limit: 1_000_000 }` | `lib.rs:150-154` |
+| Only `Int` / `Float` returns map to a JSON `return_value`; everything else is `null` | `lib.rs:156-158` |
+
+**Cross-layer concern:** the budget numbers are a browser-safety
+choice, not language semantics. The canonical VM itself imposes no
+step or depth limit; the editor wraps it in a guard so a runaway
+loop cannot freeze the tab.
+
+---
+
+## 22.4 Canonical crate, browser and controller in lockstep
+
+The controller runs the identical crate natively
+(`controller/src/canonical_exec.rs`). This is the contract that
+makes "what I saw in the browser" match "what ran on the server".
+
+### What both sides share
+
+| Shared invariant | Source |
+|---|---|
+| Same `WorkflowExecutor` pull-stepper, same `StepResult` variants | `canonical_exec.rs:1-21`, `sol/src/workflow.rs` |
+| Same `print` thread-local buffer drained per run; a pooled thread is cleared before each run | `canonical_exec.rs:80-82, 184-191` |
+| Same return-value narrowing (`Int`/`Bool` to `i64`, else `None`) as the browser sim | `canonical_exec.rs:193-202` |
+| The controller reads SOL *source* bytes and compiles + runs them; there is no shared bytecode format between editor and controller | `canonical_exec.rs:1-12`, `host-spec/src/lib.rs:56-69` |
+
+### What differs by design
+
+| Aspect | Browser (`run_source_json`) | Controller (`run_canonical`) |
 |---|---|---|
-| Every node has a `data` field with a recognized `kind` | Yes — TypeScript exhaustive switches catch unknown kinds | n/a |
-| Every node's `ports` field reflects the current `data` (matches `rebuildPorts(data, ctx)`) | Yes — `applyGraph.ts` calls `createNode` which calls `rebuildPorts` | A direct-mutation tool that changes `data` without rebuilding ports would break the validator |
-| `Inline expressions` map only contains string values | Yes — TypeScript types enforce | n/a |
-| The `id-map` step preserves edge consistency | Yes — `applyGraph.ts` rejects edges whose endpoints don't resolve | n/a |
+| External Action (`RemoteCall`) | always `ExtCallBlocked` | resolved against the `SOLFLOW_CONNECTORS` registry; unregistered modules stay honestly blocked | (`canonical_exec.rs:123-163`) |
+| Step budget per `step` | 64 | 10000, re-checking cancel/timeout flags between batches (`canonical_exec.rs:33, 104-109`) |
+| Cancellation / timeout | none | `Arc<AtomicBool>` flags polled between batches, surfacing as `Cancelled` (`canonical_exec.rs:104-108`) |
+| Error classification | `E_RUNTIME` warning | best-effort map to `RuntimeErrorView` (`DivByZero`, `StackUnderflow`, else `ExtCallFailed`) (`canonical_exec.rs:206-219`) |
 
-### What `applyGraph.ts` does NOT check (and the validator can't either)
+**Cross-layer concern:** the controller resolves a capability into a
+real HTTP connector call. `split_capability` handles both the
+`module::func` and `module.func` forms; `invoke_connector` POSTs
+`{module, function, params}` to the registered base URL and feeds
+the JSON response back via `resolve_remote_call`
+(`canonical_exec.rs:235-279`). A module with no registered endpoint
+and no `*` wildcard returns `ExtCallBlocked`, matching the browser's
+honest "blocked" behavior.
 
-| Unchecked property | Eventual symptom |
+---
+
+## 22.5 Controller and editor over the wire (host-spec)
+
+`host-spec/src/lib.rs` is a pure-data crate (serde derives, no
+transport). The editor mirrors it in `src/runtime-host/types.ts`,
+pinned by the round-trip tests at the bottom of the Rust file.
+
+### What host-spec guarantees
+
+| Guarantee | Source |
 |---|---|
-| The LLM's spec doesn't produce a top-level `let` (T9014) | Runtime panic when the user clicks Apply and runs the workflow |
-| Enum variants in the spec don't share first characters (T9002) | Runtime mis-dispatch when the workflow runs |
-| The spec's `print` nodes have only one argument (the editor's port shape enforces this structurally) | n/a (editor model prevents) |
-| Inline expressions in the spec are well-formed SOL | Compile failure at SOL parse |
+| `WorkflowSubmission.bytecode` is a `Vec<u8>` that in practice carries SOL *source* bytes; host-spec neither encodes nor inspects it | `host-spec/src/lib.rs:46-69, 590-599` |
+| `SourceSpan { start, end }` is owned locally by host-spec (no compiler dependency) so the wire shape is stable | `host-spec/src/lib.rs:506-510` |
+| `SolDiagnostic` mirrors the bridge's diagnostic shape (severity, phase, code, message, span, related, help) | `host-spec/src/lib.rs:548-559` |
+| `DiagnosticPhase` is the same six-variant set as the editor's; `RuntimeErrorView` is the controller-side runtime-error union | `host-spec/src/lib.rs:531-539, 476-501` |
+| `RunStatus` is a 9-state lifecycle; new states are additive (older editors render unknown strings as "Unknown") | `host-spec/src/lib.rs:136-163` |
+| `RunEvent` is the streamed execution-event union, tagged on `kind`, with monotonic `seq` | `host-spec/src/lib.rs:285-377` |
+| `host_spec_major` is the compatibility gate; editor and controller refuse to connect on mismatch | `host-spec/src/lib.rs:23, 621-639` |
 
-**Cross-layer concern:** Sol Man's store-side validation gate
-(`hasErrors` check + `force` override) is the last safety net
-before broken graphs reach the canvas. The repair pass catches
-the most common failure mode (empty `call` nodes). All other
-LLM-side dangers covered in chapter 19 §19.8 are the LLM's
-responsibility to avoid — neither the repair pass nor the
-validator catches them.
+### What the editor client assumes
 
----
+| Assumption | Source |
+|---|---|
+| The submission carries source bytes; the editor encodes `graph.emitted.source` via `TextEncoder` and an empty `[]` spans sidecar | `src/components/RunModal.vue:189-199` |
+| Discriminated unions are tagged on a `kind` field exactly as the Rust serde derives produce | `src/runtime-host/types.ts:69-240` |
+| `host_spec_major` must equal `HOST_SPEC_MAJOR`; the client throws a `version` error otherwise | `src/runtime-host/client.ts:399-410` |
+| Terminal run statuses are `Succeeded` / `Failed` / `Cancelled`; `pollRun` resolves on those | `src/runtime-host/client.ts:280-284, 446` |
 
-## 22.7 The bypass paths
-
-Five known paths through the toolchain that bypass one or more
-layers' guarantees:
-
-1. **Compiler crate consumer that calls `init.rs::init_with_ext`
-   directly**: bypasses no layer; uses the full pipeline.
-2. **Sol Man with `force: true`**: bypasses the validator gate.
-   The emitter still runs; the emitted SOL still goes through
-   the canonical pipeline. End-result: parse/analyze errors at
-   compile time rather than apply time.
-3. **Hand-edited workflow JSON loaded via `graph.loadWorkflow`**:
-   bypasses Sol Man's repair pass and `applyGraph`. The graph
-   skips straight to the validator. Inline expressions and
-   structural shape are validated; content is not.
-4. **Direct AST construction (any future tool that builds
-   `Vec<Ast>` programmatically)**: bypasses the lexer and
-   parser. Must populate every field correctly — most critically
-   `Block.scope` and `DeclFunc.scope` placeholders that the
-   analyzer expects to be `usize::MAX`.
-5. **Direct bytecode construction (future debugger, hot-patcher,
-   bytecode loader)**: bypasses every layer. Must honor every
-   stack-discipline invariant the VM assumes (§22.4). The
-   smallest-blast-radius assertion: every `Call` must be
-   matched by a `Ret`/`RetVal` that pops the corresponding
-   frame.
-
-Each bypass path widens the set of behaviors that can reach the
-VM. A future "verified pipeline" should declare which bypasses
-are supported and add type-tag-aware runtime checks for the
-unsupported ones.
+**Cross-layer concern:** the wire types own their own `SourceSpan`
+and diagnostic shapes so that the editor and controller agree byte
+for byte without either depending on the compiler crate. The field
+named `bytecode` is a historical name; the blob is SOL source.
 
 ---
 
-## 22.8 Implications for future tooling
+## 22.6 Editor runtime-host client to controller run
 
-A short list of design directions this assumption inventory
-suggests:
+The editor's controller-local run path (`src/components/RunModal.vue`,
+`src/runtime-host/client.ts`) submits a workflow, starts a run, and
+polls or streams events.
 
-- **A bytecode verifier pass** between codegen and execution. It
-  would re-walk the `Vec<Inst>`, track an abstract stack-type
-  state, and reject mis-matched ops *before* the VM panics.
-  Would also catch hand-emitted bytecode bugs.
-- **An analyzer regression check** that asserts every name
-  referenced in the AST resolves. Today this is enforced by
-  `exit(1)` paths but not by a single comprehensive check.
-- **An emitter strictness mode** that refuses to silently
-  default-substitute (no `Type::Integer` fallback in `infer_type`,
-  no `0` field-index fallback in `GetField`, no auto-creation in
-  `find_local_offset`). For production builds the lenient mode
-  is fine; for development the strict mode would surface latent
-  bugs.
-- **A round-trip canonical-SOL parser** in the editor. Today
-  the editor is producer-only (chapter 18 §18.5). A round-trip
-  parser would let the editor consume a hand-written `.sol`,
-  giving every cross-layer mismatch a place to surface — the
-  editor would refuse to import SOL that produces a graph it
-  cannot then re-emit identically.
-- **Diagnostic-as-value** error returns (`Result<T,
-  Vec<Diagnostic>>`) at every layer boundary. Today every error
-  is `process::exit(1)` or `panic!`; converting them to values
-  would let tools recover, batch errors, and present them to
-  the user in a structured way.
+| Step | Editor call | Controller endpoint |
+|---|---|---|
+| Submit source | `submitWorkflow` | `POST /workflows` |
+| Start run | `createRun` with `trigger: { kind: 'Manual' }` | `POST /runs` |
+| Wait | `pollRun` (200ms cadence, 60s cap) | `GET /runs/:id` |
+| Cancel | `cancelRun` | `DELETE /runs/:id` |
+| Stream | SSE event stream | `GET /runs/:id/events` |
 
-These directions are out-of-scope for the current docs but worth
-naming so the audit can guide the next compiler refactor.
+| Assumption | What breaks if violated |
+|---|---|
+| The controller compiles + runs the submitted source on the canonical VM | A controller that expected bytecode would reject the source bytes |
+| Capabilities the workflow calls resolve to connectors the controller has registered | Unregistered Actions return `ExtCallBlocked`; the run is reported `Failed` with the blocked reason in `output` |
+| `host_spec_major` matches before any run call | The client refuses with a `version` error |
+
+**Cross-layer concern:** the editor never resolves an external
+Action itself. In browser-sim mode every Action is blocked; in
+controller-local mode the controller is the only place Actions
+become real HTTP calls. This is the single most important behavioral
+seam between the two run modes.
+
+---
+
+## 22.7 Editor-side structural validation to emitted source
+
+`src/graph/validate.ts` runs cheap structural checks on the graph
+*before* emission. These are NOT compiler diagnostics; they use
+kebab-case codes and exist to catch graph problems the emitter would
+otherwise turn into broken SOL.
+
+The full editor check vocabulary: `no-entry`, `unnamed-function`,
+`enum-first-char-collision`, `missing-input`, `bad-inline-expression`,
+`unset-struct`, `unknown-struct`, `unset-field`, `unset-enum`,
+`unknown-enum`, `unset-variant`, `unset-call`, `unknown-call`,
+`unset-var`, `unresolved-var`, `type-mismatch`
+(`validate.ts:39-319`).
+
+| Editor check | Hazard it guards |
+|---|---|
+| `missing-input`, `bad-inline-expression` | A node with an unsatisfied required port or a non-canonical inline expression would emit SOL the bridge rejects with `E_PARSE`. These two codes are the ones the Sol Man store treats as never-bypassable (`validate.ts:130-176`) |
+| `unknown-struct` / `unknown-enum` / `unknown-call` | A reference to a declaration that does not exist would emit dangling SOL |
+| `enum-first-char-collision` | The canonical bytecode dispatches each enum variant by `(first_char as i128) % 10`, so two variants whose first characters share a mod-10 residue compare equal at run time even though the by-name browser sim runs them correctly. The editor surfaces a warning (`validate.ts:66-102`) |
+
+**Cross-layer concern:** the editor validator is a pre-flight gate,
+not a type checker. A graph that passes validation and emits cleanly
+can still fail at the bridge's parse or codegen stage, or surface an
+`E_RUNTIME` warning when run. Structural validity does not imply
+semantic correctness.
+
+---
+
+## 22.8 The bypass paths
+
+A few ways to reach the canonical VM while skipping a layer's
+guarantees:
+
+1. **Hand-written workflow JSON loaded into the store.** Skips the
+   Sol Man repair pass; the graph goes straight to the validator and
+   emitter. Structural shape is checked; canonical semantics are not.
+2. **`force` apply in Sol Man.** Bypasses the editor validator gate.
+   The emitter still runs and the emitted SOL still goes through the
+   bridge, so the failure surfaces as an `E_PARSE` / `E_CODEGEN`
+   diagnostic at run time rather than at apply time.
+3. **Calling a bridge entry point directly with arbitrary text.**
+   Skips the editor entirely. The bridge's `guarded` wrapper still
+   contains any panic as `ICE0001`, and the five-code vocabulary
+   still applies.
+4. **Submitting source to the controller without the editor.** Any
+   client that speaks `host-spec` can `POST /workflows` with source
+   bytes; the controller compiles + runs it on the same canonical VM.
+   The connector registry still gates external Actions.
+
+Each bypass widens what reaches the VM, but none of them changes the
+execution semantics: there is one crate, and it produces string
+errors, the five bridge codes, and the `RuntimeErrorView` wire union.
 
 ---
 
 ## 22.9 Sources cited in this chapter
 
-- `lexer.rs` (full file) — lexer guarantees
-- `parser.rs` (full file) — parser AST guarantees + `usize::MAX`
-  scope placeholders
-- `analyzer.rs` (full file) — analyzer scope mutation +
-  unchecked-paths
-- `bytecode.rs` (full file) — emitter guarantees + auto-create
-  fallbacks
-- `vm.rs` (full file) — VM assumptions about emitter correctness
-- `util.rs` — `type_eq` helper (used by analyzer)
-- `src/graph/validate.ts` — editor validator
-- `src/graph/factory.ts` — port construction (`rebuildPorts`
-  invariant)
-- `src/emit/emit.ts` — editor emitter
-- `src/sol-man/applyGraph.ts` — repair pass + spec-to-graph
-- `src/stores/sol-man.store.ts` — Sol Man store gate
-- All T9xxx entries in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md)
-- Cross-references: chapters 03, 04, 05, 06, 14, 18, 19, 20, 21
+- `sol/src/lexer.rs`, `sol/src/parser.rs`: canonical grammar the
+  emitted source must satisfy
+- `sol/src/workflow.rs`, `sol/src/vm.rs`: `WorkflowExecutor`,
+  `StepResult`, `take_output`, string errors
+- `sol/src/analysis.rs`: capability extraction
+- `compiler-wasm/src/lib.rs`: the JSON envelope, the five diagnostic
+  codes, the in-browser run loop
+- `host-spec/src/lib.rs`: wire types `WorkflowSubmission`,
+  `SourceSpan`, `SolDiagnostic`, `RunStatus`, `RunEvent`,
+  `RuntimeErrorView`, `host_spec_major`
+- `controller/src/canonical_exec.rs`: native canonical execution,
+  connector resolution, error classification
+- `src/emit/emit.ts`: graph to canonical SOL
+- `src/graph/validate.ts`: editor structural checks
+- `src/compiler/types.ts`, `src/runtime-host/types.ts`: the editor
+  mirrors of the envelope and wire shapes
+- `src/runtime-host/client.ts`, `src/components/RunModal.vue`: the
+  controller-local run path
+- Cross-references: chapters 18, 19, 23

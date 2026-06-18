@@ -1,19 +1,20 @@
-# 09 — Structs
+# 09. Structs
 
-> **Status:** Substantive (commit 3). Cross-checked against
-> `parser.rs:487–517` (declaration), `parser.rs:683–697` (literal
-> form), `analyzer.rs:142–145, 409–435, 499` (semantic handling),
-> `vm.rs:7–11, 189–214` (runtime layout), and `test_struct.sol`.
+> **Status:** Rewritten against the canonical `openprem-sol-v2`
+> crate (`sol/`). Cross-checked against `sol/src/parser.rs`
+> (`parse_struct`, struct-literal parsing), `sol/src/ast.rs`
+> (`StructDecl`, `Field`, `Expr::StructInstance`), `sol/src/vm.rs`
+> (struct construction, `MemberAccess`, `StoreField`), and
+> `sol/src/value.rs` (`Value::Struct`).
 
-A struct is a named record type: a set of fields, each with its
-own name and type. SOL's struct system is small but complete enough
-to model the data a workflow needs to thread through its steps.
-Structs are value types from the language's point of view; the
-runtime stores them on a heap and references them by index.
+A struct is a named record type: a set of fields, each with a name
+and a type. Structs let a workflow thread structured data through
+its steps. At runtime a struct is a map from field name to value
+(`Value::Struct(HashMap<String, Value>)`), so fields are addressed
+**by name**, not by position.
 
 This chapter covers declarations, literal construction, field
-access, mutation, nesting, and the practical hazards a writer
-should know about.
+access, mutation, nesting, and arrays of structs.
 
 ---
 
@@ -21,93 +22,78 @@ should know about.
 
 ```sol
 struct Name {
-    field_a: T,
-    field_b: T,
-    field_c: T,
+    field_a: T1;
+    field_b: T2;
+    field_c: T3;
 }
 ```
 
-Parsed at `parser.rs:487–517`. The body is comma-separated `name: T`
-pairs; a trailing comma is optional. The empty body `struct Empty {}`
-is accepted (`test_struct.sol::test_empty_struct`).
+The struct body is a list of `name: Type` fields, each terminated by
+a **semicolon** (`sol/src/parser.rs`, `parse_struct`: it reads a
+field name, a colon, a type, then expects `;`). An empty body
+`struct Empty {}` is accepted.
 
-Each field is a `name: type` pair. Field types may be primitives,
-arrays, or other struct/enum types. Forward references between
-structs work at the analyzer level — the two-pass design that lets
-functions call each other before declaration also lets structs
-mention each other, but the *use site* of a struct type must be
-inside a function body or a later top-level decl, not in another
-struct's field type (the parser walks struct decls top-down). In
-practice, declare leaf structs before composites:
+Each field type may be a primitive, an array, or another struct or
+enum name. Declare leaf structs before composites so the names you
+reference already exist:
 
 ```sol
-struct Point { x: int, y: int }
-struct Nested { p: Point, label: str }
+struct Point { x: int; y: int; }
+struct Nested { p: Point; label: str; }
 ```
 
-### Field-order hazard
-
-The parser stores fields in a `HashMap<String, Type>`
-(`parser.rs:48`). Two consequences:
-
-1. **Declaration order is not preserved internally.** Any tool that
-   reads the AST and writes it back may reorder fields. Hand-written
-   source preserves order on disk, but a round-trip through the AST
-   does not.
-2. **Variant iteration order is unspecified.** Code that pretty-prints
-   a struct cannot rely on fields appearing in declaration order
-   unless it carries its own ordering metadata.
-
-This is recorded as blocker #5 in `SOL_CRATE_IDE_READINESS_PLAN.md`
-§1. Until the compiler switches to an order-preserving container,
-treat struct fields as **named, not positional**, and never write
-code (or tools) that depends on a particular print order.
+Field declaration order is preserved in the AST as a `Vec<Field>`
+(`sol/src/ast.rs`), so source order is stable. At runtime the value
+is a `HashMap<String, Value>` keyed by field name, so field lookup
+is by name and never depends on declaration order.
 
 ---
 
 ## 9.2 Struct literals
 
 ```sol
-TypeName { field_a: expr, field_b: expr, … }
+TypeName { field_a: expr, field_b: expr }
 ```
 
-Parsed at `parser.rs:683–697`. Every literal supplies field-name /
-expression pairs, comma-separated. The order in the literal need
-not match the order in the declaration:
+A struct literal supplies field-name / expression pairs separated by
+**commas** (`sol/src/parser.rs`), producing
+`Expr::StructInstance { name, fields }`. Note the contrast with the
+declaration: declarations separate fields with semicolons, literals
+separate them with commas.
+
+The order of fields in a literal need not match the declaration,
+because the runtime stores them in a name-keyed map:
 
 ```sol
-struct Point { x: int, y: int }
+struct Point { x: int; y: int; }
 
-let a: Point = Point { x: 10, y: 20 };
-let b: Point = Point { y: 99, x: 11 };   // also fine
+workflow "demo" {
+    let a: Point = Point { x: 10, y: 20 };
+    let b: Point = Point { y: 99, x: 11 };   # also fine
+}
 ```
 
-Demonstrated by `test_struct.sol::test_field_order`.
+### Anonymous struct literals
+
+The struct name is optional. An anonymous literal omits the name and
+produces a `Value::Struct` with no associated nominal type:
+
+```sol
+let p = { x: 1, y: 2 };
+let v: int = p.x;
+```
+
+In the AST this is `Expr::StructInstance` with an empty `name`
+(`sol/src/ast.rs`).
 
 ### Partial literals
 
-The parser does not enforce that every declared field appear in a
-literal. The analyzer's `ExprStructInit` branch is currently a
-fall-through to `todo!()` (`analyzer.rs:499`), so missing-field
-detection is not implemented today. A struct literal that omits a
-field will leave that field's underlying slot zero-initialized at
-runtime, which is almost never what you want. **Always supply
-every field.**
-
-This gap is queued for fix in the upstream audit
-(`SOL_CRATE_IDE_READINESS_PLAN.md` §1, blocker #18).
-
-### Literals in conditions — parens required
-
-Struct literals are disabled inside `if` / `while` / `for-in`
-conditions because of an unavoidable ambiguity with the body block.
-Wrap in parentheses to use:
-
-```sol
-if (Point { x: 0, y: 0 }) { … }    // explicit grouping
-```
-
-See [chapter 03 §3.5](./03-syntax.md) and [chapter 07 §7.1](./07-control-flow.md).
+Because there is no type-checker, nothing forces a literal to supply
+every declared field. A literal builds exactly the fields you write
+into the runtime map; a field you omit simply will not be present,
+and reading it later fails at runtime with `field '<name>' not
+found` (`sol/src/vm.rs`, `MemberAccess`). Supply every field you
+intend to read.
 
 ---
 
@@ -117,24 +103,20 @@ See [chapter 03 §3.5](./03-syntax.md) and [chapter 07 §7.1](./07-control-flow.
 s.field
 ```
 
-Left-associative postfix (`parser.rs:608–617`). The analyzer's
-`ExprMemAcc` (`analyzer.rs:409–435`) requires the LHS to be of type
-`Type::Ident(struct_name)`. Chained access works left-to-right:
+Postfix member access (`sol/src/parser.rs`), producing
+`Expr::MemberAccess(Box<Expr>, String)`. At runtime the
+`MemberAccess` instruction requires the value to be a
+`Value::Struct` and looks the field up by name in the map
+(`sol/src/vm.rs`). Chained access works left to right:
 
 ```sol
-let v: int = nested.point.x;
+let v: int = nested.p.x;
 ```
 
-Demonstrated by `test_struct.sol::test_struct_in_struct`.
-
-### Diagnostics
-
-| Cause | Diagnostic |
-|---|---|
-| LHS is not a struct | `<TYPE> is not a struct with members` |
-| Struct name unresolved | `could not find struct <NAME> in scope` |
-| Name resolved but not a struct | `<NAME> is not a struct` |
-| Field absent | `<STRUCT> has no member <FIELD>` |
+If the value is not a struct, the runtime errors with `cannot access
+field '<name>' on <value>`. If the field is absent, it errors with
+`field '<name>' not found`. Both are runtime string errors, not
+compile-time diagnostics.
 
 ---
 
@@ -144,12 +126,22 @@ Demonstrated by `test_struct.sol::test_struct_in_struct`.
 s.field = expr;
 ```
 
-Parsed as an `ExprBinary` with `=` operator on top of a `ExprMemAcc`
-LHS. The type-check rule is the same as plain assignment: LHS and
-RHS types must match (chapter 06 §6.2 + chapter 08 §8.2).
+Field assignment is a statement whose target is
+`Target::MemberAccess` (`sol/src/ast.rs`). The runtime path for it
+is the `StoreField` instruction: it pops the value and the struct,
+inserts the field into the struct's map, and pushes the updated
+struct back (`sol/src/vm.rs`). Assigning to a field of a non-struct
+value errors at runtime with `cannot assign to field of non-struct`.
 
-Demonstrated by `test_struct.sol::test_mutate_field` and
-`::test_mutate_person`.
+```sol
+struct Point { x: int; y: int; }
+
+workflow "demo" {
+    let p: Point = Point { x: 0, y: 0 };
+    p.x = 10;
+    p.y = p.x + 5;
+}
+```
 
 ---
 
@@ -158,120 +150,96 @@ Demonstrated by `test_struct.sol::test_mutate_field` and
 A field's type may itself be a struct:
 
 ```sol
-struct Point { x: int, y: int }
+struct Point { x: int; y: int; }
 struct Nested {
-    p: Point,
-    label: str,
+    p: Point;
+    label: str;
 }
 
-let n: Nested = Nested { p: Point { x: 7, y: 8 }, label: "point" };
-let value: int = n.p.x;
+workflow "demo" {
+    let n: Nested = Nested { p: Point { x: 7, y: 8 }, label: "point" };
+    let value: int = n.p.x;
+}
 ```
 
-Construction nests; access chains. Demonstrated by
-`test_struct.sol::test_struct_in_struct`.
+Construction nests; access chains.
 
 ---
 
 ## 9.6 Structs in arrays
 
-Arrays of struct values are built with the array-literal syntax of
+Arrays of struct values use the array-literal syntax of
 [chapter 11](./11-arrays.md):
 
 ```sol
 let arr: []Point = [
     Point { x: 1, y: 2 },
-    Point { x: 3, y: 4 },
+    Point { x: 3, y: 4 }
 ];
 
 let sum: int = arr[0].x + arr[1].y;
 ```
 
-Demonstrated by `test_array.sol::test_array_of_struct`.
+Each array element is a comma-free struct literal; the array
+elements themselves are comma-separated.
 
 ---
 
 ## 9.7 Structs as parameters and returns
 
 ```sol
-function offset(p: Point, dx: int, dy: int) -> Point {
+fn offset(p: Point, dx: int, dy: int) <- Point {
     p.x = p.x + dx;
     p.y = p.y + dy;
     return p;
 }
 ```
 
-Passing a struct as an argument and returning one work as
-expected. **Mutation semantics are *uncertain* today** — the
-runtime stores structs as heap objects (`vm.rs:7–11`) addressed by
-heap-index references, so the question is whether passing a struct
-to a function copies the heap object or shares the reference. The
-fixture `test_struct.sol::test_pass_struct` exercises the pass case
-but does not write to the struct in the callee, so it doesn't
-distinguish copy from share. Treat parameter passing as **likely
-reference semantics** until a fixture or bytecode reading confirms.
-
-> **Uncertain.** A future commit will inspect `bytecode.rs` for the
-> struct-load and struct-store ops to answer this definitively. The
-> safe defensive habit until then: don't write to struct parameters
-> if the caller relies on the original being unchanged.
+Note the return arrow is `<-`, written before the return type. A
+struct can be passed as an argument and returned as a result. Within
+a function, mutating a struct binding updates that local struct
+value; pass the modified struct back via `return` when the caller
+needs the result.
 
 ---
 
 ## 9.8 Runtime layout
 
-At runtime a struct value is a `HeapObject::Struct(Vec<u64>)`
-(`vm.rs:7–11`). Construction (`Inst::NewStruct(n)`) pops `n`
-field values from the stack, packs them into a `Vec<u64>`, pushes
-the heap onto the end, and pushes the new heap index onto the
-stack (`vm.rs:189–196`). Field access (`Inst::GetField(idx)`) pops
-the heap index, indexes into the field vector by *positional*
-index, and pushes the field value.
-
-The use of a positional field index in the bytecode is what makes
-the **field-order hazard in §9.1** so consequential: the order in
-which fields are emitted into the struct vector is determined by
-the iteration order of the parser's field `HashMap`, which is not
-stable across runs. The current compiler appears to work because
-emission and access happen in the same program run, so the order
-is internally consistent — but two separate compilations of the
-same source may pick different orders, and any external tool that
-constructs a struct value via a separate emission step risks
-mismatching the order.
-
-> **Confirmed.** The hazard exists. The current compiler protects
-> itself by emission/access being in lockstep within one run. Any
-> serialization, persistence, or cross-compile sharing of struct
-> values would expose the bug.
+At runtime a struct is `Value::Struct(HashMap<String, Value>)`
+(`sol/src/value.rs`). Construction packs the field name / value
+pairs into the map; `MemberAccess` reads a field by name;
+`StoreField` writes a field by name (`sol/src/vm.rs`). Because the
+map is keyed by name, field operations never depend on a positional
+index, so there is no field-order hazard at runtime.
 
 ---
 
-## 9.9 Common diagnostics
+## 9.9 Error model for structs
 
-| Diagnostic | Cause | Fixture |
-|---|---|---|
-| `<TYPE> is not a struct with members` | `.field` on a non-struct | n/a |
-| `could not find struct <NAME> in scope` | Field access on an unknown type name | n/a |
-| `<STRUCT> has no member <FIELD>` | Field name not in the struct | n/a |
-| `error: redefinition of <NAME>` | Duplicate `struct` declaration | n/a |
-| `expected `{` after enum declaration` (yes, the error misnames "enum") | Struct body missing `{` | n/a |
-| `expected identifier for a field name in struct declaration` | Field-list entry isn't an identifier | n/a |
-| `expected colon after field name` | Missing `:` between field name and type | n/a |
-| `expected `}` to close struct declaration` | Missing closing brace | n/a |
+Struct errors are runtime string errors surfaced as a
+`Failed(string)` step result. There are no compile-time struct
+diagnostics and no error codes. Representative runtime messages:
 
-Full entries (bad / fixed examples) live in
-[`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
+| Cause | Runtime message |
+|---|---|
+| Field access on a non-struct | `cannot access field '<name>' on <value>` |
+| Field not present | `field '<name>' not found` |
+| Field assignment on a non-struct | `cannot assign to field of non-struct` |
+
+The visual editor runs structural checks before runtime
+(`src/graph/validate.ts`) with kebab-case codes such as
+`unknown-struct`, `unset-struct`, `unset-field`. Those are
+editor-side hints, not compiler output.
 
 ---
 
 ## 9.10 Sources cited in this chapter
 
-- `parser.rs:48` — struct field storage (`HashMap`)
-- `parser.rs:487–517` — struct declaration parser
-- `parser.rs:683–697` — struct literal parser
-- `analyzer.rs:142–145` — struct symbol registration
-- `analyzer.rs:409–435` — field access type rule
-- `analyzer.rs:499` — `ExprStructInit` is `todo!()` fallthrough
-- `vm.rs:7–11` — heap object layout
-- `vm.rs:189–214` — struct construction and field load/store
-- Fixtures: `test_struct.sol`, `test_array.sol` (arrays of structs)
+- `sol/src/ast.rs`: `StructDecl`, `Field`, `Expr::StructInstance`,
+  `Target::MemberAccess`, `Expr::MemberAccess`
+- `sol/src/parser.rs`: `parse_struct` (semicolon-terminated
+  fields), struct-literal parsing (comma-separated, optional name)
+- `sol/src/vm.rs`: struct construction, `MemberAccess`,
+  `StoreField`
+- `sol/src/value.rs`: `Value::Struct(HashMap<String, Value>)`
+- `src/graph/validate.ts`: editor-side struct checks

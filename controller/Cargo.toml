@@ -16,8 +16,6 @@ path = "src/bin/server.rs"
 # Core SOL compilation + execution. The controller hosts the
 # canonical VM so production runs use exactly the same semantics
 # as the browser sim.
-solflow_compiler = { path = "../compiler", features = ["serde"] }
-solflow_runtime = { path = "../runtime" }
 # Wire-protocol shapes (RunRecord, RunEvent, ...) + bytecode
 # encoding helpers.
 solflow_host_spec = { path = "../host-spec" }

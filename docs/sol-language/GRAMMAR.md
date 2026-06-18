@@ -1,357 +1,311 @@
 # SOL Grammar
 
-> **Status:** §1 (lexical), §2 (top-level declarations), §3
-> (statements) and §5 (type syntax) — substantive (commit 2).
-> §4 (expressions and operators) lands in commit 3.
-
-This file is the EBNF-style grammar derived from the SOL parser.
-Source citations point at the line ranges of the matching
-production in the canonical compiler crate.
+This file is the EBNF-style grammar of the canonical SOL parser
+(`sol/src/parser.rs`), with the lexical layer from `sol/src/lexer.rs`.
+Source citations name the matching module; the lexer and parser track no
+line or column information, so no line ranges are given.
 
 ## Conventions
 
 - `UPPER_CASE` names are lexical tokens defined in §1.
-- `lower_case` names are syntactic productions defined in §2 – §5.
+- `lower_case` names are syntactic productions defined in §2 to §5.
 - `'x'` is a literal terminal.
 - `{ x }` is zero-or-more `x`.
 - `[ x ]` is optional `x`.
 - `( a | b )` is one of `a` or `b`.
-- A trailing `;` in the EBNF corresponds to a literal source-level
-  `;`; trailing whitespace in productions is insignificant.
 
-Where the parser is more permissive than what idiomatic SOL uses
-(e.g. trailing commas, empty fields), the grammar reflects the
-parser exactly; the manual chapters call out where idioms are
-narrower.
+Where the parser is more permissive than idiomatic SOL, the grammar
+reflects the parser.
 
 ---
 
 ## §1 Lexical structure
 
-### Whitespace
+### Whitespace and comments
 
 ```
-WS               =  ? Unicode is_whitespace() character ?  |  '_'
-COMMENT_LINE     =  '//' { ? any character except newline ? } newline
-COMMENT_BLOCK    =  '/*' { ? any character ? } '*/'
-TRIVIA           =  WS  |  COMMENT_LINE  |  COMMENT_BLOCK
+WS       =  ? space | tab | newline | carriage-return ?
+COMMENT  =  '#' { ? any character except newline ? } newline
+TRIVIA   =  WS  |  COMMENT
 ```
 
-Trivia is consumed and discarded by the lexer (`lexer.rs:305–331`).
-The literal `_` is included in the trivia set; see chapter 03 §3.1
-for the practical consequences (no digit separators; underscored
-identifiers can lose their leading `_`).
+Trivia is consumed and discarded by the lexer (`sol/src/lexer.rs`). The
+only comment syntax is `#` to end of line. There are no block comments and
+no `//` comments.
 
 ### Identifiers
 
 ```
-IDENT_START      =  ? Unicode is_alphabetic() character ?
-IDENT_CONT       =  IDENT_START  |  digit  |  '_'
-IDENT            =  IDENT_START { IDENT_CONT }
+IDENT_START  =  'A'..'Z'  |  'a'..'z'  |  '_'
+IDENT_CONT   =  IDENT_START  |  '0'..'9'
+IDENT        =  IDENT_START { IDENT_CONT }
 ```
 
-After lexing, an `IDENT` that matches one of the keywords below is
-re-tagged as the keyword token (`lexer.rs:341–356`).
+ASCII only; may start with `_`, never with a digit. An `IDENT` that matches
+a keyword below is re-tagged as that keyword token.
 
-### Keywords
+### Keywords (22)
 
 ```
-KW_EXT       =  'ext'
-KW_FOR       =  'for'
-KW_IN        =  'in'
-KW_AS        =  'as'
-KW_FUNCTION  =  'function'
-KW_IF        =  'if'
-KW_ELSE      =  'else'
-KW_IMPORT    =  'import'
-KW_WHILE     =  'while'
-KW_STRUCT    =  'struct'
-KW_ENUM      =  'enum'
-KW_LET       =  'let'
-KW_RETURN    =  'return'
-KW_TRUE      =  'true'
-KW_FALSE     =  'false'
+KW_BOOL 'bool'   KW_INT 'int'   KW_FLOAT 'float'   KW_CHAR 'char'   KW_STR 'str'
+
+KW_LET 'let'   KW_IF 'if'   KW_ELSE 'else'   KW_WHILE 'while'
+KW_FOR 'for'   KW_IN 'in'   KW_RETURN 'return'
+
+KW_FN 'fn'   KW_WORKFLOW 'workflow'   KW_EMIT 'emit'   KW_CALL 'call'
+
+KW_STRUCT 'struct'   KW_ENUM 'enum'   KW_IMPORT 'import'   KW_FROM 'from'
 ```
 
-There are **fifteen** keywords. No `export`, no `match`, no
-`break`, no `continue`, no `pub`, no `const`.
+There are twenty two keywords (`sol/src/lexer.rs`). `true` and `false` are
+bool literal tokens, not keywords. There is no `function`, `ext`, `export`,
+`match`, `break`, `continue`, `as`, `pub`, or `const`.
 
 ### Literals
 
 ```
-INTEGER          =  digit { digit }                              (* `[0-9]+` decimal only *)
-FLOAT            =  digit { digit } '.' digit { digit }
-STRING           =  '"' { ? any source character except '"' ? } '"'
-CHAR             =  '\'' ? any single source character ? '\''
-BOOL             =  KW_TRUE  |  KW_FALSE
+INTEGER  =  digit { digit }                              (* decimal only, stored i64 *)
+FLOAT    =  digit { digit } '.' digit { digit }          (* digits required both sides *)
+STRING   =  '"' { string_char } '"'
+CHAR     =  '\'' ? exactly one source character ? '\''
+BOOL     =  'true'  |  'false'
 ```
 
 Notes:
 
-- `INTEGER` is parsed as `i128` then truncated to `i64` at runtime
-  (`lexer.rs:383`, `vm.rs:143–146`).
-- `FLOAT` requires digits on both sides of the dot — `1.` is two
-  tokens (`INTEGER`, `Dot`), not a float (`lexer.rs:370–375`).
-- `STRING` has **no escape sequences**; backslashes are stored
-  literally (`lexer.rs:224–233`).
-- `CHAR` is the next single source character after `'`, then the
-  lexer advances past whatever follows it; supply exactly one
-  character (`lexer.rs:218–223`).
+- `INTEGER` is decimal only; no digit separators, no radix prefixes.
+- `FLOAT` requires digits on both sides of the dot; `1.` and `.5` are not
+  floats.
+- `STRING` processes the escapes `\n \t \r \\ \" \'`; any other backslash
+  sequence passes through literally.
+- `CHAR` performs no escape processing; supply exactly one character.
 
 ### Operators and punctuation
 
 ```
-LPAREN '('   RPAREN ')'   LSQUARE '['   RSQUARE ']'   LCURLY '{'   RCURLY '}'
+LPAREN '('   RPAREN ')'   LBRACKET '['   RBRACKET ']'   LBRACE '{'   RBRACE '}'
 
-DOT '.'   COMMA ','   COLON ':'   COLONCOLON '::'   SEMI ';'   ARROW '->'
+DOT '.'   COMMA ','   COLON ':'   DOUBLECOLON '::'   SEMICOLON ';'   ARROW '<-'
 
-EQ '='   BANG '!'   BANG_EQ '!='   EQ_EQ '=='
-LT '<'   LT_EQ '<='   GT '>'   GT_EQ '>='
-PLUS '+'   DASH '-'   STAR '*'   SLASH '/'
-AMP '&'   AMPAMP '&&'   PIPE '|'   PIPEPIPE '||'
-LSHIFT '<<'   RSHIFT '>>'   CARET '^'   TILDE '~'
+ASSIGN '='   NOT '!'   NE '!='   EQ '=='
+LT '<'   LE '<='   GT '>'   GE '>='
+PLUS '+'   MINUS '-'   STAR '*'   SLASH '/'
+AND '&&'   OR '||'
 ```
 
-The lexer is maximal-munch for two-character tokens
-(`==`, `!=`, `<=`, `>=`, `<<`, `>>`, `&&`, `||`, `->`, `::`).
-Source: `lexer.rs:238–296`.
-
-There is no `%` operator. There is no `**` operator. There is no
-ternary `?` / `:`.
+The return-type arrow is `<-` (`ARROW`). There is no `->`. There are no
+bitwise operators (`& | ^ ~`), no shift operators (`<< >>`), no `%`, no
+`**`, and no ternary `? :`. Source: `sol/src/lexer.rs`.
 
 ---
 
-## §2 Top-level declarations
+## §2 Top-level items
 
 ```
-file             =  { decl }
-decl             =  ext_function_decl
-                 |  function_decl
-                 |  var_decl
-                 |  struct_decl
-                 |  enum_decl
-                 |  import_stmt
+program     =  { top_level }
 
-ext_function_decl =
-    KW_EXT KW_FUNCTION IDENT '(' [ param_list ] ')' [ '->' type ] ';'
+top_level   =  import_decl
+            |  function_decl
+            |  struct_decl
+            |  enum_decl
+            |  workflow_decl
 
-function_decl     =
-    KW_FUNCTION IDENT '(' [ param_list ] ')' [ '->' type ] block
+import_decl   =  KW_IMPORT IDENT ';'
+              |  KW_IMPORT STRING KW_FROM IDENT ';'
 
-param_list        =  param { ',' param }
-param             =  IDENT ':' type
+function_decl =  KW_FN IDENT '(' [ param_list ] ')' [ ARROW type ] block
 
-var_decl          =  KW_LET IDENT ':' type [ '=' expr ] ';'
+param_list    =  param { ',' param }
+param         =  IDENT ':' type
 
-struct_decl       =  KW_STRUCT IDENT '{' [ field_list ] '}'
-field_list        =  field { ',' field } [ ',' ]
-field             =  IDENT ':' type
+struct_decl   =  KW_STRUCT IDENT '{' { field } '}'
+field         =  IDENT ':' type ';'
 
-enum_decl         =  KW_ENUM IDENT '{' [ variant_list ] '}'
-variant_list      =  variant { ',' variant } [ ',' ]
-variant           =  IDENT [ '=' INTEGER ]
+enum_decl     =  KW_ENUM IDENT '{' { variant } '}'
+variant       =  IDENT ';'
 
-import_stmt       =  KW_IMPORT IDENT { '.' IDENT } [ KW_AS IDENT ] ';'
+workflow_decl =  KW_WORKFLOW STRING block
 ```
 
-Source: `parser.rs:177–194` for the dispatcher, and the per-form
-productions cited under each construct in chapter 03.
+Source: `sol/src/parser.rs` (`parse_top_level`, `parse_import`,
+`parse_function`, `parse_struct`, `parse_enum`, `parse_workflow`).
 
-The parser's field-list and variant-list loops terminate when the
-next token is not `,`, which means *one* trailing item may legally
-appear without a comma — and a trailing comma is also accepted.
-See `parser.rs:498–513` (struct) and `parser.rs:529–554` (enum).
+Struct fields and enum variants are each terminated with a `;`. The `<-`
+return type on a function is optional; omitting it means no declared return
+type.
 
 ---
 
 ## §3 Statements
 
 ```
-block            =  '{' { stmt } '}'
+block       =  '{' { stmt } '}'
 
-stmt             =  for_stmt
-                 |  if_stmt
-                 |  import_stmt
-                 |  while_stmt
-                 |  var_decl
-                 |  return_stmt
-                 |  block
-                 |  expr_stmt
+stmt        =  let_stmt
+            |  if_stmt
+            |  while_stmt
+            |  for_stmt
+            |  return_stmt
+            |  emit_stmt
+            |  assign_or_expr_stmt
 
-for_stmt         =  KW_FOR IDENT KW_IN expr block         (* struct literals disabled in expr *)
-if_stmt          =  KW_IF expr block [ KW_ELSE block ]    (* struct literals disabled in expr *)
-while_stmt       =  KW_WHILE expr block                   (* struct literals disabled in expr *)
-return_stmt      =  KW_RETURN [ expr ] ';'
+let_stmt    =  KW_LET IDENT [ ':' type ] '=' expr [ ';' ]
 
-expr_stmt        =  expr ';'
+if_stmt     =  KW_IF '(' expr ')' block [ KW_ELSE block ]
+while_stmt  =  KW_WHILE '(' expr ')' block
+for_stmt    =  KW_FOR IDENT KW_IN expr block
+
+return_stmt =  KW_RETURN [ expr ] [ ';' ]
+emit_stmt   =  KW_EMIT STRING [ ';' ]
+
+assign_or_expr_stmt
+            =  expr '=' expr [ ';' ]      (* assignment; LHS must be a valid target *)
+            |  expr [ ';' ]               (* expression statement *)
 ```
 
-Source: `parser.rs:347–360` for `block`, `:361–382` for `stmt`,
-`:383–404` (`for`), `:405–423` (`if`), `:425–438` (`while`),
-`:475–486` (`return`).
+Source: `sol/src/parser.rs` (`parse_stmt`, `parse_block`).
 
-The "struct literals disabled in expr" annotation refers to the
-`can_struct` flag the parser flips off before parsing the
-condition / iterable of a `for` / `if` / `while`. The flag is
-re-enabled inside parentheses, so wrap in `( … )` to use a struct
-literal in those positions.
+Notes:
 
-`if` parses *one* `block` after `else`, but because `block` falls
-through to `stmt` when the next token is not `{`, the canonical
-`else if cond { … }` chain works:
-
-```
-KW_ELSE  →  block  →  stmt  →  if_stmt
-```
-
-with no special-cased `else if` production.
+- `if` and `while` require parentheses around the condition. `for-in` has
+  no parentheses.
+- The type annotation on `let` is optional; when omitted the AST defaults
+  the type to `bool`. The initializer after `=` is required.
+- The trailing `;` is optional on `let`, `return`, `emit`, and expression
+  statements (the parser consumes it if present).
+- An assignment target must reduce to an identifier, a member access
+  (`a.field`), or an index (`a[i]`); other left-hand sides are an error.
+- An `else if` chain is written by nesting an `if_stmt` inside the `else`
+  block; there is no dedicated `else if` production.
 
 ---
 
 ## §4 Expressions and operators
 
-The expression chain is a fourteen-level Pratt-style cascade
-(`parser.rs:584–595`). Each production calls the next-tighter one
-and then loops applying any operators that belong at this
-precedence. Operators *at the same level* associate as marked.
+The expression parser is a precedence-climbing cascade
+(`sol/src/parser.rs`). Each level calls the next-tighter one.
 
-### Precedence table (lowest → highest)
+### Precedence (lowest to highest)
 
-| Level | Production | Operators | Assoc | Result type |
-|---|---|---|---|---|
-| 1 | `assignment` | `=` | right | type of RHS |
-| 2 | `logic_or` | `\|\|` | left | `bool` |
-| 3 | `logic_and` | `&&` | left | `bool` |
-| 4 | `bitwise_or` | `\|` | left | `int` |
-| 5 | `bitwise_xor` | `^` | left | `int` |
-| 6 | `bitwise_and` | `&` | left | `int` |
-| 7 | `equality` | `==` `!=` | left | `bool` |
-| 8 | `relational` | `<` `<=` `>` `>=` | left | `bool` |
-| 9 | `shift` | `<<` `>>` | left | `int` |
-| 10 | `additive` | `+` `-` | left | operand type |
-| 11 | `multiplicative` | `*` `/` | left | operand type |
-| 12 | `unary` | `!` `-` `~` (prefix) | right | operand type |
-| 13 | `postfix` | `.` `[ ]` | left | depends |
-| 14 | `primary` | literals, identifier, `(…)`, calls, struct literal, enum variant, array literal | — | — |
+| Level | Production | Operators | Assoc |
+|---|---|---|---|
+| 1 | `logic_or` | `\|\|` | left |
+| 2 | `logic_and` | `&&` | left |
+| 3 | `comparison` | `==` `!=` `<` `>` `<=` `>=` | non-associative |
+| 4 | `additive` | `+` `-` | left |
+| 5 | `multiplicative` | `*` `/` | left |
+| 6 | `unary` | `-` `!` (prefix) | right |
+| 7 | `postfix` | `.` `[ ]` `::` `( )` | left |
+| 8 | `primary` | literals, identifier, `(...)`, array/struct literals, `call(...)` | — |
+
+The comparison level is non-associative: the parser reads at most one
+comparison operator per `comparison` production, so `a < b < c` does not
+parse as a chain.
 
 ### Expression productions
 
 ```
-expr           =  assignment
+expr           =  logic_or
 
-assignment     =  logic_or  [ '='  assignment ]
 logic_or       =  logic_and    { '||'  logic_and }
-logic_and      =  bitwise_or   { '&&'  bitwise_or }
-bitwise_or     =  bitwise_xor  { '|'   bitwise_xor }
-bitwise_xor    =  bitwise_and  { '^'   bitwise_and }
-bitwise_and    =  equality     { '&'   equality }
-equality       =  relational   { ('==' | '!=')   relational }
-relational     =  shift        { ('<' | '<=' | '>' | '>=')  shift }
-shift          =  additive     { ('<<' | '>>')   additive }
-additive       =  multiplicative { ('+' | '-')   multiplicative }
-multiplicative =  unary        { ('*' | '/')   unary }
+logic_and      =  comparison   { '&&'  comparison }
+comparison     =  additive     [ ('==' | '!=' | '<' | '>' | '<=' | '>=')  additive ]
+additive       =  multiplicative { ('+' | '-')  multiplicative }
+multiplicative =  unary        { ('*' | '/')  unary }
 
-unary          =  ( '!' | '-' | '~' ) unary
+unary          =  ( '-' | '!' ) unary
                |  postfix
 
-postfix        =  primary { '.' IDENT  |  '[' expr ']' }
+postfix        =  primary { postfix_op }
+postfix_op     =  '.' IDENT                          (* member access *)
+               |  '[' expr ']'                       (* index *)
+               |  '::' IDENT '(' [ arg_list ] ')'    (* namespace / RPC call *)
+               |  '::' IDENT                          (* enum variant; LHS must be a bare IDENT *)
+               |  '(' [ arg_list ] ')'               (* call *)
 
 primary        =  INTEGER
                |  FLOAT
-               |  STRING
-               |  CHAR
                |  BOOL
-               |  IDENT '(' [ expr_list ] ')'                    (* function call *)
-               |  IDENT '{' [ field_init_list ] '}'              (* struct literal — see can_struct below *)
-               |  IDENT '::' IDENT                               (* enum variant *)
-               |  IDENT                                          (* bare identifier reference *)
+               |  CHAR
+               |  STRING
                |  '(' expr ')'                                   (* grouping *)
-               |  '[' [ expr_list ] ']'                          (* array literal *)
+               |  '[' [ arg_list ] ']'                           (* array literal *)
+               |  KW_CALL '(' expr ',' expr ')'                  (* capability call *)
+               |  IDENT '{' [ field_init_list ] '}'              (* named struct literal *)
+               |  IDENT                                          (* bare identifier *)
+               |  '{' [ field_init_list ] '}'                    (* anonymous struct literal *)
 
-expr_list           =  expr { ',' expr }
-field_init_list     =  IDENT ':' expr { ',' IDENT ':' expr }
+arg_list        =  expr { ',' expr }
+field_init_list =  field_init { ',' field_init }
+field_init      =  ( IDENT | STRING ) ':' expr
 ```
 
-### The `can_struct` flag (parser state)
+Source: `sol/src/parser.rs` (`parse_expr`, `parse_or`, `parse_and`,
+`parse_comparison`, `parse_term`, `parse_factor`, `parse_unary`,
+`parse_postfix`, `parse_primary`).
 
-Struct literals share a leading `IDENT '{' …` shape with the body
-block of `if` / `while` / `for-in`. To resolve the ambiguity the
-parser carries a `can_struct: bool` flag (`parser.rs:131, 394–397,
-408–411, 428–431`), defaulting to true. Before parsing the condition
-of `if` / `while` / `for-in`, the parser sets it to false; the
-struct-literal rule in `primary` checks it before consuming the
-`{`. The flag is reset to true inside parentheses (`parser.rs:714–716`).
+### Notes on disambiguation
 
-Effect, expressed as a guard on the production:
+- `IDENT '{' ... '}'` (struct literal) versus a following block: the
+  parser peeks past the `{`. It treats the braces as a struct literal when
+  the next token is `}` (empty struct), or an `IDENT`/`STRING` followed by
+  `:`. Otherwise the `IDENT` is a bare identifier and the `{` starts a
+  separate block (for example a loop body).
+- `expr '::' IDENT '(' ... ')'` is a namespace call (`Expr::NamespaceCall`);
+  at runtime it produces a `RemoteCall` with capability `"expr::IDENT"`.
+- `IDENT '::' IDENT` with no following `(` is an enum variant
+  (`Expr::EnumVariant`); the left side must be a bare identifier.
+- `call("module.action", params)` is the capability-call form. It takes a
+  capability expression and exactly one params expression; at runtime it
+  produces a `RemoteCall`.
 
-```
-primary  →  IDENT '{' field_init_list '}'   only when can_struct == true
-```
+### Operator absences
 
-In source-code terms: to use a struct literal as a condition, wrap
-it in parentheses:
+The following do not appear in the parser and are rejected at lex or parse
+time:
 
-```sol
-if (Point { x: 0, y: 0 }) { … }
-```
-
-### Operator absences (for completeness)
-
-The grammar above is exhaustive. The following constructs do *not*
-appear in the parser:
-
+- `->` (the return arrow is `<-`)
 - `%` (modulo)
 - `**` (exponentiation)
-- `?:` (ternary)
-- `?.` (safe access)
-- `??` (nullish coalescing)
+- `& | ^ ~` (bitwise)
+- `<< >>` (shift)
+- `?:` (ternary), `?.`, `??`
 - `..` / `..=` (ranges)
-- `=>` (closure / fat arrow)
-- `in` outside of `for-in` headers
-- `as` outside of `import` aliases
-
-Each of these is rejected at lex/parse time.
+- `=>` (fat arrow)
+- assignment inside an expression (`=` is statement-level only)
 
 ---
 
 ## §5 Type syntax
 
 ```
-type             =  primitive_type
-                 |  ident_type
-                 |  array_type
-                 |  tuple_type
+type            =  primitive_type
+                |  array_type
+                |  named_type
 
-primitive_type   =  'int'  |  'float'  |  'str'  |  'char'  |  'bool'    (* spelled as IDENT, matched in parse_type *)
-ident_type       =  IDENT                                                (* anything else *)
-
-array_type       =  '[' [ INTEGER ] ']' type
-
-tuple_type       =  '(' [ type { ',' type } ] ')'
+primitive_type  =  KW_BOOL | KW_INT | KW_FLOAT | KW_CHAR | KW_STR
+array_type      =  '[' ']' type            (* prefix; nests, e.g. [][]float *)
+named_type      =  IDENT                    (* a struct or enum name *)
 ```
 
-Source: `parser.rs:196–248`.
+Source: `sol/src/parser.rs` (`parse_type`).
 
 Notes:
 
-- The primitives are recognized by string-matching the identifier
-  inside `parse_type` — they are *not* keywords at the lexer level.
-  Don't name a variable `int` (it'll be tokenized as `Ident("int")`
-  and treated as an identifier in expression position) — but the
-  type position will always interpret the name as the primitive.
-- `array_type` size is an `INTEGER` literal only; the parser
-  refuses anything else with: `only integers can be used to specify
-  an array size`. Omitting the size produces an unsized array
-  (`[]T`).
-- `tuple_type` is parser-accepted but no value form exists; see
-  chapter 04 §4.4.
+- Array types are prefix: `[]int`, `[][]float`. There is no sized-array
+  syntax and no postfix `T[]` form.
+- The five primitives are real keyword tokens, so they cannot be used as
+  identifiers.
+- A `named_type` is any identifier; it names a `struct` or `enum`. Name
+  resolution happens when a workflow is compiled, not in the parser.
 
 ---
 
 ## Cross-references
 
-- Explanatory prose: chapters 03, 04, 05, 06.
-- Normative rules and rationale: [`SPEC.md`](./SPEC.md).
-- Conformance fixtures: every positive `.sol` test file
-  (chapter 16).
-- Diagnostics: [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
+- Surface syntax prose: chapter 03.
+- File structure and top level items: chapter 02.
+- Diagnostics: the crate returns string errors; the `compiler-wasm` bridge
+  emits `E_PARSE`, `E_CODEGEN`, `E_NO_WORKFLOW`, `E_RUNTIME`, `ICE0001`
+  (`compiler-wasm/src/lib.rs`); editor structural checks use kebab-case
+  codes (`src/graph/validate.ts`).

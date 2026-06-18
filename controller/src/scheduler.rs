@@ -457,18 +457,13 @@ fn normalize_cron(expr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solflow_compiler::compile_source;
-    use solflow_host_spec::encode_bytecode;
-
     /// Helper: persist a minimal workflow for tests so register()
     /// can verify it exists.
     async fn submit_clean_workflow(p: &SqlitePersistence) -> String {
-        let cp = compile_source("function start() -> int { print(\"tick\"); return 0; }")
-            .value
-            .expect("clean compile");
+        let source = "workflow \"start\" { print(\"tick\"); return 0; }";
         let id = format!("wf_{}", uuid::Uuid::new_v4().simple());
-        let bc = encode_bytecode(&cp.bytecode).unwrap();
-        let spans = serde_json::to_vec::<Vec<()>>(&vec![]).unwrap();
+        let bc = source.as_bytes().to_vec();
+        let spans = b"[]".to_vec();
         let meta = serde_json::json!({
             "name": "scheduler-test",
             "content_hash": "x",

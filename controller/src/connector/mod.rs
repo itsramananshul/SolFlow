@@ -2,12 +2,12 @@
 //!
 //! ## Architecture
 //!
-//! The canonical VM's `Inst::ExtCall` reaches an installed
-//! `ExtCallHandler` (defined in `solflow_runtime`); the controller
-//! installs a handler that parses the call's URL (`connector://name?...`),
-//! looks the connector up in this crate's `ConnectorRegistry`, and
-//! invokes it. The connector returns either a JSON value (pushed
-//! back to the VM stack) or a structured `ConnectorError`.
+//! The canonical openprem-sol-v2 VM yields a `StepResult::RemoteCall`
+//! for an external Action. `canonical_exec` resolves the call's module
+//! to a registered connector endpoint (see `load_connectors`) and
+//! invokes it; this crate's `ConnectorRegistry` + HTTP connector carry
+//! the connector implementation. The connector returns either a JSON
+//! value (resumed back into the VM) or a structured `ConnectorError`.
 //!
 //! ```text
 //!  VM (synchronous)                 controller (async)

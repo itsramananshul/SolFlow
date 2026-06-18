@@ -1,5 +1,13 @@
 # REMEDIATION PLAN
 
+> **Historical document, superseded.** This plan targeted bugs in the previous
+> standalone SOL compiler (the removed `compiler/` and `runtime/` crates),
+> organized around a `T9xxx` catalogue that no longer exists. That compiler
+> was replaced by the canonical `sol/` crate (`openprem-sol-v2`), so the
+> remediation items below no longer apply. For the current, accurate reference
+> see the rewritten chapters 01 through 23, plus `SPEC.md`, `GRAMMAR.md`, and
+> `ERROR_REFERENCE.md`. The text below is kept only as a historical record.
+
 > **Status:** Action plan as of 2026-05-26. Derived from the
 > 36-entry `T9xxx` catalogue in
 > [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md), the analyzer-hole

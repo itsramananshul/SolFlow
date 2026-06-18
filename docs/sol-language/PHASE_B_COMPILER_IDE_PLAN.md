@@ -1,5 +1,14 @@
 # Phase B — Compiler-Backed SOL IDE Implementation Plan
 
+> **Historical document.** This describes the previous standalone SOL
+> compiler (the removed `compiler/` and `runtime/` crates) from the Phase A
+> and Phase B era. The canonical language now lives in the `sol/` crate
+> (`openprem-sol-v2`); it has no type checker and no `E0xxx` or `T90xx` error
+> codes. For the current, accurate reference see the rewritten chapters 01
+> through 23, plus `SPEC.md`, `GRAMMAR.md`, and `ERROR_REFERENCE.md`. The text
+> below is kept as a historical record and does not describe the current
+> system.
+
 > **Status:** Phase B **complete + Productization (v0.2.0)
 > shipped + Phase C started** (2026-05-27). Phase B milestones
 > B.1–B.11 + deferred-B sweeps (c35–c46) closed; Productization
@@ -497,7 +506,7 @@ to the binary — useless in a browser.
 - `cargo build --lib` succeeds
 - `cargo build --bin sol` succeeds (binary still works)
 - Existing fixture tests pass via the new library API path
-- A simple Rust test `let tokens = Lexer::from_str("function
+- A simple Rust test `let tokens = Lexer::from_str("fn
   start() {}").tokens();` compiles and runs
 
 **What NOT to do in B.1:**
@@ -700,7 +709,7 @@ milestone is editor-side work consuming the bridge.
 - Memory leaks if not careful with `wasm-bindgen` lifetimes.
 
 **Success criteria:**
-- `await import('@/sol-compiler').then(c => c.compile('function
+- `await import('@/sol-compiler').then(c => c.compile('fn
   start() {}'))` resolves successfully in the editor
 - The returned AST matches what the Rust binary produces for the
   same source

@@ -1,206 +1,342 @@
 # Examples Catalogue
 
-> **Status:** Substantive (commit 6). Lookup index of every `.sol`
-> fixture cited by this manual. The guided tour lives in
-> [chapter 16](./16-examples.md).
+> **Status:** Substantive. A catalogue of canonical SOL programs
+> that parse, compile, and run through the `openprem-sol-v2` crate
+> (the `sol/` crate) and the editor's wasm bridge
+> (`compiler-wasm/src/lib.rs`). Every snippet below is valid
+> canonical SOL: `fn` with the `<-` return arrow, `#` comments,
+> `[]T` arrays, `;`-separated struct fields and enum variants,
+> `workflow "name" { }` for the runnable unit.
 
-## Index format
+## How to read this catalogue
 
 Each entry lists:
 
-- **Role** — positive (idiomatic program) or negative (intentional error).
-- **Demonstrates** — the language features the fixture exercises.
-- **See also** — the chapter(s) that explain those features.
+- **Role** — positive (idiomatic program that parses, compiles,
+  and runs) or negative (intentional error that the bridge reports
+  with one of its five codes).
+- **Demonstrates** — the language features the example exercises.
+- **Bridge result** — for negatives, the diagnostic the bridge
+  emits (`E_PARSE` / `E_CODEGEN` / `E_NO_WORKFLOW` / `E_RUNTIME` /
+  `ICE0001`). There is no type-checker and no numeric error-code
+  system; see chapter 18 §18.6.
 
-The full source of each fixture is mirrored at `reference/sol files/`
-inside this repository. For a guided walkthrough of selected
-fixtures with annotations, read [chapter 16](./16-examples.md).
+The editor ships five built-in graph samples (`src/samples/`,
+`SAMPLES` in `src/samples/index.ts`) that emit canonical SOL of
+the shapes shown here: `hello`, `monitor`, `orchestration`,
+`payments`, `enterprise`. The canonical formatter that defines the
+exact emitted shape is `sol/src/format.rs`, exercised by
+`sol/tests/format_roundtrip.rs`.
 
 ---
 
-## Positive fixtures
+## Positive examples
 
-### `retest.sol`
+### Minimal workflow
 
-- **Role:** Positive — minimal viable program.
-- **Demonstrates:** `function` declaration, `let`, integer
-  multiplication, `print`, missing-return idiom.
-- **See also:** chapters [03](./03-syntax.md), [05](./05-functions.md),
-  [16 §16.1](./16-examples.md#161-retestsol--minimal-viable-program).
+- **Role:** Positive — smallest runnable unit.
+- **Demonstrates:** `workflow` declaration, `let` with type
+  annotation, arithmetic, the `print` builtin.
 
-### `jjsi.sol`
+```sol
+workflow "main" {
+    let x: int = 2 + 3 * 4;
+    print(x);
+}
+```
 
-- **Role:** Positive — struct + helper + start pattern.
-- **Demonstrates:** struct declaration, struct literal, `bool`-returning
-  helper with early `return`, function parameter passing a struct,
-  void-returning helper.
-- **See also:** [05](./05-functions.md), [09](./09-structs.md),
-  [16 §16.2](./16-examples.md#162-jjsisol--struct--helper--start).
+The runnable unit is the `workflow`; `run_source_json` looks for
+the first `workflow` declaration and executes its body. With no
+`workflow`, the bridge returns `E_NO_WORKFLOW`.
 
-### `s1.sol`
+### Helper function with the `<-` return arrow
+
+- **Role:** Positive — function + call.
+- **Demonstrates:** `fn name(params) <- RetType`, parameter
+  passing, `return value;`, calling a helper from the workflow.
+
+```sol
+fn sub_func(x: int) <- int {
+    return x * 2;
+}
+
+workflow "main" {
+    let y: int = sub_func(9);
+    print(y);
+}
+```
+
+The return type uses `<-`, not `->`. Omitting `<- RetType`
+declares a function with no declared return type.
+
+### Struct + helper + workflow (the `hello` sample)
+
+- **Role:** Positive — struct definition, struct literal, field
+  access through a parameter.
+- **Demonstrates:** `struct` with `;`-separated fields, named
+  struct literal, member access (`p.name`), a void helper, a
+  bool-returning helper with an early `return`.
+
+```sol
+fn is_high(val: int, limit: int) <- bool {
+    if (val > limit) {
+        return true;
+    }
+    return false;
+}
+
+struct Person {
+    name: str;
+    age: int;
+}
+
+fn print_person(p: Person) {
+    print(p.name);
+    print(p.age);
+}
+
+workflow "hello" {
+    let p: Person = Person { name: "evan", age: 19 };
+    print_person(p);
+}
+```
+
+`if` requires parentheses around its condition. Struct fields are
+separated by `;`. A struct literal uses commas between its
+field assignments.
+
+### Enum + comparison + nested branches (the `orchestration` sample)
 
 - **Role:** Positive — small orchestration.
-- **Demonstrates:** `import`, `enum` with mixed implicit/explicit
-  values, struct with composite field (`[4]int`), nested `if`/`else`,
-  enum comparison, void-returning side-effect helpers, struct passing.
-- **Caveat:** Runtime behavior is distorted by T9002 (enum-variant
-  hash collisions) — see chapter 10 §10.5.
-- **See also:** [10](./10-enums.md), [12](./12-imports-and-controllers.md),
-  [16 §16.3](./16-examples.md#163-s1sol--small-orchestration).
+- **Demonstrates:** `import`, `enum` with `;`-separated variants,
+  `Enum::Variant`, nested `if`/`else`, an external capability call.
 
-### `s2.sol`
+```sol
+import slack;
 
-- **Role:** Positive — payment-style orchestration.
-- **Demonstrates:** `ext function` declaration pattern (in spirit;
-  uses internal helpers in this fixture); `deploy` / `shutdown`
-  style of conditional dispatch.
-- **See also:** [05](./05-functions.md), [12](./12-imports-and-controllers.md).
+enum Health {
+    Up;
+    Degraded;
+    Pending;
+}
 
-### `jj_comp.sol`
+workflow "orchestration" {
+    let status: Health = Health::Up;
+    if (status == Health::Up) {
+        call("alert.send", { msg: "all good", level: 1 });
+    } else {
+        print("needs attention");
+    }
+}
+```
 
-- **Role:** Positive — monitoring loop.
-- **Demonstrates:** `while` loop, struct mutation, `print` cadence.
-- **See also:** [07 §7.2](./07-control-flow.md), [09 §9.4](./09-structs.md).
+Enum variants are `;`-separated. Choose distinct first characters
+for the variants: the bytecode dispatches each variant by
+`(first_char as i128) % 10`, so two variants sharing a first
+character collide at runtime (the editor warns with
+`enum-first-char-collision`). A `call("cap.name", params)` carries
+a single params value (here a struct literal) and becomes a remote
+call the host resolves.
 
-### `fwdecl.sol`
+### Loops over an array (the `monitor` sample)
 
-- **Role:** Positive — forward declaration / call-before-definition.
-- **Demonstrates:** Two-pass analyzer design that registers all
-  function signatures before any body is walked.
-- **See also:** [05 §5.5](./05-functions.md).
+- **Role:** Positive — iteration and accumulation.
+- **Demonstrates:** array literal, `for-in` (no parentheses),
+  `while` (parentheses required), assignment, the `len` builtin.
 
-### `test_arith.sol`
+```sol
+workflow "monitor" {
+    let readings: []int = [3, 1, 4, 1, 5];
+    let total: int = 0;
+    for r in readings {
+        total = total + r;
+    }
+    let n: int = len(readings);
+    let i: int = 0;
+    while (i < n) {
+        print(readings[i]);
+        i = i + 1;
+    }
+    print(total);
+}
+```
 
-- **Role:** Positive — exhaustive arithmetic / comparison / logical
-  / bitwise regression.
-- **Demonstrates:** Every binary op the language admits; operator
-  precedence; unary `-`; `print` dispatch by argument type.
-- **See also:** [04](./04-types.md), [08](./08-expressions.md),
-  [13 §13.1](./13-builtins-and-stdlib.md).
+Arrays are prefix `[]T`. `for x in xs { }` takes no parentheses;
+`while (c) { }` requires them. `len` is one of the four builtins
+(`print`, `len`, `to_str`, `type_name`).
 
-### `test_array.sol`
+### Imported capability + emit (the `payments` sample shape)
 
-- **Role:** Positive — array exhaustive.
-- **Demonstrates:** Array literal, indexed read and write, `for-in`
-  iteration (including over empty, single, and nested arrays),
-  arrays of structs.
-- **See also:** [11](./11-arrays.md), [07 §7.3](./07-control-flow.md).
+- **Role:** Positive — payment-style dispatch.
+- **Demonstrates:** `import "name" from module;`, an imported
+  module call `module.func(args)`, `emit "event";`.
 
-### `test_control.sol`
+```sol
+import "charge" from stripe;
 
-- **Role:** Positive — control-flow exhaustive.
-- **Demonstrates:** `if` / `if-else` / nested `if`, `while`
-  (with zero-trip and nested cases), `for-in` (basic / empty /
-  single / nested), early `return`, chained boolean conditions.
-- **See also:** [07](./07-control-flow.md), [16 §16.4](./16-examples.md#164-test_controlsol--control-flow-exhaustive).
+workflow "payments" {
+    let amount: float = 42.5;
+    if (amount > 0.0) {
+        stripe.charge({ cents: amount });
+        emit "payment.charged";
+    } else {
+        emit "payment.skipped";
+    }
+}
+```
 
-### `test_edge.sol`
+`import "charge" from stripe;` brings in a single named capability.
+An imported call `stripe.charge(args)` and a `call("...", ...)`
+both become remote calls. `emit "name";` takes a string-literal
+event name.
 
-- **Role:** Positive — edge cases regression.
-- **Demonstrates:** Large integer literals, `-0`, chained assignment
-  (`a = b = c = 42`), assignment-as-expression-result
-  (`let y = (x = 5)`), complex bitwise expressions, enum variant
-  values (showing T9002), multi-parameter functions, deeply
-  nested returns.
-- **See also:** [08 §8.2](./08-expressions.md), [10 §10.5](./10-enums.md).
+### Anonymous structs, indexing, unary ops
 
-### `test_func.sol`
+- **Role:** Positive — expression coverage.
+- **Demonstrates:** mixed-type array literal, index read, unary
+  negation and logical not, anonymous struct literal.
 
-- **Role:** Positive — function exhaustive.
-- **Demonstrates:** Recursive functions, nested calls, void-style
-  returns, multiple parameters of mixed types.
-- **See also:** [05](./05-functions.md).
+```sol
+workflow "exprs" {
+    let a: []int = [1, 2, 3];
+    let b: int = a[0];
+    let c: int = -a[0];
+    let d: bool = !true;
+    let s = { id: "r", t: 1.5 };
+    print(b);
+}
+```
 
-### `test_scope.sol`
-
-- **Role:** Positive — scope exhaustive.
-- **Demonstrates:** Block-scoping rules, what is visible where
-  across nested blocks, parameter scope, shadowing across scopes.
-- **See also:** [06](./06-variables-and-scope.md).
-
-### `test_struct.sol`
-
-- **Role:** Positive — struct exhaustive.
-- **Demonstrates:** Empty struct, multi-field struct (`Point`,
-  `Person`), nested struct (`Nested`), field-name reordering in
-  literals (`Point { y: 99, x: 11 }`), field mutation, struct in
-  loop, struct passed to function, swap-via-temp pattern.
-- **See also:** [09](./09-structs.md), [16 §16.5](./16-examples.md#165-test_structsol--struct-exhaustive).
-
-### `gemini_long.sol`
-
-- **Role:** Positive — combined showcase.
-- **Demonstrates:** Imports, enum, struct, orchestration patterns
-  layered together. Useful as a self-test for documentation
-  coverage.
-- **See also:** [16 §16.6](./16-examples.md#166-reading-the-larger-fixtures).
-
-### `largemini.sol`
-
-- **Role:** Positive — broad coverage harness.
-- **Demonstrates:** A large surface; not all of it is idiomatic
-  (the file is structured as a regression harness, not a model
-  program).
-- **See also:** [16 §16.6](./16-examples.md#166-reading-the-larger-fixtures).
+`{ id: "r", t: 1.5 }` is an anonymous struct literal (no name).
+Unary `-` and `!` are valid prefix operators. When a `let` omits
+its type annotation, annotate it where the intended type matters,
+since the parser records `bool` by default for an unannotated
+binding.
 
 ---
 
-## Negative fixtures
+## Negative examples
 
-### `error_parse1.sol`
+These are intentional errors. The bridge reports each with one of
+its five codes; none use a `E0xxx` / `T90xx` scheme.
 
-- **Role:** Negative — parse error.
-- **Triggers:** Empty initializer in `let`: `let x: int = ;`.
-- **Diagnostic family:** `E0001 — Empty initializer in let`.
-- **See also:** [`ERROR_REFERENCE.md#E0001`](./ERROR_REFERENCE.md#e0001--empty-initializer-in-let).
-
-### `error_parse2.sol`
+### Empty initializer in `let`
 
 - **Role:** Negative — parse error.
-- **Triggers:** Missing semicolon on a `let`.
-- **Diagnostic family:** `E0002 — Missing semicolon on a statement`.
-- **See also:** [`ERROR_REFERENCE.md#E0002`](./ERROR_REFERENCE.md#e0002--missing-semicolon-on-a-statement).
+- **Triggers:** `let x: int = ;` — no initializer expression.
+- **Bridge result:** `E_PARSE` (severity Error, phase Parser). The
+  parser's plain-string message describes the unexpected token.
 
-### `error_semantic1.sol`
+```sol
+workflow "bad" {
+    let x: int = ;
+}
+```
 
-- **Role:** Negative — semantic error.
-- **Triggers:** `return undefined_var;` where `undefined_var` is
-  not declared.
-- **Diagnostic family:** `E1001 — Variable not in scope`.
-- **See also:** [`ERROR_REFERENCE.md#E1001`](./ERROR_REFERENCE.md#e1001--variable-not-in-scope).
+### Wrong return arrow
 
-### `error_semantic2.sol`
+- **Role:** Negative — parse error.
+- **Triggers:** writing `->` instead of `<-`. The lexer tokenizes
+  `->` as `Minus` then `Gt`, which the parser cannot accept in
+  return-type position.
+- **Bridge result:** `E_PARSE`.
 
-- **Role:** Negative — semantic error.
-- **Triggers:** Duplicate `let` of `x` in the same scope.
-- **Diagnostic family:** `E1002 — Redefinition of name`.
-- **See also:** [`ERROR_REFERENCE.md#E1002`](./ERROR_REFERENCE.md#e1002--redefinition-of-name-variable--parameter--function--struct--enum).
+```sol
+fn double(x: int) -> int {
+    return x * 2;
+}
 
-### `error_semantic3.sol`
+workflow "bad" {
+    print(double(3));
+}
+```
 
-- **Role:** Negative — semantic error.
-- **Triggers:** Duplicate top-level `function foo` declaration.
-- **Diagnostic family:** `E1002 — Redefinition of name` (same
-  diagnostic as duplicate `let`).
-- **See also:** [`ERROR_REFERENCE.md#E1002`](./ERROR_REFERENCE.md#e1002--redefinition-of-name-variable--parameter--function--struct--enum).
+The fix is `fn double(x: int) <- int { … }`.
 
-### `error_runtime.sol`
+### No workflow declaration
+
+- **Role:** Negative — run-time bridge error.
+- **Triggers:** a program with functions but no `workflow`.
+- **Bridge result:** `E_NO_WORKFLOW` (severity Error, phase
+  Analyzer) from `run_source_json`, which needs a `workflow` to
+  execute.
+
+```sol
+fn helper() <- int {
+    return 1;
+}
+```
+
+### Integer division by zero
 
 - **Role:** Negative — runtime error.
-- **Triggers:** `return 1 / 0;` — integer division by zero panics
-  at runtime.
-- **Diagnostic family:** `E2001 — Integer division by zero`.
-- **See also:** [`ERROR_REFERENCE.md#E2001`](./ERROR_REFERENCE.md#e2001--integer-division-by-zero).
+- **Triggers:** `1 / 0` evaluated at runtime. There is no
+  compile-time type checker; the failure surfaces only when the VM
+  runs.
+- **Bridge result:** `E_RUNTIME` (severity Warning, phase Runtime).
+  The VM returns `Failed(string)` and the bridge reports it.
+
+```sol
+workflow "bad" {
+    let x: int = 1 / 0;
+    print(x);
+}
+```
+
+### External capability blocked in the browser sim
+
+- **Role:** Negative — unresolved remote call in the simulator.
+- **Triggers:** a `call("cap", params)` (or imported module call)
+  that the in-browser run cannot fulfil. The VM yields a
+  `RemoteCall`; the sim cannot resolve it and stops.
+- **Bridge result:** the run reports `ExtCallBlocked
+  { function_name, url }`.
+
+```sol
+workflow "remote" {
+    call("warehouse.ship", { order_id: 42 });
+}
+```
+
+In a hosted run the controller resolves the capability and resumes
+execution; only the unhosted browser sim treats it as blocked.
 
 ---
 
-## Compiler-side smoke test (with caveat)
+## Notes on canonical syntax (quick reference)
 
-### `syntax_test.sol` (lives in the compiler crate, not the fixture mirror)
+| Construct | Canonical form |
+|---|---|
+| Function | `fn name(p: T) <- Ret { … }` (the `<- Ret` is optional) |
+| Runnable unit | `workflow "name" { … }` |
+| Return type arrow | `<-` (never `->`) |
+| Comment | `# to end of line` (no block comments, no `//`) |
+| Array type | `[]T` (prefix), e.g. `[]int`, `[][]float` |
+| Struct | `struct S { f: T; g: U; }` (fields `;`-separated) |
+| Enum | `enum E { A; B; }` (variants `;`-separated) |
+| Variable | `let name: Type = value;` |
+| Branch / loop | `if (c) { } else { }`, `while (c) { }`, `for x in xs { }` |
+| Capability call | `call("m.f", params)` |
+| Imported call | `m.f(args)` |
+| Namespace call | `m::rpc(args)` |
+| Enum variant | `Enum::Variant` |
+| Emit | `emit "event";` |
+| Builtins | `print`, `len`, `to_str`, `type_name` (the complete set) |
 
-- **Role:** Mixed-syntax driver kept beside the compiler.
-- **Caveat:** At time of writing, the file uses `export function` —
-  a form the parser rejects (no `export` keyword exists; see
-  chapter 03 §3.6 and `T9001`-class `E0003`). Treat the file as
-  illustrative of *intent*, not as a positive conformance fixture.
-- **See also:** [03 §3.6](./03-syntax.md), [12 §12.2](./12-imports-and-controllers.md).
+---
+
+## Sources cited in this catalogue
+
+- `sol/src/lexer.rs` — tokens (the `<-` Arrow; `#` comments; the
+  22 keywords)
+- `sol/src/parser.rs`, `sol/src/ast.rs` — grammar and AST node set
+- `sol/src/format.rs` — the canonical pretty-printer that defines
+  emitted shape
+- `sol/tests/format_roundtrip.rs` — round-trip coverage of the
+  language used to ground the positive examples
+- `sol/src/vm.rs` — the four builtins, arithmetic and division-by-zero
+  behavior, remote-call yielding
+- `compiler-wasm/src/lib.rs` — the wasm bridge and its five
+  diagnostic codes
+- `src/samples/index.ts` and `src/samples/*` — the editor's five
+  built-in graph samples

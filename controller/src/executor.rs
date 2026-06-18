@@ -1,8 +1,8 @@
 //! Run-execution path. C.2 c62.
 //!
-//! Spawns a tokio task per run; loads bytecode from persistence,
-//! runs through the canonical `solflow_runtime::VM`, persists the
-//! final `RunRecord`.
+//! Spawns a tokio task per run; loads the workflow source from
+//! persistence, runs it through the canonical `openprem-sol-v2` VM
+//! (via `canonical_exec`), persists the final `RunRecord`.
 //!
 //! Wall-clock timeout via `tokio::time::timeout`. Step limit via
 //! `RunOptions::step_limit`. ExtCall stays blocked until C.4 ships
@@ -20,14 +20,6 @@ use crate::event_sink::{
 use crate::{Persistence, SqlitePersistence};
 use solflow_host_spec::{
     RunEvent, RunOutput, RunRecord, RunStatus, RuntimeErrorView,
-};
-// NOTE: the legacy `solflow_runtime` VM is no longer used to execute
-// runs (the canonical openprem-sol-v2 VM is, via `canonical_exec`).
-// These imports remain only for the still-present (dead) connector
-// ExtCall bridge below, kept for the upcoming capability wiring.
-#[allow(unused_imports)]
-use solflow_runtime::{
-    ExtCallContext, ExtCallError, ExtCallHandler, ExtCallHandlerArc, ExtCallValue, RunError,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -286,6 +278,23 @@ pub async fn execute_run(
     // subscriber that immediately fetches the record on the
     // terminal event sees the final state.
     if let Some(c) = &ctx {
+        // Surface each captured print line as a Print event before the
+        // terminal event so SSE subscribers see program output. The
+        // lines were collected by canonical_exec's print buffer and are
+        // already part of `final_output`; emitting them here changes no
+        // VM semantics, it just streams the already-captured output onto
+        // the event channel ahead of the terminal event.
+        for line in &final_output.output {
+            let seq = c.next_seq();
+            c.emit(RunEvent::Print {
+                run_id: c.run_id.clone(),
+                seq,
+                ts: now_ms(),
+                text: line.clone(),
+                source_span: None,
+            })
+            .await;
+        }
         if timed_out {
             c.emit(RunEvent::TimedOut {
                 run_id: c.run_id.clone(),
@@ -305,46 +314,6 @@ pub async fn execute_run(
     }
 }
 
-/// Map the runtime's `RunError` to the wire-stable
-/// `RuntimeErrorView` used in run events. Mirrors the mapping in
-/// compiler-wasm's RunResultView so the editor's discriminator
-/// stays uniform across browser-sim + controller paths.
-fn run_error_to_view(e: &RunError) -> RuntimeErrorView {
-    match e {
-        RunError::DivByZero => RuntimeErrorView::DivByZero,
-        RunError::IndexOutOfBounds { index, length } => {
-            RuntimeErrorView::IndexOutOfBounds { index: *index, length: *length }
-        }
-        RunError::StackUnderflow => RuntimeErrorView::StackUnderflow,
-        RunError::StepLimit { limit } => RuntimeErrorView::StepLimit { limit: *limit },
-        RunError::ExtCallBlocked { function_name, url } => {
-            RuntimeErrorView::ExtCallBlocked {
-                function_name: function_name.clone(),
-                url: url.clone(),
-            }
-        }
-        RunError::ExtCallFailed { connector, function_name, message } => {
-            RuntimeErrorView::ExtCallFailed {
-                connector: connector.clone(),
-                function_name: function_name.clone(),
-                message: message.clone(),
-            }
-        }
-        RunError::HeapShapeMismatch { expected, got } => {
-            RuntimeErrorView::HeapShapeMismatch {
-                expected: (*expected).to_string(),
-                got: (*got).to_string(),
-            }
-        }
-        RunError::Cancelled => RuntimeErrorView::Cancelled,
-        RunError::ResourceLimit { resource, limit } => {
-            RuntimeErrorView::ResourceLimit {
-                resource: (*resource).to_string(),
-                limit: *limit,
-            }
-        }
-    }
-}
 
 /// Phase C C.6 c94 — synthesize a TimedOut terminal when the
 /// VM ignored its cancel hook for too long after the wall-clock
@@ -418,238 +387,6 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-// =============================================================
-//  ExtCall handler — bridges the synchronous VM to async connectors
-// =============================================================
-
-/// Concrete `ExtCallHandler` the controller installs into the VM
-/// when a `ConnectorRegistry` is configured (Phase C C.4 c76).
-///
-/// The VM runs on the spawn_blocking thread; the connector is
-/// async. We bridge by holding the runtime `Handle` captured at
-/// `execute_run` time and calling `Handle::block_on(...)` to wait
-/// for the connector future. That's safe because:
-///
-///   1. The blocking thread is dedicated to this VM run; nothing
-///      else is parked on it.
-///   2. The tokio runtime has worker threads available (we use
-///      `rt-multi-thread`), so block_on won't deadlock waiting
-///      for the only scheduler thread.
-struct ControllerExtCallHandler {
-    registry: ConnectorRegistry,
-    tokio_handle: tokio::runtime::Handle,
-    /// Optional event ctx; when present, emit ExtCallStarted +
-    /// ExtCallCompleted around every dispatch. The seq counter
-    /// is shared with the rest of execute_run via Arc.
-    ctx: Option<Arc<RunEventCtx>>,
-    /// Phase C C.6 c90 — user cancel flag from
-    /// `DELETE /runs/:id`. Short-circuits the connector with
-    /// Failed; reconcile promotes to Cancelled.
-    cancel_flag: Option<Arc<AtomicBool>>,
-    /// Phase C C.6 c94 — wall-clock timeout flag. When set,
-    /// the handler aborts in-flight connector work the same
-    /// way as cancel_flag; the executor promotes the terminal
-    /// to TimedOut.
-    timeout_flag: Option<Arc<AtomicBool>>,
-}
-
-impl ExtCallHandler for ControllerExtCallHandler {
-    fn handle(
-        &self,
-        ctx: ExtCallContext<'_>,
-    ) -> Result<ExtCallValue, ExtCallError> {
-        // Parse the URL up front. Failures are connector-class
-        // errors, not runtime panics.
-        let parsed = crate::connector::parse_connector_url(ctx.url).map_err(|e| {
-            ExtCallError::failed(
-                "(unresolved)",
-                ctx.function_name,
-                format!("invalid connector URL `{}`: {e}", ctx.url),
-            )
-        })?;
-        let connector = self.registry.lookup(&parsed.name).map_err(|e| {
-            ExtCallError::failed("(unresolved)", ctx.function_name, e.to_string())
-        })?;
-
-        // Phase C C.6 c90/c94 — short-circuit if the run was
-        // cancelled OR timed out while the VM was preparing
-        // this ExtCall. Returning Failed here lets execute_run
-        // see the abort; the post-VM mapping promotes to
-        // Cancelled (user cancel) or TimedOut (wall-clock).
-        let cancelled = self
-            .cancel_flag
-            .as_ref()
-            .is_some_and(|f| f.load(Ordering::Relaxed));
-        let timed_out = self
-            .timeout_flag
-            .as_ref()
-            .is_some_and(|f| f.load(Ordering::Relaxed));
-        if cancelled || timed_out {
-            return Err(ExtCallError::failed(
-                parsed.name.clone(),
-                ctx.function_name,
-                if cancelled {
-                    "run cancelled before connector dispatch"
-                } else {
-                    "run timed out before connector dispatch"
-                },
-            ));
-        }
-
-        // Emit ExtCallStarted (fire-and-forget so the VM doesn't
-        // pace on persistence latency).
-        if let Some(ec) = &self.ctx {
-            let event = RunEvent::ExtCallStarted {
-                run_id: ec.run_id.clone(),
-                seq: ec.next_seq(),
-                ts: now_ms(),
-                connector: parsed.name.clone(),
-                fn_name: ctx.function_name.to_string(),
-            };
-            ec.spawn_emit(event);
-        }
-
-        // Marshal args + return-type hint into the invocation
-        // payload. C.4: positional primitive args become a JSON
-        // array (`[arg0, arg1, ...]`). The HTTP connector then
-        // uses that array as the body / object args as query
-        // params per its docs. Connectors that want named args
-        // can read invocation.fn_name / url_params instead.
-        let args_json = serde_json::Value::Array(
-            ctx.args.iter().map(extcall_value_to_json).collect(),
-        );
-        // Phase C C.6 c94 — combined user-cancel + timeout flag
-        // for the connector to race against in-flight I/O.
-        // Build a small atomic that mirrors either bit; the
-        // HttpConnector polls this between retries + via
-        // select! during one attempt so a slow request doesn't
-        // pin the run.
-        let combined_flag = match (&self.cancel_flag, &self.timeout_flag) {
-            (Some(c), Some(t)) => {
-                let combined = Arc::new(AtomicBool::new(false));
-                let cc = c.clone();
-                let tt = t.clone();
-                let cb = combined.clone();
-                // Spawn a tiny watcher that flips `combined`
-                // when either source flips. Watch period 50ms —
-                // tighter than typical HTTP latency, loose
-                // enough to be cheap.
-                self.tokio_handle.spawn(async move {
-                    loop {
-                        if cc.load(Ordering::Relaxed)
-                            || tt.load(Ordering::Relaxed)
-                        {
-                            cb.store(true, Ordering::Relaxed);
-                            return;
-                        }
-                        // Self-shutdown when the combined flag
-                        // is already set OR when the executor's
-                        // arcs are dropped — Arc::strong_count
-                        // catches the latter.
-                        if Arc::strong_count(&cc) == 1
-                            && Arc::strong_count(&tt) == 1
-                        {
-                            return;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    }
-                });
-                Some(combined)
-            }
-            _ => None,
-        };
-        let invocation = crate::connector::ConnectorInvocation {
-            fn_name: ctx.function_name.to_string(),
-            url_params: parsed.params,
-            args: args_json,
-            policy: connector.meta().default_policy,
-            cancel_flag: combined_flag,
-        };
-
-        // Block on the async invocation from this blocking thread.
-        let outcome_result = self.tokio_handle.block_on(connector.invoke(invocation));
-
-        // Emit ExtCallCompleted with ok=true/false BEFORE we
-        // propagate the error so the event stream stays
-        // chronological even on failure.
-        if let Some(ec) = &self.ctx {
-            let event = RunEvent::ExtCallCompleted {
-                run_id: ec.run_id.clone(),
-                seq: ec.next_seq(),
-                ts: now_ms(),
-                connector: parsed.name.clone(),
-                fn_name: ctx.function_name.to_string(),
-                ok: outcome_result.is_ok(),
-            };
-            ec.spawn_emit(event);
-        }
-
-        let outcome = outcome_result.map_err(|e| {
-            ExtCallError::failed(parsed.name.clone(), ctx.function_name, e.to_string())
-        })?;
-
-        // Decode the JSON-shaped outcome value back into the
-        // SOL return type the VM is expecting.
-        json_to_extcall_value(&outcome.value, ctx.ret_type, &parsed.name, ctx.function_name)
-    }
-}
-
-fn extcall_value_to_json(v: &ExtCallValue) -> serde_json::Value {
-    match v {
-        ExtCallValue::Int(n) => serde_json::Value::from(*n),
-        ExtCallValue::Float(f) => {
-            // Non-finite floats can't go through JSON cleanly.
-            // Map NaN / Inf to null so we never panic; the
-            // connector will see an explicit null.
-            serde_json::Number::from_f64(*f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
-        ExtCallValue::Bool(b) => serde_json::Value::from(*b),
-        ExtCallValue::String(s) => serde_json::Value::from(s.clone()),
-        ExtCallValue::Void => serde_json::Value::Null,
-    }
-}
-
-fn json_to_extcall_value(
-    v: &serde_json::Value,
-    expected: solflow_runtime::ExtCallType,
-    connector: &str,
-    fn_name: &str,
-) -> Result<ExtCallValue, ExtCallError> {
-    use solflow_runtime::ExtCallType as T;
-    match expected {
-        T::Void => Ok(ExtCallValue::Void),
-        T::Int => v.as_i64().map(ExtCallValue::Int).ok_or_else(|| {
-            ExtCallError::failed(
-                connector,
-                fn_name,
-                format!("expected integer return, got {v}"),
-            )
-        }),
-        T::Float => v.as_f64().map(ExtCallValue::Float).ok_or_else(|| {
-            ExtCallError::failed(
-                connector,
-                fn_name,
-                format!("expected float return, got {v}"),
-            )
-        }),
-        T::Bool => v.as_bool().map(ExtCallValue::Bool).ok_or_else(|| {
-            ExtCallError::failed(
-                connector,
-                fn_name,
-                format!("expected bool return, got {v}"),
-            )
-        }),
-        T::String => match v {
-            // String connectors typically return a JSON string;
-            // accept any JSON value and stringify non-strings so
-            // a `-> str` ext function never errors on shape.
-            serde_json::Value::String(s) => Ok(ExtCallValue::String(s.clone())),
-            other => Ok(ExtCallValue::String(other.to_string())),
-        },
-    }
-}
 
 // =============================================================
 //  Tests — end-to-end execute_run against a real in-memory DB
@@ -658,20 +395,15 @@ fn json_to_extcall_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solflow_compiler::compile_source;
-    use solflow_host_spec::{encode_bytecode, encode_instruction_spans, RunTrigger};
+    use solflow_host_spec::RunTrigger;
 
-    /// Helper: compile + persist a workflow, return its id.
+    /// Helper: persist a workflow from its canonical SOL source,
+    /// carried as raw UTF-8 bytes exactly as the editor submits it
+    /// (the controller reads the source back out of the bytecode
+    /// blob and runs it through the canonical VM).
     async fn submit_test_workflow(p: &SqlitePersistence, source: &str) -> String {
-        let compiled = compile_source(source);
-        let cp = compiled.value.expect("compile clean");
-        let bytecode = encode_bytecode(&cp.bytecode).unwrap();
-        let host_spans: Vec<Option<solflow_host_spec::SourceSpan>> = cp
-            .instruction_spans
-            .iter()
-            .map(|s| s.map(Into::into))
-            .collect();
-        let spans = encode_instruction_spans(&host_spans).unwrap();
+        let bytecode = source.as_bytes().to_vec();
+        let spans = b"[]".to_vec();
         let id = format!("wf_test_{}", uuid::Uuid::new_v4());
         let meta = serde_json::json!({
             "name": "test",
@@ -689,7 +421,7 @@ mod tests {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let wf = submit_test_workflow(
             &p,
-            "function start() -> int { print(\"hi\"); return 42; }",
+            "workflow \"start\" { print(\"hi\"); return 42; }",
         )
         .await;
         let record = RunRecord {
@@ -718,7 +450,7 @@ mod tests {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let wf = submit_test_workflow(
             &p,
-            "function start() -> int { return 10 / 0; }",
+            "workflow \"start\" { return 10 / 0; }",
         )
         .await;
         let record = RunRecord {
@@ -748,7 +480,7 @@ mod tests {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let wf = submit_test_workflow(
             &p,
-            r#"function start() -> int {
+            r#"workflow "start" {
                  print("alpha");
                  print("beta");
                  return 7;
@@ -816,7 +548,7 @@ mod tests {
             // Long counting loop — plenty more than 100ms of
             // VM steps.
             r#"
-                function start() -> int {
+                workflow "start" {
                     let i: int = 0;
                     while (i < 5000000) {
                         i = i + 1;
@@ -933,9 +665,14 @@ mod tests {
     #[tokio::test]
     async fn execute_run_step_limit_enforced() {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
+        // A non-terminating loop whose body runs a statement each
+        // iteration. The canonical VM bounds `step()` by statements
+        // executed, so a bodied loop accumulates steps and trips the
+        // policy step_limit (an empty-body loop is caught by the
+        // wall-clock path instead, exercised by the timeout test).
         let wf = submit_test_workflow(
             &p,
-            "function start() -> int { while (1 == 1) { } return 0; }",
+            "workflow \"start\" { let i: int = 0; while (1 == 1) { i = i + 1; } return i; }",
         )
         .await;
         let record = RunRecord {

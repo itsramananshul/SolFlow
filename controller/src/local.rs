@@ -533,8 +533,7 @@ impl LocalController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solflow_compiler::compile_source;
-    use solflow_host_spec::{encode_bytecode, encode_instruction_spans, RunTrigger};
+    use solflow_host_spec::RunTrigger;
     use std::time::Duration;
     use tokio::time::sleep;
 
@@ -542,15 +541,11 @@ mod tests {
         let persistence = SqlitePersistence::open_in_memory().await.unwrap();
         let controller = LocalController::new(persistence);
 
-        let compiled = compile_source(source);
-        let cp = compiled.value.expect("compile clean");
-        let bytecode = encode_bytecode(&cp.bytecode).unwrap();
-        let host_spans: Vec<Option<solflow_host_spec::SourceSpan>> = cp
-            .instruction_spans
-            .iter()
-            .map(|s| s.map(Into::into))
-            .collect();
-        let spans = encode_instruction_spans(&host_spans).unwrap();
+        // The editor submits the workflow source as raw UTF-8 bytes;
+        // the controller reads it back and runs it through the
+        // canonical VM. Mirror that exactly here.
+        let bytecode = source.as_bytes().to_vec();
+        let spans = b"[]".to_vec();
         let submission = WorkflowSubmission {
             name: "test".into(),
             description: None,
@@ -582,7 +577,7 @@ mod tests {
     #[tokio::test]
     async fn submit_create_poll_hello_world() {
         let r = run_clean_workflow_through_local_controller(
-            r#"function start() -> int {
+            r#"workflow "start" {
                  print("hello");
                  print("world");
                  return 0;
@@ -656,58 +651,49 @@ mod tests {
     //  Phase C C.4 c77 — end-to-end ExtCall through HTTP connector
     // =============================================================
 
-    /// Build a tiny program that performs `ExtCall` against
-    /// `connector://http?url=<server>&method=POST` with one int
-    /// arg and returns the server's int response. Bypasses the
-    /// SOL parser (the parser doesn't accept `at "url"` syntax —
-    /// endpoint mappings come from outside the language, see
-    /// the architecture doc). Hand-crafted bytecode is the
-    /// expedient way to exercise the full controller path
-    /// without first wiring an ext-endpoints registry.
-    fn make_ext_call_bytecode(url: &str) -> Vec<u8> {
-        use solflow_compiler::bytecode::Inst;
-        use solflow_compiler::parser::{Ast, Type};
-        let program = vec![
-            // arg0: 21
-            Inst::PushConst(Ast::ExprInteger(21)),
-            // function_name + url for the VM to pop
-            Inst::PushConst(Ast::ExprString("scale".into())),
-            Inst::PushConst(Ast::ExprString(url.into())),
-            // ExtCall with one int arg, returning int
-            Inst::ExtCall(vec![Type::Integer], Box::new(Type::Integer)),
-            Inst::Ret,
-        ];
-        solflow_host_spec::encode_bytecode(&program).expect("encode")
-    }
-
+    /// End-to-end ExtCall through an HTTP connector via the canonical
+    /// engine: `canonical_exec` resolves the Action's module to a
+    /// registered connector endpoint and POSTs to it for real.
+    ///
+    /// Ignored by default — it configures the connector registry via
+    /// the process-global `SOLFLOW_CONNECTORS` env var, which is unsafe
+    /// to set while the rest of the suite runs in parallel. Run it
+    /// explicitly:
+    ///   cargo test -p solflow_controller \
+    ///     ext_call_runs_through_http_connector_end_to_end -- --ignored --test-threads=1
     #[tokio::test]
+    #[ignore = "sets process-global SOLFLOW_CONNECTORS; run with --ignored --test-threads=1"]
     async fn ext_call_runs_through_http_connector_end_to_end() {
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/scale"))
-            // Echo the input arg's value multiplied by 2; the
-            // request body will be [21] (positional args array).
             .respond_with(ResponseTemplate::new(200).set_body_json(42_i64))
             .mount(&server)
             .await;
 
+        // Register the `scale` module's connector endpoint the way the
+        // controller resolves them (canonical_exec::load_connectors).
+        unsafe {
+            std::env::set_var(
+                "SOLFLOW_CONNECTORS",
+                serde_json::json!({ "scale": server.uri() }).to_string(),
+            );
+        }
+
         let persistence = SqlitePersistence::open_in_memory().await.unwrap();
         let controller = LocalController::new(persistence);
-        // Submit the hand-crafted bytecode.
-        let url = format!(
-            "connector://http?url={}/scale&method=POST",
-            urlencoding(&server.uri()),
-        );
-        let bytecode = make_ext_call_bytecode(&url);
+        // Canonical source: a workflow that calls the `scale` capability
+        // and returns its result. Submitted as raw source bytes, exactly
+        // as the editor submits.
+        let source = r#"workflow "main" { return scale.run({ "value": 21 }); }"#;
         let submission = WorkflowSubmission {
             name: "extcall-e2e".into(),
             description: None,
-            bytecode,
-            instruction_spans: serde_json::to_vec::<Vec<()>>(&vec![]).unwrap(),
-            source: None,
+            bytecode: source.as_bytes().to_vec(),
+            instruction_spans: b"[]".to_vec(),
+            source: Some(source.to_string()),
         };
         let resp = controller.submit_workflow(submission).await.unwrap();
         let created = controller
@@ -724,6 +710,7 @@ mod tests {
             sleep(Duration::from_millis(20)).await;
             let r = controller.get_run(&created.run_id).await.unwrap();
             if r.status == RunStatus::Succeeded || r.status == RunStatus::Failed {
+                unsafe { std::env::remove_var("SOLFLOW_CONNECTORS") };
                 assert_eq!(
                     r.status,
                     RunStatus::Succeeded,
@@ -738,6 +725,7 @@ mod tests {
                 return;
             }
         }
+        unsafe { std::env::remove_var("SOLFLOW_CONNECTORS") };
         panic!("end-to-end ExtCall run didn't complete in time");
     }
 
@@ -745,13 +733,15 @@ mod tests {
     async fn ext_call_unknown_connector_fails_with_extcall_failed() {
         let persistence = SqlitePersistence::open_in_memory().await.unwrap();
         let controller = LocalController::new(persistence);
-        let bytecode = make_ext_call_bytecode("connector://nope?url=irrelevant");
+        // A capability whose module has no registered connector must
+        // fail clearly — canonical_exec blocks it (ExtCallBlocked).
+        let source = r#"workflow "main" { return nope.run({}); }"#;
         let submission = WorkflowSubmission {
             name: "extcall-unknown".into(),
             description: None,
-            bytecode,
-            instruction_spans: serde_json::to_vec::<Vec<()>>(&vec![]).unwrap(),
-            source: None,
+            bytecode: source.as_bytes().to_vec(),
+            instruction_spans: b"[]".to_vec(),
+            source: Some(source.to_string()),
         };
         let resp = controller.submit_workflow(submission).await.unwrap();
         let created = controller
@@ -775,10 +765,4 @@ mod tests {
         panic!("run didn't fail in time for unknown connector");
     }
 
-    /// Minimal URL-encoder — wiremock URIs use only safe chars
-    /// but `://` and `:` are reserved in the inner query value,
-    /// so we percent-encode the colon + slash subset.
-    fn urlencoding(s: &str) -> String {
-        s.replace(":", "%3A").replace("/", "%2F")
-    }
 }

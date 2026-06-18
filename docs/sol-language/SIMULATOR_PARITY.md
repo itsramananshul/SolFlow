@@ -1,184 +1,145 @@
-# Simulator ↔ Compiler Parity Audit
+# Simulator and Canonical Execution Parity
 
-> **B.10 update — 2026-05-27.** The audit below was originally
-> written as a drift catalog motivating future work. **That work
-> shipped in c28–c30.** SolFlow now executes user workflows via
-> the canonical SOL VM compiled to WASM (`runtime/` crate +
-> `compiler-wasm::run_source_json` export + `runSource()` in the
-> TS API + RunModal integration).
->
-> The drift list below is now history — every "Simulator" column
-> entry is what the **legacy JS interpreter** (`src/runtime/interpret.ts`)
-> does. The canonical column is what SolFlow shows users.
-> `interpret.ts` is kept ONLY as an animation driver for canvas
-> playback (per-node highlighting); its output is no longer
-> displayed anywhere as canonical execution.
->
-> **One intentional drift remains:** `ExtCallBlocked`. The
-> browser refuses external network calls and surfaces a
-> structured runtime error instead of silently faking success.
-> This is by design — see Part 4 of the original B.10 brief.
+## The headline: it is the same VM
 
-Status as of B.10 c27 (2026-05-27 — audit) + c28–c30 (resolution).
+There is no separate hand-written simulator with its own semantics.
+The in-browser "simulator" is the canonical SOL VM
+(`openprem-sol-v2`, the `sol/` crate) compiled to WASM and invoked
+through `run_source_json` in `compiler-wasm/src/lib.rs`. The same
+bytecode `Compiler` and stack `Vm` that the controller runs natively
+are what the browser runs in WASM.
 
-## Layout
+> **Parity is high by construction: one VM, two host environments.**
 
-- **Simulator** — `src/runtime/interpret.ts`. In-browser
-  graph-walking interpreter. ~770 lines. Used by the Run modal.
-- **Compiler** — `compiler/` Rust crate. Authoritative SOL
-  semantics. The TS importer + WASM diagnostics already run
-  against it.
-- **Editor validator** — `src/graph/validate.ts` +
-  `src/graph/expressionLint.ts`. Runs alongside the simulator;
-  catches a lot but not all parity drifts.
+The pipeline is identical on both sides — source goes through
+`Parser` then `Compiler` (bytecode `Chunk`) then `Vm`, tied together
+by `WorkflowExecutor` (`sol/src/workflow.rs`). The browser and the
+controller differ only in the **host** that surrounds the VM: how
+output is captured, whether external Actions are resolved, and what
+step or resource limits apply. They do not differ in language
+semantics: integer division, float coercion, enum dispatch, equality,
+truthiness, and arithmetic all come from the one VM.
 
-## Drifts that matter
+This means the long catalog of "simulator quirks" that older drafts
+of this document described — bool-coerces-to-int addition, JS float
+division, `toBool` on strings, JS operator precedence — **does not
+exist**. Those were artifacts of a legacy JS interpreter that is no
+longer the execution path. The browser run and the controller run
+evaluate the same compiled bytecode.
 
-Each row is a place where running the simulator on a given
-workflow produces a different observable result than compiling +
-running through the canonical SOL VM would.
+## The real remaining gaps
 
-### Type coercion in `applyBinaryOp` / `applyUnaryOp`
+Because the VM is shared, the only parity gaps are host-environment
+differences plus one genuine language-level hazard.
 
-| Operation | Simulator | Canonical SOL | Notes |
-|---|---|---|---|
-| `true + 1` | `2` (bool→1, then add) | **Compile error E1006** | sim's `num()` coerces bool to 0/1 |
-| `"42" + 1` | `"421"` (string concat) | **Compile error E1006** | sim's `numOrConcat()` treats `+` as string concat when either operand is string |
-| `"a" + "b"` | `"ab"` | **Compile error T9023 / E1006** | str+str is rejected by analyzer; cataloged as bug T9023 |
-| `"hi" / 2` | NaN or RuntimeError | Compile error E1006 | sim attempts numeric coerce |
-| `!"hello"` | `false` (toBool of non-empty string) | Compile error E1012 | sim's `toBool` accepts strings; compiler restricts `!` to int/float/bool |
-| `~3.5` | RuntimeError (no ~ in sim) | Compile error E1013 | sim doesn't implement bitwise NOT at all |
+### Gap 1 — external Actions do not execute in the browser
 
-**Impact:** workflows that "run" in the sim may fail to compile.
-Surface: import → analyze → see compiler errors that didn't show
-up in the sim's diagnostics. This already partially shows up
-through B.5 live diagnostics; future B.10 work could lift the
-simulator's evaluator to use canonical semantics.
+The browser host cannot make real network calls, so it does not
+execute external Actions. In the VM, every `call("m.f", p)`, imported
+`m.f(args)`, or `m::rpc(args)` compiles to a `RemoteCall` step
+(`StepResult::RemoteCall { capability, params }` in `sol/src/vm.rs`).
+The browser host (`run_source_json`) does not resolve these; it
+surfaces a structured `ExtCallBlocked { function_name, url }` runtime
+error and stops, rather than faking success.
 
-### Truthy / falsy in control flow
+The controller host resolves the same `RemoteCall` through its
+connectors and resumes the VM via `resolve_remote_call`. So a workflow
+that calls external Actions runs to completion on the controller but
+halts at the first Action in the browser, by design.
 
-| Construct | Simulator condition | Canonical SOL condition |
+### Gap 2 — the browser surfaces a narrow runtime-error set
+
+The browser host emits only two structured runtime errors:
+
+- `ExtCallBlocked { function_name, url }` — an Action was reached.
+- `StepLimit { limit }` — the run exceeded the step budget.
+
+These are the `RtErr` variants in `compiler-wasm/src/lib.rs`. Anything
+the VM itself reports as `StepResult::Failed(String)` (for example
+division by zero, index out of bounds, a type mismatch surfacing at
+runtime) comes back as a plain `E_RUNTIME` warning diagnostic with the
+VM's message string — there is no error-code taxonomy.
+
+The controller resolves real Actions, so it can additionally surface
+the wider runtime-error union that the wire protocol models in
+`src/runtime-host/types.ts` (`RuntimeErrorView`): `DivByZero`,
+`IndexOutOfBounds`, `StackUnderflow`, `StepLimit`, `ExtCallBlocked`,
+`ExtCallFailed`, `HeapShapeMismatch`, `Cancelled`, `Timeout`,
+`ResourceLimit`. Of these, only `ExtCallBlocked` and `StepLimit` ever
+originate in the browser; the rest (notably `ExtCallFailed`,
+`Timeout`, `ResourceLimit`) only arise once a controller is actually
+resolving connectors and enforcing per-run caps. The union exists so
+both sides can exhaustively match the same shape.
+
+### Gap 3 — step and resource limits differ by host
+
+The browser `run_source_json` drives the executor with `step(64)` in a
+loop and aborts with `StepLimit` after a fixed number of iterations
+(the stated limit is 1,000,000). The controller enforces its own
+limits and can additionally surface `Timeout` and `ResourceLimit`.
+A workflow that loops longer than the browser's budget aborts in the
+browser but may complete (or hit a different cap) on the controller.
+
+### Gap 4 — the enum first-character dispatch hazard (the real one)
+
+This is the one genuine language-level parity gap, and it is worth
+documenting because it is invisible until deploy time.
+
+The canonical bytecode dispatches each enum variant by
+`(first_char as i128) % 10` (`sol/src/compiler.rs` / `sol/src/vm.rs`).
+Two variants whose first characters share a mod-10 residue therefore
+compare **equal** at runtime in compiled bytecode — for example
+`Status::Active` and `Status::Aborted` both reduce to `'A' % 10`.
+
+Where does the gap come from if it is one VM? The VM's own
+`Value::Enum(name, variant)` compares enum values **by name**, but the
+compiled equality path for enum comparisons in bytecode goes through
+the first-char hash. The result is a hazard that depends on how a
+given comparison was compiled, and it is exactly the kind of mismatch
+a naive by-name expectation would miss.
+
+The editor protects against this with a structural check rather than
+relying on the run to expose it. `src/graph/validate.ts` emits the
+`enum-first-char-collision` warning whenever two variants in the same
+enum collide on `charCodeAt(0) % 10`, telling the user to rename one
+so every variant has a distinct first character. This is a warning,
+not an error — the workflow still applies — but it makes the deploy
+time surprise visible at edit time.
+
+## The error model on both sides
+
+There is no type-checker and no `E0xxx` / `T90xx` code taxonomy
+anywhere in the live pipeline. The `compiler-wasm` bridge emits a
+fixed five-code vocabulary:
+
+| Severity | Phase | Code |
 |---|---|---|
-| `if (cond)` | `toBool(cond)` — accepts non-zero numbers, non-empty non-"false" strings | Must be `bool`, else E1003 |
-| `while (cond)` | `toBool(cond)` | Must be `bool`, else E1003 |
+| Error | Parser | `E_PARSE` |
+| Error | Codegen | `E_CODEGEN` |
+| Error | Analyzer | `E_NO_WORKFLOW` |
+| Warning | Runtime | `E_RUNTIME` |
+| Error | Internal | `ICE0001` |
 
-**Impact:** `while (1)` and `if ("yes")` both run forever / take
-the true branch in the sim; both are E1003 compile errors. Users
-who simulate-then-import then-fix is the loop today.
+Type mismatches are never caught at compile time; the VM surfaces them
+at runtime as `Failed(string)`, which the bridge reports as an
+`E_RUNTIME` warning. The editor's own structural checks
+(`src/graph/validate.ts`) use kebab-case codes (`no-entry`,
+`missing-input`, `bad-inline-expression`, `enum-first-char-collision`,
+and the rest); those are graph validations, distinct from the bridge's
+diagnostics.
 
-### Inline expressions evaluated as JS
+## What this means in practice
 
-The sim's `evalInline()` translates `E::V` → `"E::V"` then
-constructs a `new Function(...)` to eval the expression with
-scope bindings injected as arguments. That means:
-
-- **Integer division** — JS `/` is float division. SOL `int /
-  int` is integer division (truncated). `7 / 2` is `3.5` in the
-  sim, `3` in canonical SOL.
-- **Bitwise** — JS bitwise ops cast operands to int32 (signed,
-  32-bit). SOL integers are i128 (per parser) and the VM's bitwise
-  ops operate on those. Large or negative shifts will diverge.
-- **Operator precedence** — JS's table is not identical to SOL's.
-  The always-parenthesize-everything emit rule masks most cases,
-  but hand-edited inline expressions can hit this. The validator
-  + lint accept many such expressions today.
-- **Float formatting** — JS `Number.prototype.toString()` drops
-  trailing `.0`; SOL's `print` for Float emits a fixed
-  representation.
-
-### Equality
-
-| Comparison | Simulator | Canonical SOL |
-|---|---|---|
-| `a == b` | JS `===` then string-norm for `E::V` shapes | Per-type dispatch: `IntEq`, `FloatEq`, `CharEq`, `EqStr` |
-| Enum variants stored as strings (`"E::V"`) | String equality with normalization (`E::V(N)` ↔ `E::V`) | Integer hash equality on `(char)first_variant % 10` — see T9002 |
-
-**T9002 redux:** the variants-by-first-char hash isn't caught by
-the simulator at all — two variants `Active` and `Aborted` compare
-equal in the canonical VM but unequal in the sim. The validator
-already warns on this collision class.
-
-### Print
-
-| Aspect | Simulator | Canonical SOL |
-|---|---|---|
-| Multi-arg `print(a, b)` | Importer rewrites as `print([a, b])`; sim then prints array repr | Compiler's `print` takes one arg; per-type instruction (`PrintInt` / `PrintFloat` / `PrintChar` / `PrintString`) |
-| Value formatting | `formatValue()` — adds type-appropriate quoting | Format embedded in the per-type print instruction |
-| Newlines | Each `print` adds a newline | Same |
-
-Acceptable drift; both produce human-readable output.
-
-### Runtime errors
-
-| Condition | Simulator | Canonical SOL |
-|---|---|---|
-| Division by zero | Throws RuntimeError (sim) | VM panics (not yet a structured diagnostic) |
-| Array OOB | Throws RuntimeError | VM panics |
-| Stack overflow | "Max call stack" RuntimeError after 1000 frames | VM stack overflow |
-| Wall-clock timeout | RuntimeError after 60s | No timeout (host's problem) |
-| Step limit | RuntimeError after 100k steps | No step limit |
-
-The sim's safety rails are editor-side conveniences; the canonical
-VM doesn't have them. Workflows that rely on sim's auto-abort
-won't behave identically in deployment.
-
-### Security note
-
-`evalInline()` runs through `new Function(...)` after a
-`lintInlineExpression()` gate. The lint is the only thing
-preventing arbitrary JS execution; do NOT weaken it. The B.10
-ideal is to replace the JS-eval path with a deterministic SOL
-mini-evaluator that respects compiler semantics.
-
-## What's safe today
-
-The simulator IS faithful for these areas:
-
-- Pure-bool conditions (no coercion in play)
-- Integer arithmetic where all operands are int
-- `for-in` over array literals
-- `let` / `assign` for primitives
-- `return` semantics
-- Function call dispatch (graph-resolved)
-- Struct field access + mutation
-- Array indexing (bounds-checked in sim, undefined behavior in
-  canonical VM — but bounds errors don't change well-formed
-  workflows)
-
-The validator already catches most divergent expressions through
-`lintInlineExpression`; a clean validator + clean compiler
-diagnostics gives high confidence the sim and canonical execution
-will agree.
-
-## Resolution (B.10 c28–c30)
-
-Recommendation 4 — "ship the canonical VM as a second WASM
-target and have the sim invoke it" — was the chosen path.
-Recommendations 1–3 became unnecessary; the legacy JS sim is no
-longer the source of truth, so its quirks no longer matter.
-
-What shipped:
-
-- **`runtime/` sibling Rust crate** — vendored the upstream VM
-  with four surgical edits: `println!` → output-buffer capture,
-  `Inst::ExtCall` → structured `ExtCallBlocked` error (browser
-  can't do raw TCP), step limit (default 1M), common runtime
-  errors (DivByZero / IndexOOB / StackUnderflow / HeapShapeMismatch)
-  returned as `RunError` values instead of panics.
-- **`compiler-wasm::run_source_json`** — new export that compiles
-  via the canonical compiler + runs via the canonical VM, all
-  in one WASM bundle (357KB optimized).
-- **`runSource()`** in `src/compiler/api.ts` — typed TS wrapper.
-- **RunModal** — output panel now displays canonical-VM output;
-  legacy JS interpreter kept only for canvas playback animation
-  (per-node highlighting), with an honest label.
-
-The audit table below is preserved as historical context — every
-"Simulator" entry IS what the legacy JS interpreter does, and IS
-the divergence the user used to see. Those entries no longer
-describe what SolFlow displays; the canonical column is now
-authoritative.
-
-`interpret.ts` carries an explicit `NOT AUTHORITATIVE` banner +
-a `DO NOT extend` note. Future work that needs richer simulation
-semantics should land in `runtime/`, not the JS interpreter.
+- If a workflow uses no external Actions, the browser run and the
+  controller run produce the **same** return value and output, because
+  they execute the same bytecode on the same VM.
+- If a workflow calls external Actions, the browser run halts at the
+  first one with `ExtCallBlocked`; only the controller can run it to
+  completion.
+- The one semantic gotcha to watch is colliding enum variant first
+  characters; the editor warns about it via
+  `enum-first-char-collision`.
+- The wider runtime-error union (`ExtCallFailed`, `Timeout`,
+  `ResourceLimit`, and the panic-class errors) is a controller-side
+  surface; the browser only ever produces `ExtCallBlocked`,
+  `StepLimit`, and plain `E_RUNTIME` messages.

@@ -1,9 +1,9 @@
 # Root Cargo workspace for SolFlow's Rust components.
 #
-# Today the workspace has one member — the standalone SOL compiler
-# vendored into `compiler/`. The B.4 WASM bridge will add a second
-# member (`compiler-wasm/`) without touching this manifest beyond an
-# additional entry in the members list.
+# The canonical SOL language lives in `sol/` (openprem-sol-v2). The
+# WASM bridge in `compiler-wasm/` compiles + runs SOL for the editor;
+# `host-spec/` carries the IDE-to-controller wire types and
+# `controller/` is the run host. All four build on `sol/`.
 #
 # The TypeScript editor at the repo root is independent of this
 # workspace; Vite / pnpm ignore `Cargo.toml`. The `target/` build
@@ -11,4 +11,4 @@
 
 [workspace]
 resolver = "2"
-members = ["sol", "compiler", "compiler-wasm", "runtime", "host-spec", "controller"]
+members = ["sol", "compiler-wasm", "host-spec", "controller"]
