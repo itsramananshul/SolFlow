@@ -373,11 +373,9 @@ const orderedSamples = computed<Sample[]>(() => {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  -webkit-box-orient: vertical;
+  white-space: normal;
   overflow: hidden;
+  max-height: 4.8em;
 }
 .card-cta {
   font-size: 0.6875rem;
@@ -548,11 +546,9 @@ const orderedSamples = computed<Sample[]>(() => {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: normal;
   overflow: hidden;
+  max-height: 3.1em;
 }
 .sample-cta {
   font-size: 0.625rem;
