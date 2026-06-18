@@ -518,6 +518,19 @@ pub struct SourceSpan {
     pub end: usize,
 }
 
+/// A registered external provider the controller will actually resolve
+/// `call("module.function", …)` against, returned by `GET /providers`.
+/// This is the honest "what will run for real" listing: the modules a
+/// workflow can reach and the connector URL each resolves to. A `module`
+/// of `"*"` is a wildcard that catches every Action regardless of name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderInfo {
+    /// SOL module name (the `module` in `call("module.fn", …)`), or `"*"`.
+    pub module: String,
+    /// Base HTTP URL the controller POSTs invocations to.
+    pub url: String,
+}
+
 /// One step of a run's execution trace. Mirrors the browser-sim
 /// `run.trace[]` shape byte for byte so the editor's Trace tab
 /// renders controller and browser runs identically.

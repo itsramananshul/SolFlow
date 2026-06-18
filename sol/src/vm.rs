@@ -35,6 +35,11 @@ pub enum TraceKind {
     Call,
     /// A user-defined function returned to its caller.
     Return,
+    /// An external capability (Action) call is about to be made;
+    /// `detail` carries the capability name (`module.function`).
+    ExtCall,
+    /// An external capability call returned a value to the workflow.
+    ExtResult,
     /// An instruction failed; `detail` carries the message.
     Error,
 }
@@ -241,6 +246,13 @@ impl Vm {
                 }
                 InsResult::RemoteCall(cap, params) => {
                     self.step_count += 1;
+                    // Record the external call against its source line before
+                    // suspending. self.pc still points at the call instruction.
+                    self.push_trace(
+                        TraceKind::ExtCall,
+                        self.chunk.span_at(self.pc),
+                        Some(cap.clone()),
+                    );
                     return Ok(StepResult::RemoteCall { capability: cap, params });
                 }
                 InsResult::CallFunc(name, args) => {
@@ -304,11 +316,32 @@ impl Vm {
         Ok(StepResult::Yielded(stmts_ran))
     }
 
-    pub fn resolve_remote_call(&mut self, _capability: &str, result: Value) {
+    pub fn resolve_remote_call(&mut self, capability: &str, result: Value) {
+        // Record the external call's return before advancing past the call
+        // site (self.pc still points at the call instruction here).
+        self.push_trace(
+            TraceKind::ExtResult,
+            self.chunk.span_at(self.pc),
+            Some(capability.to_string()),
+        );
         self.pending_result = Some(result);
         self.pending_call = None;
         self.pc += 1;
         self.ignore_next_boundary = true;
+    }
+
+    /// Record a trace error against the current instruction's source span.
+    /// Used by the host when an external call is blocked or fails: the VM
+    /// is suspended at the call site, so this ties the failure to the
+    /// exact `call(...)` statement.
+    pub fn trace_ext_error(&mut self, message: String) {
+        self.push_trace(TraceKind::Error, self.chunk.span_at(self.pc), Some(message));
+    }
+
+    /// Source span of the instruction the VM is currently at, if mapped.
+    /// Lets the host attribute an external-call failure to its call site.
+    pub fn current_span(&self) -> Option<(usize, usize)> {
+        self.chunk.span_at(self.pc)
     }
 
     fn exec_instruction(&mut self, instr: &Instruction) -> Result<InsResult, String> {
@@ -1037,6 +1070,86 @@ mod trace_tests {
         // Recursion drives depth to 4 (workflow=0, then fact nests to 4).
         let max_depth = trace.iter().map(|e| e.depth).max().unwrap();
         assert_eq!(max_depth, 4);
+    }
+
+    /// Drive a program with tracing on, resolving every external call with
+    /// `resolve` (capability -> value). Returns the trace.
+    fn trace_with_ext(
+        src: &str,
+        mut resolve: impl FnMut(&str, &Value) -> Value,
+    ) -> Vec<TraceEvent> {
+        let prog = Parser::new(src).parse().expect("parse");
+        let chunk = Compiler::new().compile(&prog).expect("compile");
+        let mut vm = Vm::new(chunk);
+        vm.enable_trace("w");
+        let _ = take_output();
+        loop {
+            match vm.step(1_000_000) {
+                Ok(StepResult::Completed(_)) => break,
+                Ok(StepResult::Yielded(_)) => continue,
+                Ok(StepResult::Failed(_)) => break,
+                Ok(StepResult::RemoteCall { capability, params }) => {
+                    let v = resolve(&capability, &params);
+                    vm.resolve_remote_call(&capability, v);
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = take_output();
+        vm.trace
+    }
+
+    #[test]
+    fn external_call_emits_extcall_and_extresult() {
+        let src = r#"
+            import http;
+            workflow "w" {
+                let r: int = http.fetch({ url: "x" });
+                return r;
+            }
+        "#;
+        let trace = trace_with_ext(src, |_cap, _p| Value::Int(7));
+        let call = trace.iter().find(|e| e.kind == TraceKind::ExtCall).expect("ExtCall");
+        assert_eq!(call.detail.as_deref(), Some("http.fetch"));
+        assert!(call.span.is_some(), "ext call must carry its source span");
+        let res = trace.iter().find(|e| e.kind == TraceKind::ExtResult).expect("ExtResult");
+        assert_eq!(res.detail.as_deref(), Some("http.fetch"));
+        // The result event maps to the same call site as the call.
+        assert_eq!(call.span, res.span);
+    }
+
+    #[test]
+    fn blocked_external_call_error_points_at_call_site() {
+        // No resolution path here: simulate the host blocking the call and
+        // recording an error at the call site via trace_ext_error.
+        let src = r#"
+            import http;
+            workflow "w" { http.fetch({ url: "x" }); return 0; }
+        "#;
+        let prog = Parser::new(src).parse().unwrap();
+        let chunk = Compiler::new().compile(&prog).unwrap();
+        let mut vm = Vm::new(chunk);
+        vm.enable_trace("w");
+        let _ = take_output();
+        let mut blocked_span = None;
+        loop {
+            match vm.step(1_000_000) {
+                Ok(StepResult::RemoteCall { capability, .. }) => {
+                    blocked_span = vm.current_span();
+                    vm.trace_ext_error(format!("external call '{capability}' is blocked"));
+                    break;
+                }
+                Ok(StepResult::Yielded(_)) => continue,
+                _ => break,
+            }
+        }
+        let _ = take_output();
+        assert!(blocked_span.is_some(), "current_span must expose the call site");
+        let err = vm.trace.iter().find(|e| e.kind == TraceKind::Error).expect("Error event");
+        assert!(err.detail.as_deref().unwrap_or("").contains("blocked"));
+        assert_eq!(err.span, blocked_span, "error ties to the call site span");
+        // The ExtCall was recorded before the block.
+        assert!(vm.trace.iter().any(|e| e.kind == TraceKind::ExtCall));
     }
 
     #[test]

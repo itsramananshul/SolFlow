@@ -102,6 +102,8 @@ pub fn router(controller: LocalController) -> Router {
         .route("/events/*path", post(post_event))
         // Phase C C.4 — connectors
         .route("/connectors", get(get_connectors))
+        // Phase 3 — real providers the controller resolves call(...) against
+        .route("/providers", get(get_providers))
         // Phase C C.5 — SSE run-event stream
         .route("/runs/:id/events", get(get_run_events))
         // Phase C C.6 — orchestration introspection
@@ -275,6 +277,15 @@ async fn get_connectors(
     State(s): State<AppState>,
 ) -> Result<Json<Vec<ConnectorMeta>>, ApiError> {
     Ok(Json(s.controller.list_connectors()))
+}
+
+/// `GET /providers` — the real providers the controller resolves
+/// `call("module.function", …)` against (the `SOLFLOW_CONNECTORS`
+/// registry). This is the honest "what will run for real" listing the
+/// editor shows so users know which capability calls execute versus
+/// block. Empty when no providers are configured.
+async fn get_providers() -> Json<Vec<solflow_host_spec::ProviderInfo>> {
+    Json(crate::canonical_exec::provider_list())
 }
 
 // =============================================================
@@ -921,6 +932,27 @@ mod tests {
         assert_eq!(arr[0]["name"], "http");
         // default_policy serializes the conservative defaults.
         assert_eq!(arr[0]["default_policy"]["timeout_ms"], 10_000);
+    }
+
+    #[tokio::test]
+    async fn get_providers_returns_an_array() {
+        // With no SOLFLOW_CONNECTORS configured the real-provider listing
+        // is an empty array (honest: nothing resolves). The route shape is
+        // a JSON array of `{ module, url }`.
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/providers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert!(list.is_array(), "providers must be a JSON array: {list}");
     }
 
     // =============================================================

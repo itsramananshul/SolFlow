@@ -307,22 +307,20 @@ function selectRunTarget(id: 'browser-sim' | 'local' | 'cloud') {
             </label>
           </section>
 
-          <!-- Connectors on the active controller -->
+          <!-- Registered providers on the active controller. These are
+               the modules `call("module.fn", …)` actually resolves to. -->
           <section v-if="ctrl.isConnected" class="settings-section">
-            <h3>Connectors ({{ ctrl.activeTarget === 'cloud' ? 'cloud' : 'local' }})</h3>
-            <div v-if="ctrl.connectors.length === 0" class="subtle">
-              No connectors reported by this controller.
+            <h3>Registered providers ({{ ctrl.activeTarget === 'cloud' ? 'cloud' : 'local' }})</h3>
+            <div v-if="ctrl.providers.length === 0" class="subtle">
+              No providers registered. External <code>call(...)</code>
+              capabilities will fail with a clear "no provider" error. Start a
+              connector and register it via the <code>SOLFLOW_CONNECTORS</code>
+              environment variable, then reconnect.
             </div>
             <ul v-else class="connectors-list">
-              <li v-for="c in ctrl.connectors" :key="c.name" class="connector-row">
-                <span class="conn-name">{{ c.name }}</span>
-                <span class="conn-desc">{{ c.description }}</span>
-                <span class="conn-version subtle">v{{ c.version }}</span>
-                <span class="conn-policy subtle">
-                  timeout {{ c.default_policy.timeout_ms }}ms ·
-                  retries {{ c.default_policy.retry_attempts }} ·
-                  max-resp {{ (c.default_policy.max_response_bytes / 1024).toFixed(0) }}KiB
-                </span>
+              <li v-for="p in ctrl.providers" :key="p.module" class="connector-row">
+                <span class="conn-name">{{ p.module === '*' ? '* (any module)' : p.module }}</span>
+                <span class="conn-desc">→ {{ p.url }}</span>
               </li>
             </ul>
           </section>

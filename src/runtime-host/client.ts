@@ -35,6 +35,7 @@ import type {
   ConcurrencyMetrics,
   ConnectorMeta,
   Health,
+  ProviderInfo,
   RunCreated,
   RunRecord,
   RunRequest,
@@ -248,6 +249,13 @@ export interface ControllerClient {
 
   /** `GET /connectors` — list registered connector metadata. */
   listConnectors(opts?: RequestOpts): Promise<ConnectorMeta[]>;
+
+  // ---- Phase 3 — real providers ----
+
+  /** `GET /providers` — the real providers (module, url) the controller
+   *  resolves `call("module.fn", …)` against. The honest "what will run
+   *  for real" listing. Empty when none are configured. */
+  listProviders(opts?: RequestOpts): Promise<ProviderInfo[]>;
 
   // ---- Phase C C.6 — orchestration introspection ----
 
@@ -536,6 +544,10 @@ export function controllerClient(
 
     listConnectors: (opts) =>
       request<ConnectorMeta[]>('GET', '/connectors', undefined, opts),
+
+    // ---- Phase 3 ----
+    listProviders: (opts) =>
+      request<ProviderInfo[]>('GET', '/providers', undefined, opts),
 
     // ---- C.6 ----
     listActiveRuns: (opts) =>

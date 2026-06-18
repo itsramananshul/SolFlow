@@ -795,8 +795,8 @@ const sourceLines = computed(() => graph.emitted.source.split('\n'));
 
 interface TraceRow {
   index: number;
-  /** Step kind: statement, helper call, return, or error. */
-  kind: 'stmt' | 'call' | 'return' | 'error';
+  /** Step kind: statement, helper call/return, external call/result, error. */
+  kind: 'stmt' | 'call' | 'return' | 'extcall' | 'extresult' | 'error';
   /** Workflow or helper function executing at this step. */
   fn: string;
   /** Call depth (0 = workflow body) — drives row indentation. */
@@ -1314,6 +1314,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
                     'has-node': !!row.nodeId,
                     'is-call': row.kind === 'call',
                     'is-return': row.kind === 'return',
+                    'is-extcall': row.kind === 'extcall',
+                    'is-extresult': row.kind === 'extresult',
                     'is-error': row.kind === 'error',
                   }"
                   :style="{ paddingLeft: 8 + row.depth * 16 + 'px' }"
@@ -1870,6 +1872,8 @@ function formatReturn(v: unknown): string {
 }
 .trace-row.is-call { background: rgba(120, 190, 140, 0.05); }
 .trace-row.is-return { background: rgba(160, 160, 200, 0.04); }
+.trace-row.is-extcall { background: rgba(220, 170, 90, 0.07); }
+.trace-row.is-extresult { background: rgba(220, 170, 90, 0.04); }
 .trace-step {
   color: var(--sf-text-3);
   text-align: right;
@@ -1883,13 +1887,16 @@ function formatReturn(v: unknown): string {
   letter-spacing: 0.04em;
   padding: 1px 6px;
   border-radius: 8px;
-  min-width: 48px;
+  min-width: 62px;
   text-align: center;
+  white-space: nowrap;
   background: rgba(255, 255, 255, 0.06);
   color: var(--sf-text-2);
 }
 .trace-kind.k-call { background: rgba(120, 190, 140, 0.20); color: #8fd6a6; }
 .trace-kind.k-return { background: rgba(160, 160, 200, 0.18); color: #b3b3d8; }
+.trace-kind.k-extcall { background: rgba(220, 170, 90, 0.24); color: #e8bf7a; }
+.trace-kind.k-extresult { background: rgba(220, 170, 90, 0.16); color: #d8b683; }
 .trace-kind.k-error { background: rgba(232, 110, 110, 0.22); color: #f0a0a0; }
 .trace-fn {
   flex: 0 0 auto;
