@@ -1252,6 +1252,12 @@ function formatReturn(v: unknown): string {
   align-items: center;
   justify-content: center;
   padding: 32px;
+  /* Shift the dialog left on wide screens so it clears the right-docked
+     trace panel and inspector, instead of covering them. */
+  padding-right: clamp(32px, 30vw, 420px);
+}
+@media (max-width: 900px) {
+  .backdrop { padding-right: 32px; }
 }
 .modal {
   background: var(--sf-bg-1);
