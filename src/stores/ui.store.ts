@@ -12,6 +12,7 @@ export type SidebarTab =
 export const useUIStore = defineStore('ui', () => {
   const sidebarTab = ref<SidebarTab>('palette');
   const drawerOpen = ref(false);
+  const runOpen = ref(false);
   const selectedNodeId = ref<string | null>(null);
   // Hovered node id — used by Canvas to highlight connected edges.
   const hoveredNodeId = ref<string | null>(null);
@@ -44,6 +45,9 @@ export const useUIStore = defineStore('ui', () => {
     hoveredNodeId.value = id;
   }
 
+  function setRunOpen(v: boolean) {
+    runOpen.value = v;
+  }
   function toggleDrawer() {
     drawerOpen.value = !drawerOpen.value;
   }
@@ -55,6 +59,8 @@ export const useUIStore = defineStore('ui', () => {
   return {
     sidebarTab,
     drawerOpen,
+    runOpen,
+    setRunOpen,
     selectedNodeId,
     hoveredNodeId,
     focusRequest,

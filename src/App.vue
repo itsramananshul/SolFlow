@@ -32,6 +32,7 @@ const blocks = useBlocksStore();
 const solManConfig = useSolManConfigStore();
 const controller = useControllerStore();
 const runOpen = ref(false);
+watch(runOpen, (v) => ui.setRunOpen(v), { immediate: true });
 const helpOpen = ref(false);
 const controllerSettingsOpen = ref(false);
 const schedulesOpen = ref(false);
