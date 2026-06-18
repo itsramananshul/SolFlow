@@ -17,7 +17,7 @@ pub use lexer::Lexer;
 pub use parser::Parser;
 pub use instruction::{Instruction, Chunk};
 pub use compiler::Compiler;
-pub use vm::{Vm, NativeFunc, VmSnapshot, StepResult};
+pub use vm::{Vm, NativeFunc, VmSnapshot, StepResult, TraceEvent, TraceKind};
 pub use workflow::{WorkflowExecutor, WorkflowState};
 pub use value::Value;
 pub use ast::*;

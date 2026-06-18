@@ -6,6 +6,13 @@ use crate::value::Value;
 pub struct Compiler {
     imports: HashSet<String>,
     functions: HashSet<String>,
+    /// `(start_pc, end_pc, span)` for each statement: every instruction the
+    /// statement compiled to falls in `start_pc..end_pc`. Inner statements
+    /// are recorded before the enclosing one, so building the per-instruction
+    /// span table first-wins gives each instruction its innermost statement's
+    /// source span. This drives the execution trace's source mapping and lets
+    /// a runtime error point at the exact failing statement.
+    span_ranges: Vec<(usize, usize, (usize, usize))>,
 }
 
 impl Compiler {
@@ -13,7 +20,33 @@ impl Compiler {
         Self {
             imports: HashSet::new(),
             functions: HashSet::new(),
+            span_ranges: Vec::new(),
         }
+    }
+
+    /// Emit a statement boundary (a budget tick and trace step marker).
+    fn push_boundary(&mut self, chunk: &mut Chunk) {
+        chunk.instructions.push(Instruction::StmtBoundary);
+    }
+
+    /// Compile a block's statements, recording each statement's instruction
+    /// range and source span for the trace.
+    fn compile_block(
+        &mut self,
+        block: &Block,
+        chunk: &mut Chunk,
+        locals: &mut Vec<String>,
+    ) -> Result<(), String> {
+        for (i, stmt) in block.stmts.iter().enumerate() {
+            let span = block.stmt_spans.get(i).copied();
+            let start = chunk.instructions.len();
+            self.compile_stmt(stmt, chunk, locals)?;
+            let end = chunk.instructions.len();
+            if let Some(sp) = span {
+                self.span_ranges.push((start, end, sp));
+            }
+        }
+        Ok(())
     }
 
     pub fn compile(&mut self, program: &Program) -> Result<Chunk, String> {
@@ -40,9 +73,7 @@ impl Compiler {
         // terminated with Halt so execution never falls through into the
         // function bodies that follow.
         let mut wf_locals: Vec<String> = Vec::new();
-        for stmt in &workflow.body.stmts {
-            self.compile_stmt(stmt, &mut chunk, &mut wf_locals)?;
-        }
+        self.compile_block(&workflow.body, &mut chunk, &mut wf_locals)?;
         chunk.instructions.push(Instruction::Halt);
         chunk.locals_count = wf_locals.len() as u16;
         chunk.locals_names = wf_locals;
@@ -59,9 +90,7 @@ impl Compiler {
                 let mut fn_locals: Vec<String> =
                     f.params.iter().map(|p| p.name.clone()).collect();
                 let param_count = fn_locals.len() as u16;
-                for stmt in &f.body.stmts {
-                    self.compile_stmt(stmt, &mut chunk, &mut fn_locals)?;
-                }
+                self.compile_block(&f.body, &mut chunk, &mut fn_locals)?;
                 // Implicit `return ()` so a function that falls off the end
                 // returns Unit and never runs into the next function.
                 chunk.instructions.push(Instruction::PushUnit);
@@ -75,6 +104,20 @@ impl Compiler {
             }
         }
 
+        // Build the per-instruction span table. Statements were recorded
+        // inner-before-outer, so assigning first-wins gives each instruction
+        // its innermost enclosing statement's span. Instructions outside any
+        // statement (e.g. a function's implicit trailing return) stay None.
+        let mut spans = vec![None; chunk.instructions.len()];
+        for (start, end, sp) in &self.span_ranges {
+            for pc in *start..*end {
+                if pc < spans.len() && spans[pc].is_none() {
+                    spans[pc] = Some(*sp);
+                }
+            }
+        }
+        chunk.instruction_spans = spans;
+
         Ok(chunk)
     }
 
@@ -84,7 +127,7 @@ impl Compiler {
                 self.compile_expr(value, chunk, locals)?;
                 let slot = self.get_or_add_local(name, locals);
                 chunk.instructions.push(Instruction::StoreLocal(slot));
-                chunk.instructions.push(Instruction::StmtBoundary);
+                self.push_boundary(chunk);
                 Ok(())
             }
             Stmt::Assign { target, value } => {
@@ -113,7 +156,7 @@ impl Compiler {
                         return Err("index assignment not supported".into());
                     }
                 }
-                chunk.instructions.push(Instruction::StmtBoundary);
+                self.push_boundary(chunk);
                 Ok(())
             }
             Stmt::If { condition, then, else_ } => {
@@ -121,9 +164,7 @@ impl Compiler {
                 let else_jump = chunk.instructions.len();
                 chunk.instructions.push(Instruction::JumpIfFalse(0));
 
-                for s in &then.stmts {
-                    self.compile_stmt(s, chunk, locals)?;
-                }
+                self.compile_block(then, chunk, locals)?;
 
                 let end_jump = if else_.is_some() {
                     let pos = chunk.instructions.len();
@@ -139,9 +180,7 @@ impl Compiler {
                 }
 
                 if let Some(block) = else_ {
-                    for s in &block.stmts {
-                        self.compile_stmt(s, chunk, locals)?;
-                    }
+                    self.compile_block(block, chunk, locals)?;
                     if let Some(jump_pos) = end_jump {
                         let end_offset = chunk.instructions.len() as u32;
                         if let Instruction::Jump(ref mut offset) = chunk.instructions[jump_pos] {
@@ -150,7 +189,7 @@ impl Compiler {
                     }
                 }
 
-                chunk.instructions.push(Instruction::StmtBoundary);
+                self.push_boundary(chunk);
                 Ok(())
             }
             Stmt::While { condition, body } => {
@@ -160,9 +199,7 @@ impl Compiler {
                 let exit_jump = chunk.instructions.len();
                 chunk.instructions.push(Instruction::JumpIfFalse(0));
 
-                for s in &body.stmts {
-                    self.compile_stmt(s, chunk, locals)?;
-                }
+                self.compile_block(body, chunk, locals)?;
 
                 chunk.instructions.push(Instruction::Jump(loop_start));
 
@@ -171,7 +208,7 @@ impl Compiler {
                     *offset = exit_offset;
                 }
 
-                chunk.instructions.push(Instruction::StmtBoundary);
+                self.push_boundary(chunk);
                 Ok(())
             }
             Stmt::For { item, iter, body } => {
@@ -200,9 +237,7 @@ impl Compiler {
                 let item_slot = self.get_or_add_local(item, locals);
                 chunk.instructions.push(Instruction::StoreLocal(item_slot));
 
-                for s in &body.stmts {
-                    self.compile_stmt(s, chunk, locals)?;
-                }
+                self.compile_block(body, chunk, locals)?;
 
                 chunk.instructions.push(Instruction::LoadLocal(idx_slot));
                 chunk.instructions.push(Instruction::PushInt(1));
@@ -215,7 +250,7 @@ impl Compiler {
                     *offset = exit_offset;
                 }
 
-                chunk.instructions.push(Instruction::StmtBoundary);
+                self.push_boundary(chunk);
                 Ok(())
             }
             Stmt::Return(val) => {
@@ -229,12 +264,12 @@ impl Compiler {
             Stmt::Expr(expr) => {
                 self.compile_expr(expr, chunk, locals)?;
                 chunk.instructions.push(Instruction::Pop);
-                chunk.instructions.push(Instruction::StmtBoundary);
+                self.push_boundary(chunk);
                 Ok(())
             }
             Stmt::Emit(_) => {
                 chunk.instructions.push(Instruction::PushUnit);
-                chunk.instructions.push(Instruction::StmtBoundary);
+                self.push_boundary(chunk);
                 Ok(())
             }
         }

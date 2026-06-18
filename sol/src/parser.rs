@@ -18,6 +18,10 @@ use crate::lexer::{Lexer, Token};
 pub struct Parser {
     lexer: Lexer,
     lookahead: Option<Token>,
+    /// Byte span of the current lookahead token.
+    lookahead_span: (usize, usize),
+    /// Byte end offset of the most recently consumed token.
+    prev_end: usize,
 }
 
 impl Parser {
@@ -27,13 +31,16 @@ impl Parser {
     pub fn new(source: &str) -> Self {
         let mut lexer = Lexer::new(source);
         let lookahead = lexer.next_token();
-        Self { lexer, lookahead }
+        let lookahead_span = lexer.token_span();
+        Self { lexer, lookahead, lookahead_span, prev_end: 0 }
     }
 
     /// Consume and return the current lookahead token, advancing the lexer.
     fn next_token(&mut self) -> Option<Token> {
         let tok = self.lookahead.clone();
+        self.prev_end = self.lookahead_span.1;
         self.lookahead = self.lexer.next_token();
+        self.lookahead_span = self.lexer.token_span();
         tok
     }
 
@@ -173,11 +180,15 @@ impl Parser {
     fn parse_block(&mut self) -> Result<Block, String> {
         self.expect(&Token::LBrace)?;
         let mut stmts = Vec::new();
+        let mut stmt_spans = Vec::new();
         while !matches!(self.peek(), Some(Token::RBrace) | None) {
-            stmts.push(self.parse_stmt()?);
+            let start = self.lookahead_span.0;
+            let stmt = self.parse_stmt()?;
+            stmt_spans.push((start, self.prev_end));
+            stmts.push(stmt);
         }
         self.expect(&Token::RBrace)?;
-        Ok(Block { stmts })
+        Ok(Block { stmts, stmt_spans })
     }
 
     /// Parse a comma-separated parameter list.

@@ -156,6 +156,22 @@ impl WorkflowExecutor {
         self.vm.register_native(name, func);
     }
 
+    /// Turn on execution tracing. Events accumulate on the VM as it runs and
+    /// can be read back with [`trace`](Self::trace).
+    pub fn enable_trace(&mut self) {
+        self.vm.enable_trace(&self.workflow.name);
+    }
+
+    /// The execution trace recorded so far (empty unless tracing was enabled).
+    pub fn trace(&self) -> &[crate::vm::TraceEvent] {
+        &self.vm.trace
+    }
+
+    /// Whether the trace hit its cap and stopped recording further events.
+    pub fn trace_truncated(&self) -> bool {
+        self.vm.trace_truncated()
+    }
+
     pub fn name(&self) -> &str {
         &self.workflow.name
     }

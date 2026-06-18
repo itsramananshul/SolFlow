@@ -27,6 +27,11 @@ pub struct Chunk {
     pub locals_names: Vec<String>,
     /// User-defined functions callable from the workflow or each other.
     pub functions: Vec<FuncInfo>,
+    /// Byte span `(start, end)` into the source for each instruction
+    /// (parallel to `instructions`), or `None` where there is no mapping.
+    /// Statement-boundary instructions carry the span of their statement,
+    /// which drives the execution trace's source mapping.
+    pub instruction_spans: Vec<Option<(usize, usize)>>,
 }
 
 impl Chunk {
@@ -37,7 +42,13 @@ impl Chunk {
             locals_count: 0,
             locals_names: Vec::new(),
             functions: Vec::new(),
+            instruction_spans: Vec::new(),
         }
+    }
+
+    /// Source span mapped to instruction `pc`, if any.
+    pub fn span_at(&self, pc: usize) -> Option<(usize, usize)> {
+        self.instruction_spans.get(pc).copied().flatten()
     }
 
     pub fn add_constant(&mut self, val: Value) -> u16 {

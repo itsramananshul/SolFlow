@@ -13,16 +13,50 @@ pub fn take_output() -> String { SOL_OUTPUT.with(|o| std::mem::take(&mut *o.borr
 
 /// One activation record on the call stack. Created when a user-defined
 /// function is called; `locals` holds the CALLER's locals to restore on
-/// return, and `return_pc` is where the caller resumes.
+/// return, `return_pc` is where the caller resumes, and `func` is the
+/// caller's name (restored as the current trace function on return).
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub return_pc: usize,
     pub locals: Vec<Value>,
+    pub func: String,
 }
 
 /// Maximum call-stack depth. A program that recurses past this fails with
 /// a clear "call stack overflow" rather than blowing the host stack.
 const MAX_CALL_DEPTH: usize = 256;
+
+/// What an execution-trace entry records.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum TraceKind {
+    /// A statement boundary was reached and executed.
+    Stmt,
+    /// A user-defined function is about to be entered.
+    Call,
+    /// A user-defined function returned to its caller.
+    Return,
+    /// An instruction failed; `detail` carries the message.
+    Error,
+}
+
+/// One execution-trace entry, emitted as the VM runs when tracing is on.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TraceEvent {
+    /// Monotonic index of this event in the trace.
+    pub step: u64,
+    pub kind: TraceKind,
+    /// Workflow or helper function the VM was executing.
+    pub function: String,
+    /// Byte span `(start, end)` into the source, when mapped.
+    pub span: Option<(usize, usize)>,
+    /// Call depth at this event (0 = workflow body).
+    pub depth: usize,
+    /// Extra context: the callee name for Call, the error message for Error.
+    pub detail: Option<String>,
+}
+
+/// Cap on recorded trace events so a long run can't grow without bound.
+const TRACE_CAP: usize = 50_000;
 
 #[derive(Debug, Clone)]
 pub struct VmSnapshot {
@@ -47,6 +81,11 @@ pub struct Vm {
     pub completed: bool,
     pub step_count: u64,
     ignore_next_boundary: bool,
+    /// Execution trace, populated as the VM runs when `trace_enabled`.
+    pub trace: Vec<TraceEvent>,
+    trace_enabled: bool,
+    /// Name of the function/workflow currently executing (for trace).
+    current_func: String,
 }
 
 impl Vm {
@@ -64,11 +103,41 @@ impl Vm {
             completed: false,
             step_count: 0,
             ignore_next_boundary: false,
+            trace: Vec::new(),
+            trace_enabled: false,
+            current_func: "workflow".to_string(),
         }
     }
 
     pub fn register_native(&mut self, name: &str, func: NativeFunc) {
         self.native_funcs.insert(name.to_string(), func);
+    }
+
+    /// Turn on execution tracing and name the entry (workflow) frame.
+    pub fn enable_trace(&mut self, workflow_name: &str) {
+        self.trace_enabled = true;
+        self.current_func = workflow_name.to_string();
+    }
+
+    /// Whether the trace hit its cap and stopped recording further events.
+    pub fn trace_truncated(&self) -> bool {
+        self.trace.len() >= TRACE_CAP
+    }
+
+    /// Record one trace event (capped). No-op when tracing is off.
+    fn push_trace(&mut self, kind: TraceKind, span: Option<(usize, usize)>, detail: Option<String>) {
+        if !self.trace_enabled || self.trace.len() >= TRACE_CAP {
+            return;
+        }
+        let step = self.trace.len() as u64;
+        self.trace.push(TraceEvent {
+            step,
+            kind,
+            function: self.current_func.clone(),
+            span,
+            depth: self.frames.len(),
+            detail,
+        });
     }
 
     pub fn save(&self) -> VmSnapshot {
@@ -99,6 +168,8 @@ impl Vm {
         self.completed = false;
         self.step_count = 0;
         self.ignore_next_boundary = false;
+        self.trace.clear();
+        self.current_func = "workflow".to_string();
     }
 
     pub fn step(&mut self, budget: u64) -> Result<StepResult, String> {
@@ -122,36 +193,51 @@ impl Vm {
             let is_boundary = matches!(instr, Instruction::StmtBoundary);
             let result = match self.exec_instruction(&instr) {
                 Ok(r) => r,
-                Err(e) => return Ok(StepResult::Failed(e)),
+                Err(e) => {
+                    // Tie the failure to the source of the statement it
+                    // happened in so the trace points at the failing step.
+                    let span = self.chunk.span_at(self.pc);
+                    self.push_trace(TraceKind::Error, span, Some(e.clone()));
+                    return Ok(StepResult::Failed(e));
+                }
             };
             match result {
                 InsResult::Continue => {
+                    let boundary_pc = self.pc;
                     self.pc += 1;
                     if is_boundary {
                         if self.ignore_next_boundary {
                             self.ignore_next_boundary = false;
                         } else {
+                            let span = self.chunk.span_at(boundary_pc);
+                            self.push_trace(TraceKind::Stmt, span, None);
                             stmts_ran += 1;
                         }
                     }
                 }
                 InsResult::ContinueNoAdvance => {}
                 InsResult::Returned(val) => {
-                    match self.frames.pop() {
-                        // Returning from a user-function call: restore the
-                        // caller's locals + pc and hand the return value
-                        // back on the shared operand stack.
-                        Some(frame) => {
-                            self.locals = frame.locals;
-                            self.pc = frame.return_pc;
-                            self.stack.push(val);
-                        }
+                    // A `return` carries no trailing statement boundary (control
+                    // leaves first), so record its Stmt event here against the
+                    // return statement's source. self.pc still points at the
+                    // Return instruction, which maps to that statement's span.
+                    let span = self.chunk.span_at(self.pc);
+                    self.push_trace(TraceKind::Stmt, span, None);
+                    if self.frames.is_empty() {
                         // No caller frame: the workflow itself returned.
-                        None => {
-                            self.completed = true;
-                            return Ok(StepResult::Completed(val));
-                        }
+                        self.completed = true;
+                        return Ok(StepResult::Completed(val));
                     }
+                    // Returning from a user-function call. Record the return
+                    // while the callee frame is still on the stack (so depth and
+                    // function name are the callee's), then unwind: restore the
+                    // caller's locals + pc and hand the value back on the stack.
+                    self.push_trace(TraceKind::Return, span, Some(self.current_func.clone()));
+                    let frame = self.frames.pop().unwrap();
+                    self.current_func = frame.func;
+                    self.locals = frame.locals;
+                    self.pc = frame.return_pc;
+                    self.stack.push(val);
                 }
                 InsResult::RemoteCall(cap, params) => {
                     self.step_count += 1;
@@ -161,26 +247,39 @@ impl Vm {
                     if let Some(func) = self.chunk.function(&name).cloned() {
                         // Real user-defined function call.
                         if args.len() != func.param_count as usize {
-                            return Ok(StepResult::Failed(format!(
+                            let e = format!(
                                 "function '{}' expects {} argument(s), got {}",
                                 name, func.param_count, args.len()
-                            )));
+                            );
+                            self.push_trace(TraceKind::Error, self.chunk.span_at(self.pc), Some(e.clone()));
+                            return Ok(StepResult::Failed(e));
                         }
                         if self.frames.len() >= MAX_CALL_DEPTH {
-                            return Ok(StepResult::Failed(format!(
+                            let e = format!(
                                 "call stack overflow calling '{}' (recursion too deep)",
                                 name
-                            )));
+                            );
+                            self.push_trace(TraceKind::Error, self.chunk.span_at(self.pc), Some(e.clone()));
+                            return Ok(StepResult::Failed(e));
                         }
                         // Bind args to the callee's local slots 0..param_count.
                         let mut callee_locals = vec![Value::Unit; func.locals_count as usize];
                         for (i, a) in args.into_iter().enumerate() {
                             callee_locals[i] = a;
                         }
+                        // Record the helper call against the caller's source
+                        // line, then swap the active function name to the callee
+                        // (stashing the caller's name in the new frame).
+                        self.push_trace(
+                            TraceKind::Call,
+                            self.chunk.span_at(self.pc),
+                            Some(func.name.clone()),
+                        );
                         let caller_locals = std::mem::replace(&mut self.locals, callee_locals);
                         self.frames.push(Frame {
                             return_pc: self.pc + 1,
                             locals: caller_locals,
+                            func: std::mem::replace(&mut self.current_func, func.name.clone()),
                         });
                         self.pc = func.entry_pc;
                     } else if let Some(func) = self.native_funcs.get(&name) {
@@ -795,5 +894,160 @@ mod function_call_tests {
         "#);
         // base (7) preserved + bump(7)=107 => 114
         assert_eq!(r, Ok(Value::Int(114)));
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    use crate::compiler::Compiler;
+    use crate::parser::Parser;
+
+    /// Run a program to completion with tracing on; return (trace, result).
+    fn trace(src: &str) -> (Vec<TraceEvent>, Result<Value, String>) {
+        let prog = Parser::new(src).parse().expect("parse");
+        let chunk = Compiler::new().compile(&prog).expect("compile");
+        let mut vm = Vm::new(chunk);
+        vm.enable_trace("w");
+        let _ = take_output();
+        let result = loop {
+            match vm.step(1_000_000) {
+                Ok(StepResult::Completed(v)) => break Ok(v),
+                Ok(StepResult::Yielded(_)) => continue,
+                Ok(StepResult::Failed(e)) => break Err(e),
+                Ok(StepResult::RemoteCall { capability, .. }) => {
+                    break Err(format!("unexpected remote call: {capability}"))
+                }
+                Err(e) => break Err(e),
+            }
+        };
+        let _ = take_output();
+        (vm.trace, result)
+    }
+
+    /// The slice of source a span points at.
+    fn slice(src: &str, span: Option<(usize, usize)>) -> &str {
+        let (s, e) = span.expect("span present");
+        &src[s..e]
+    }
+
+    #[test]
+    fn stmt_events_carry_real_source_spans() {
+        let src = r#"workflow "w" { print("a"); let x: int = 1; return x; }"#;
+        let (trace, r) = trace(src);
+        assert_eq!(r, Ok(Value::Int(1)));
+        // Every Stmt event should map to a non-empty slice of the source.
+        let stmts: Vec<&TraceEvent> = trace.iter().filter(|e| e.kind == TraceKind::Stmt).collect();
+        assert!(stmts.len() >= 3, "expected >=3 stmt events, got {}", stmts.len());
+        assert!(slice(src, stmts[0].span).contains("print"));
+        assert!(slice(src, stmts[1].span).contains("let x"));
+    }
+
+    #[test]
+    fn never_empty_for_a_real_run() {
+        let (trace, r) = trace(r#"workflow "w" { return 0; }"#);
+        assert_eq!(r, Ok(Value::Int(0)));
+        assert!(!trace.is_empty(), "trace must not be empty for a real run");
+    }
+
+    #[test]
+    fn helper_call_emits_call_and_return_events() {
+        let src = r#"
+            fn dbl(x: int) <- int { return x * 2; }
+            workflow "w" { return dbl(21); }
+        "#;
+        let (trace, r) = trace(src);
+        assert_eq!(r, Ok(Value::Int(42)));
+        let call = trace.iter().find(|e| e.kind == TraceKind::Call).expect("a Call event");
+        // The Call event names the callee and is recorded at workflow depth 0.
+        assert_eq!(call.detail.as_deref(), Some("dbl"));
+        assert_eq!(call.function, "w");
+        assert_eq!(call.depth, 0);
+        let ret = trace.iter().find(|e| e.kind == TraceKind::Return).expect("a Return event");
+        // The Return event is recorded while still inside the callee (depth 1).
+        assert_eq!(ret.function, "dbl");
+        assert_eq!(ret.depth, 1);
+    }
+
+    #[test]
+    fn nested_helpers_nest_call_depth() {
+        let src = r#"
+            fn add(a: int, b: int) <- int { return a + b; }
+            fn calc(x: int) <- int { return add(x, 10); }
+            workflow "w" { return calc(5); }
+        "#;
+        let (trace, r) = trace(src);
+        assert_eq!(r, Ok(Value::Int(15)));
+        let calls: Vec<&TraceEvent> =
+            trace.iter().filter(|e| e.kind == TraceKind::Call).collect();
+        // calc called from the workflow (depth 0), add called from calc (depth 1).
+        assert_eq!(calls.len(), 2, "expected 2 calls, got {}", calls.len());
+        assert_eq!(calls[0].detail.as_deref(), Some("calc"));
+        assert_eq!(calls[0].depth, 0);
+        assert_eq!(calls[1].detail.as_deref(), Some("add"));
+        assert_eq!(calls[1].depth, 1);
+        // The deepest statement (inside add) runs at depth 2.
+        let max_depth = trace.iter().map(|e| e.depth).max().unwrap();
+        assert_eq!(max_depth, 2);
+    }
+
+    #[test]
+    fn runtime_error_event_points_at_the_failing_statement() {
+        let src = r#"
+            fn risky(n: int) <- int { return n / 0; }
+            workflow "w" { return risky(10); }
+        "#;
+        let (trace, r) = trace(src);
+        assert!(r.is_err());
+        let err = trace.iter().find(|e| e.kind == TraceKind::Error).expect("an Error event");
+        assert!(err.detail.as_deref().unwrap_or("").contains("division by zero"));
+        // The error is attributed to the helper it occurred in.
+        assert_eq!(err.function, "risky");
+        // and tied to the exact failing statement's source.
+        assert!(slice(src, err.span).contains("n / 0"));
+    }
+
+    #[test]
+    fn step_numbers_are_monotonic() {
+        let (trace, _r) = trace(r#"
+            fn f(x: int) <- int { return x; }
+            workflow "w" { f(1); f(2); return 0; }
+        "#);
+        for (i, e) in trace.iter().enumerate() {
+            assert_eq!(e.step, i as u64, "trace steps must be 0..N in order");
+        }
+    }
+
+    #[test]
+    fn recursion_trace_descends_then_unwinds() {
+        let src = r#"
+            fn fact(n: int) <- int {
+                if (n < 2) { return 1; }
+                return n * fact(n - 1);
+            }
+            workflow "w" { return fact(4); }
+        "#;
+        let (trace, r) = trace(src);
+        assert_eq!(r, Ok(Value::Int(24)));
+        let calls = trace.iter().filter(|e| e.kind == TraceKind::Call).count();
+        let returns = trace.iter().filter(|e| e.kind == TraceKind::Return).count();
+        // fact called 4 times (4,3,2,1); every call returns.
+        assert_eq!(calls, 4, "expected 4 calls");
+        assert_eq!(returns, 4, "expected 4 returns");
+        // Recursion drives depth to 4 (workflow=0, then fact nests to 4).
+        let max_depth = trace.iter().map(|e| e.depth).max().unwrap();
+        assert_eq!(max_depth, 4);
+    }
+
+    #[test]
+    fn tracing_off_records_nothing() {
+        let prog = Parser::new(r#"workflow "w" { return 0; }"#).parse().unwrap();
+        let chunk = Compiler::new().compile(&prog).unwrap();
+        let mut vm = Vm::new(chunk);
+        // No enable_trace() call.
+        let _ = take_output();
+        while let Ok(StepResult::Yielded(_)) = vm.step(1_000_000) {}
+        let _ = take_output();
+        assert!(vm.trace.is_empty(), "trace must stay empty when disabled");
     }
 }
