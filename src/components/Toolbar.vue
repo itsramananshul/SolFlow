@@ -309,6 +309,13 @@ function toggleSampleMenu() {
             <div class="menu-row">
               <span class="menu-title">{{ s.name }}</span>
               <span
+                class="menu-runnable"
+                :class="s.runnable ? 'runs' : 'demo'"
+                :title="s.runnable
+                  ? 'Runs end to end with no providers'
+                  : 'Uses helper functions or capabilities the runtime does not execute on its own'"
+              >{{ s.runnable ? 'Runs standalone' : 'Structure demo' }}</span>
+              <span
                 v-if="metaFor(s.id).nodeCount > 0"
                 class="menu-size"
                 :class="'size-' + sizeLabel(metaFor(s.id).nodeCount)"
@@ -622,7 +629,19 @@ function toggleSampleMenu() {
 .menu-size.size-small   { color: var(--sf-text-1);  background: var(--sf-bg-3); }
 .menu-size.size-medium  { color: var(--sf-accent);  background: rgba(108, 92, 231, 0.12); }
 .menu-size.size-large   { color: var(--sf-warning); background: rgba(255, 184, 0, 0.10); }
+.menu-runnable {
+  font-family: var(--sf-font-mono);
+  font-size: 0.5625rem;
+  padding: 2px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+.menu-runnable.runs { color: var(--sf-success); background: rgba(0, 204, 136, 0.12); }
+.menu-runnable.demo { color: var(--sf-text-2);  background: var(--sf-bg-3); }
 .menu-title {
+  flex: 1;
   font-weight: 500;
   font-size: 0.75rem;
   color: var(--sf-text-0);

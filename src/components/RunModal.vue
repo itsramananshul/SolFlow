@@ -477,10 +477,24 @@ const compileFailed = computed(() => {
 });
 
 const compileDiagnostics = computed<SolDiagnostic[]>(() => {
-  if (mode.value === 'browser-sim') return runEnvelope.value?.diagnostics ?? [];
+  if (mode.value === 'browser-sim') {
+    // Only the compile-stage diagnostics belong in the "compile failed"
+    // list. Runtime-phase diagnostics are surfaced separately below.
+    return (runEnvelope.value?.diagnostics ?? []).filter((d) => d.phase !== 'Runtime');
+  }
   const c = controllerRun.value;
   return c.kind === 'compile_failed' ? c.diagnostics : [];
 });
+
+// Browser-sim runtime diagnostics. The VM reports some failures (e.g.
+// "function 'x' not found", a step-limit hit) as Warning/Runtime
+// diagnostics rather than a structured `runtime_error`. These are real
+// failures and must be shown, not swallowed as "ran with no output".
+const browserRuntimeDiags = computed<SolDiagnostic[]>(() =>
+  mode.value === 'browser-sim'
+    ? (runEnvelope.value?.diagnostics ?? []).filter((d) => d.phase === 'Runtime')
+    : [],
+);
 
 /**
  * Unified `RunResult`-shaped object. For browser-sim it's the
@@ -537,8 +551,18 @@ const runErrorMsg = computed(() => {
     return null;
   }
   const err = runResult.value?.runtime_error;
-  if (!err) return null;
-  return formatRuntimeError(err);
+  if (err) return formatRuntimeError(err);
+  // Runtime-phase diagnostics without a structured runtime_error. The
+  // most common is a call to a user-defined helper: the runtime executes
+  // the workflow body and built-ins only, not helper-function bodies, so
+  // add an actionable hint for that case.
+  const diags = browserRuntimeDiags.value;
+  if (diags.length === 0) return null;
+  const msg = diags.map((d) => d.message).join('\n');
+  if (/function '.*' not found/.test(msg)) {
+    return `${msg}\n\nThe runtime runs the workflow body plus the built-ins (print, len, to_str, type_name) and imported capabilities. It does not execute user-defined helper functions, so calling one fails. Inline that logic into the workflow body, or expose it as a capability through an import.`;
+  }
+  return msg;
 });
 
 const completedOk = computed(() => {
@@ -548,10 +572,39 @@ const completedOk = computed(() => {
       && runEnvelope.value.ok
       && runResult.value !== null
       && runResult.value.runtime_error === null
+      && browserRuntimeDiags.value.length === 0
     );
   }
   const c = controllerRun.value;
   return c.kind === 'done' && c.record.status === 'Succeeded';
+});
+
+// Classified, human-readable title for the error banner so the user
+// knows WHAT KIND of failure this is: parse/compile, runtime, a blocked
+// external Action, or an unsupported helper-function call.
+const runErrorTitle = computed(() => {
+  if (mode.value === 'controller-local') return 'Run failed on the controller';
+  const err = runResult.value?.runtime_error;
+  if (err) {
+    switch (err.kind) {
+      case 'ExtCallBlocked':
+        return 'External Action blocked in Browser Simulation';
+      case 'ExtCallFailed':
+        return 'External Action failed';
+      case 'StepLimit':
+        return 'Step limit reached (possible infinite loop)';
+      case 'DivByZero':
+        return 'Runtime error: division by zero';
+      case 'IndexOutOfBounds':
+        return 'Runtime error: array index out of bounds';
+      default:
+        return `Runtime error: ${err.kind}`;
+    }
+  }
+  if (browserRuntimeDiags.value.some((d) => /function '.*' not found/.test(d.message))) {
+    return 'Runtime error: unsupported function call';
+  }
+  return 'Runtime error';
 });
 
 // Controller-specific display state.
@@ -1054,8 +1107,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 
               <!-- Runtime error from canonical VM -->
               <div v-else-if="runErrorMsg" class="error">
-                <strong v-if="mode === 'controller-local'">Run failed on the controller</strong>
-                <strong v-else>Runtime error · {{ runResult?.runtime_error?.kind }}</strong>
+                <strong>{{ runErrorTitle }}</strong>
                 <div class="error-msg">{{ runErrorMsg }}</div>
                 <!-- B.D c44: source span + optional node link -->
                 <div v-if="runtimeErrorLocation" class="error-where">
@@ -1211,16 +1263,20 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
             </template>
             <template v-else-if="mode === 'controller-local'">
               <div class="empty">
-                The step trace is available in Browser Simulation. For
-                controller runs, open the Live tab to follow streamed
-                run events.
+                Open the <strong>Output</strong> tab for the program's
+                printed lines, or <strong>Live</strong> to follow the
+                controller's run events.
               </div>
             </template>
             <template v-else-if="!hasResult || compileFailed">
-              <div class="empty">No execution trace — run a clean program to see one.</div>
+              <div class="empty">Run a program to see its result.</div>
             </template>
             <template v-else-if="traceRows.length === 0">
-              <div class="empty">Execution produced no source-mapped steps.</div>
+              <div class="empty">
+                The runtime does not emit a source-mapped step trace.
+                The <strong>Output</strong> tab shows the program's
+                printed lines in order, and it scrolls for long output.
+              </div>
             </template>
             <template v-else>
               <div class="output-toolbar">
@@ -1328,7 +1384,11 @@ function formatReturn(v: unknown): string {
   align-items: center;
   /* Pin the dialog to the left so it never reaches the right-docked panels. */
   justify-content: flex-start;
-  padding: 32px clamp(32px, 30vw, 460px) 32px clamp(20px, 4vw, 56px);
+  /* Safe margins on every side so the dialog never clips on the left or
+     bottom. The dialog is only ~640px wide and left-pinned, so it does
+     not reach the right-docked panels on wide screens; narrow screens
+     center it (media query below). */
+  padding: clamp(16px, 3vh, 28px) clamp(16px, 4vw, 48px);
 }
 .modal {
   /* Re-enable interaction on the dialog itself (backdrop is click-through). */
@@ -1346,8 +1406,10 @@ function formatReturn(v: unknown): string {
   border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-lg);
   box-shadow: var(--sf-shadow-3);
-  width: min(640px, calc(100vw - 440px));
-  max-height: 80vh;
+  /* Always fit the viewport: cap to the available width and height with
+     a small margin so the dialog is never clipped. */
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(82vh, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1618,11 +1680,17 @@ function formatReturn(v: unknown): string {
 .body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* The body itself does not scroll; each tab pane is its own scroll
+     container so long content (e.g. a many-step Trace) scrolls within
+     the dialog instead of growing it past the viewport. */
+  overflow: hidden;
   background: var(--sf-bg-1);
 }
 .pane {
   padding: 16px;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 .empty {
   color: var(--sf-text-3);
@@ -1693,6 +1761,8 @@ function formatReturn(v: unknown): string {
 .error-msg {
   font-family: var(--sf-font-mono);
   color: var(--sf-text-0);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .diag-list {
   list-style: none;

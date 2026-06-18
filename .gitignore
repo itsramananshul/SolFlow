@@ -43,3 +43,6 @@ pkg-node/
 
 .vercel
 *.db
+_qa/
+_qa*.mjs
+dev-server.log

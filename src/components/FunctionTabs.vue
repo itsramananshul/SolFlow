@@ -18,6 +18,19 @@ function setActive(id: string) {
   ui.selectNode(null);
 }
 
+// The function name is an inline-rename input. A single click on an
+// INACTIVE tab's name should switch to that function (the natural
+// expectation), not focus the input — otherwise the name swallows the
+// click and the tab never switches. Once the tab is active, the input
+// is editable so a second click renames. (The input is `readonly`
+// until active to make that explicit.)
+function onNameMousedown(id: string, e: MouseEvent) {
+  if (id !== graph.activeFunctionId) {
+    e.preventDefault();
+    setActive(id);
+  }
+}
+
 function rename(id: string, e: Event) {
   const target = e.target as HTMLInputElement;
   graph.renameFunction(id, target.value);
@@ -193,8 +206,9 @@ function signatureTooltip(fn: { name: string; params: Param[]; returnType: SolTy
         <input
           class="fn-name"
           :value="fn.name"
+          :readonly="fn.id !== graph.activeFunctionId"
           @input="(e) => rename(fn.id, e)"
-          @click.stop
+          @mousedown="(e) => onNameMousedown(fn.id, e)"
         />
         <span class="fn-sig" :title="signatureTooltip(fn)">
           ({{ fn.params.map((p) => p.name + ': ' + typeLabel(p.type)).join(', ') || '' }}){{
