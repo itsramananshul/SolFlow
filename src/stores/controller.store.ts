@@ -35,7 +35,7 @@ import {
   type ControllerClient,
 } from '@/runtime-host/client';
 import { opremClient, type OpremRunOutcome } from '@/runtime-host/opremClient';
-import type { ConnectorMeta, Health } from '@/runtime-host/types';
+import type { ConnectorMeta, Health, ProviderInfo } from '@/runtime-host/types';
 
 /** Which controller endpoint a setting refers to. */
 export type ControllerTarget = 'local' | 'cloud';
@@ -91,6 +91,9 @@ export const useControllerStore = defineStore('controller', () => {
   const cloudConn = ref<ConnectionState>({ kind: 'idle' });
   /** Connector metadata reported by the active controller on connect. */
   const connectors = ref<ConnectorMeta[]>([]);
+  /** Real providers the active controller resolves `call(...)` against
+   *  (`GET /providers`). The honest "what will run for real" listing. */
+  const providers = ref<ProviderInfo[]>([]);
 
   /**
    * The controller endpoint the back-compat facades resolve to: the
@@ -212,11 +215,21 @@ export const useControllerStore = defineStore('controller', () => {
         } catch {
           connectors.value = [];
         }
+        // The real providers `call(...)` resolves against. Best-effort:
+        // older controllers without /providers leave this empty.
+        try {
+          providers.value = await client.listProviders({ timeoutMs: 3_000 });
+        } catch {
+          providers.value = [];
+        }
       }
       conn.value = { kind: 'connected', health, connectedAt: Date.now() };
     } catch (e) {
       conn.value = { kind: 'error', reason: connectionErrorFrom(e) };
-      if (target === activeTarget.value) connectors.value = [];
+      if (target === activeTarget.value) {
+        connectors.value = [];
+        providers.value = [];
+      }
     }
   }
 
@@ -232,7 +245,10 @@ export const useControllerStore = defineStore('controller', () => {
 
   function disconnect(target: ControllerTarget = activeTarget.value): void {
     connRef(target).value = { kind: 'idle' };
-    if (target === activeTarget.value) connectors.value = [];
+    if (target === activeTarget.value) {
+      connectors.value = [];
+      providers.value = [];
+    }
   }
 
   /**
@@ -271,6 +287,7 @@ export const useControllerStore = defineStore('controller', () => {
     isConnected,
     controllerVersion,
     connectors,
+    providers,
     activeTarget,
     // per-target status
     localConn,

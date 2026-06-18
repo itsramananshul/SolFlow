@@ -100,7 +100,21 @@ export interface RunCreated {
 }
 
 /** What an execution-trace step records (mirrors the wire `TraceStep`). */
-export type TraceStepKind = 'stmt' | 'call' | 'return' | 'error';
+export type TraceStepKind =
+  | 'stmt'
+  | 'call'
+  | 'return'
+  | 'extcall'
+  | 'extresult'
+  | 'error';
+
+/** A registered provider the controller resolves `call(...)` against. */
+export interface ProviderInfo {
+  /** SOL module name (the `module` in `call("module.fn", …)`), or `"*"`. */
+  module: string;
+  /** Base HTTP URL the controller POSTs invocations to. */
+  url: string;
+}
 
 /**
  * One step of a real execution trace recorded by the controller's VM.

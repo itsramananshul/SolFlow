@@ -23,7 +23,13 @@ export interface SourceSpan {
 }
 
 /** What an execution-trace step records. */
-export type TraceStepKind = 'stmt' | 'call' | 'return' | 'error';
+export type TraceStepKind =
+  | 'stmt'
+  | 'call'
+  | 'return'
+  | 'extcall'
+  | 'extresult'
+  | 'error';
 
 /**
  * One step of a real execution trace recorded by the VM as it ran.
