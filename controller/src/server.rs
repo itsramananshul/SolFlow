@@ -40,7 +40,7 @@ use solflow_host_spec::{
     WorkflowSubmission, WorkflowSubmissionResponse,
 };
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 #[derive(Clone)]
@@ -54,10 +54,23 @@ pub fn router(controller: LocalController) -> Router {
     let state = AppState {
         controller: Arc::new(controller),
     };
+    // CORS for the browser editor. We mirror the request Origin
+    // rather than send the `*` wildcard because Private Network
+    // Access (below) forbids `*`: when an HTTPS page (e.g. a Vercel
+    // deployment) calls a private address like 127.0.0.1, Chrome
+    // sends a preflight carrying `Access-Control-Request-Private-
+    // Network: true` and requires both a concrete allowed origin and
+    // `Access-Control-Allow-Private-Network: true` on the response.
+    // `allow_private_network(true)` makes tower-http answer that
+    // preflight so a local controller is reachable from a deployed
+    // editor. Any origin is still accepted (mirror_request echoes
+    // whatever Origin called), which keeps local dev and the Vercel
+    // origin working without an allowlist.
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(AllowOrigin::mirror_request())
         .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_headers(Any)
+        .allow_private_network(true);
 
     // Phase C C.7 c98 — split protected vs open routes so the
     // auth middleware only wraps mutating + sensitive endpoints.
@@ -1258,6 +1271,46 @@ mod tests {
             resp.status().is_success() || resp.status() == StatusCode::NO_CONTENT,
             "OPTIONS should bypass the auth middleware (got {})",
             resp.status(),
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_grants_private_network_access() {
+        // A deployed HTTPS editor calling a local controller on a
+        // private address triggers Chrome's Private Network Access
+        // preflight: the request carries
+        // `Access-Control-Request-Private-Network: true` and the
+        // response must echo `Access-Control-Allow-Private-Network:
+        // true` plus a concrete allowed origin (never the `*`
+        // wildcard) or the browser blocks the real request.
+        let app = auth_app("s3cret").await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/workflows")
+                    .header("origin", "https://editor.example")
+                    .header("access-control-request-method", "POST")
+                    .header("access-control-request-private-network", "true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let headers = resp.headers();
+        assert_eq!(
+            headers
+                .get("access-control-allow-private-network")
+                .and_then(|v| v.to_str().ok()),
+            Some("true"),
+            "preflight must grant private-network access",
+        );
+        assert_eq!(
+            headers
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("https://editor.example"),
+            "origin must be echoed concretely, not `*`, for private-network access",
         );
     }
 }
