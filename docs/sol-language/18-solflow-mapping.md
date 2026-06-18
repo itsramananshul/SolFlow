@@ -1,48 +1,79 @@
 # 18 — SolFlow Mapping
 
-> **Status:** Substantive (commit 5). Sourced from
-> `src/graph/schema.ts`, `src/graph/factory.ts`,
+> **Status:** Substantive. Sourced from `src/graph/schema.ts`,
+> `src/graph/kinds.ts`, `src/graph/factory.ts`,
 > `src/graph/validate.ts`, and `src/emit/emit.ts` — the visual
 > editor's own definitions of its node kinds, port shapes,
-> validator, and Graph → SOL emitter.
+> validator, and Graph to SOL emitter. The canonical AST node set it
+> targets lives in `sol/src/ast.rs`.
 
 SolFlow is a visual editor for SOL programs. A workflow on the
-canvas is a graph of typed nodes connected by control-flow and
+canvas is a graph of typed nodes connected by control flow and
 data edges; the editor's emitter walks that graph and produces the
 matching `.sol` source. This chapter is the contract between the
 two representations: every node kind, every port, every emission
-rule.
+rule, and how each maps onto a node of the canonical AST.
 
 The chapter is also the **conformance ledger** between the editor
 and canonical SOL. Wherever the editor produces something the
-canonical compiler doesn't accept, the mismatch is logged here and
-in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
+canonical parser does not accept, the mismatch is logged here.
 
 ---
 
-## 18.1 Reading conventions
+## 18.1 The canonical AST the editor targets
+
+The editor emits text that the canonical crate (`openprem-sol-v2`,
+the `sol/` crate) parses. The relevant AST node set is in
+`sol/src/ast.rs`:
+
+- top level: `TopLevel::{Function, Struct, Enum, Workflow, Import}`
+- statements (`Stmt`): `Let`, `Assign`, `If`, `While`, `For`,
+  `Return`, `Expr`, `Emit`
+- expressions (`Expr`): `Int`, `Float`, `Bool`, `Char`, `Str`,
+  `Array`, `StructInstance`, `EnumVariant`, `Ident`,
+  `MemberAccess`, `Index`, `BinOp`, `UnaryOp`, `Call`,
+  `WorkflowCall`, `NamespaceCall`
+
+The runnable unit is a `workflow "name" { ... }`; helper functions
+are `fn name(params) <- RetType { ... }`. Return types use the
+canonical arrow `<-` (not `->`), comments use `#`, arrays are
+prefix `[]T`, and struct fields and enum variants are
+`;`-separated. The editor's emitter (`src/emit/emit.ts`) follows
+all of these.
+
+The bridge between editor and language is `compiler-wasm/src/lib.rs`,
+which wraps the crate and returns a stable JSON envelope. It does
+NOT run a type checker; there is no semantic-analysis pass and no
+numeric error-code system. See §18.6 for the real diagnostic
+vocabulary.
+
+---
+
+## 18.2 Reading conventions
 
 Each node kind is documented in this shape:
 
 ```
 Kind name (NodeKind)
-  data shape           : the per-kind data variant
+  data shape           : the per-kind data variant (src/graph/schema.ts NodeData)
   input ports          : { id, name, kind, type?, required }, …
   output ports         : { id, name, kind, type?, required }, …
-  emitted SOL          : what `src/emit/emit.ts` produces
+  emitted SOL          : what src/emit/emit.ts produces
   emit position        : statement / expression
+  AST node             : the sol/src/ast.rs construct it parses into
   notes                : caveats, round-trip status, validator rules
 ```
 
 Port `kind` is `control` or `data`. Data ports carry a `SolType`
-(chapter 04). Required input ports must be satisfied by either a
-wired data edge **or** a non-empty inline expression on the same
-port id (the validator was updated in commit `3aab8e0` to honor
-inline expressions, mirroring the emitter's precedence).
+(`src/graph/schema.ts`). Required input ports must be satisfied by
+either a wired data edge **or** a non-empty inline expression on
+the same port id; the validator honors inline expressions,
+mirroring the emitter's precedence (`emitDataInput` in
+`src/emit/emit.ts`).
 
 ---
 
-## 18.2 Node ↔ SOL mapping table
+## 18.3 Node to SOL mapping table
 
 ### Entry-point nodes
 
@@ -53,9 +84,10 @@ inline expressions, mirroring the emitter's precedence).
 | Data shape | `{ kind: 'start' }` |
 | Input ports | (none) |
 | Output ports | `next` (control, required) |
-| Emitted SOL | opens the body of a `function`; not itself rendered as text |
-| Emit position | statement chain entry |
-| Notes | The editor's "Start" represents the implicit head of a function body. There is no SOL token for "start"; the emitter walks forward from this node into the function body |
+| Emitted SOL | opens the body of a `workflow` or `fn`; not itself rendered as text |
+| Emit position | body entry |
+| AST node | none directly; marks the head of a `WorkflowDecl.body` / `FunctionDecl.body` |
+| Notes | "Start" is the implicit head of a function body. There is no SOL token for "start"; `emitFunction` walks forward from the `start` (or a `trigger`) node's `next` port into the body |
 
 #### `trigger`
 
@@ -63,10 +95,11 @@ inline expressions, mirroring the emitter's precedence).
 |---|---|
 | Data shape | `{ kind: 'trigger', triggerKind, eventName, payloadSchema, samplePayload, webhookPath?, cronExpr?, httpMethod?, httpPath? }` |
 | Input ports | (none) |
-| Output ports | `next` (control, required), `payload` (data, `any`, optional) |
-| Emitted SOL | a comment line, e.g. `# @trigger webhook event="order.received" path="/wh/orders"`, ahead of the function header |
+| Output ports | `next` (control, required); `payload` (data, `any`, optional) |
+| Emitted SOL | a `#` comment line ahead of the header, e.g. `# @trigger webhook event="order.received" path="/webhooks/orders"` |
 | Emit position | function preamble |
-| Notes | **Editor extension; NOT canonical SOL.** The comment is parser-tolerated as a comment but carries no language semantics. Logged as `T9001` |
+| AST node | none; canonical comments (`#`) are stripped by the lexer and carry no semantics |
+| Notes | **Editor extension; NOT canonical SOL.** `emitTriggerComment` builds the `#` line; the lexer treats it as a comment, so it round-trips into the source but the AST has no record of it (the formatter `sol/src/format.rs` would drop it). A `trigger` may serve as the entry node in place of `start` |
 
 ### Statement-form nodes
 
@@ -76,10 +109,11 @@ inline expressions, mirroring the emitter's precedence).
 |---|---|
 | Data shape | `{ kind: 'let', varName: string, varType: SolType }` |
 | Input ports | `prev` (control, required); `value` (data, `varType`, required) |
-| Output ports | `next` (control, required); `var` (data, `varType`, optional — stable id `var` so renaming `varName` doesn't break wired edges) |
+| Output ports | `next` (control, required); `var` (data, `varType`, optional — stable id `var` so renaming `varName` does not break wired edges) |
 | Emitted SOL | `let <varName>: <typeLabel(varType)> = <emitDataInput(value)>;` |
 | Emit position | statement |
-| Notes | Inline expression takes precedence over the wired edge (`src/emit/emit.ts:emitDataInput`). Missing `value` is satisfied by either a wired edge OR a non-empty `node.expressions['value']` — that match was added in commit `3aab8e0` after Sol Man was generating "valid-looking" let nodes whose visible text wasn't reaching emission |
+| AST node | `Stmt::Let { name, type_, value }` |
+| Notes | Inline expression takes precedence over the wired edge. A missing `value` is satisfied by either a wired edge OR a non-empty `node.expressions['value']`; the validator mirrors that so a `let amount = payload.amount` typed inline does not show a false `missing-input` |
 
 #### `assign`
 
@@ -90,6 +124,7 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `next` (control, required) |
 | Emitted SOL | `<varName> = <emitDataInput(value)>;` |
 | Emit position | statement |
+| AST node | `Stmt::Assign { target: Target::Ident, value }` |
 
 #### `print`
 
@@ -100,7 +135,8 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `next` (control, required) |
 | Emitted SOL | `print(<emitDataInput(value)>);` |
 | Emit position | statement |
-| Notes | The emitter never produces a multi-arg `print`. This aligns with the bytecode's single-arg behavior (chapter 13 §13.1) but means the editor cannot express a `print(a, b)` form even though the parser would accept it. Generally the right behavior given T9003 |
+| AST node | `Stmt::Expr(Expr::Call(Expr::Ident("print"), [value]))` |
+| Notes | `print` is one of the four VM builtins (`print`, `len`, `to_str`, `type_name`). The emitter only ever produces a single-argument `print`. The VM's `print` is variadic, but the editor cannot express `print(a, b)`; this aligns with one value per node |
 
 #### `return`
 
@@ -111,7 +147,8 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | (none) |
 | Emitted SOL | `return;` or `return <emitDataInput(value)>;` |
 | Emit position | statement (terminator) |
-| Notes | Emitter stops walking the control chain at this node |
+| AST node | `Stmt::Return(Option<Expr>)` |
+| Notes | `emitChain` stops walking the control chain at this node |
 
 #### `branch` (`if` / `if-else`)
 
@@ -119,10 +156,11 @@ inline expressions, mirroring the emitter's precedence).
 |---|---|
 | Data shape | `{ kind: 'branch', hasElse: boolean }` |
 | Input ports | `prev` (control, required); `cond` (data, `bool`, required) |
-| Output ports | `then` (control, required), `else` (control, required) only when `hasElse`, `after` (control, optional) |
+| Output ports | `then` (control, required); `else` (control, required) only when `hasElse`; `after` (control, optional) |
 | Emitted SOL | `if (<cond>) { <then-chain> } [ else { <else-chain> } ]` |
 | Emit position | statement |
-| Notes | The emitter walks the `then` chain, then (if present) the `else` chain, then continues from `after`. `after`-attached chains land *after* the entire if/else closes |
+| AST node | `Stmt::If { condition, then, else_ }` |
+| Notes | Parentheses around the condition are required by the parser, and the emitter always emits them. `emitChain` walks the `then` chain, then (if present) the `else` chain, then continues from `after`; `after`-attached chains land after the entire `if`/`else` closes |
 
 #### `while`
 
@@ -130,9 +168,11 @@ inline expressions, mirroring the emitter's precedence).
 |---|---|
 | Data shape | `{ kind: 'while' }` |
 | Input ports | `prev` (control, required); `cond` (data, `bool`, required) |
-| Output ports | `body` (control, required), `after` (control, optional) |
+| Output ports | `body` (control, required); `after` (control, optional) |
 | Emitted SOL | `while (<cond>) { <body-chain> }` |
 | Emit position | statement |
+| AST node | `Stmt::While { condition, body }` |
+| Notes | Parentheses around the condition are required by the parser and always emitted |
 
 #### `forEach` (`for-in`)
 
@@ -140,9 +180,11 @@ inline expressions, mirroring the emitter's precedence).
 |---|---|
 | Data shape | `{ kind: 'forEach', iteratorName: string, iteratorType: SolType }` |
 | Input ports | `prev` (control, required); `array` (data, `[]iteratorType`, required) |
-| Output ports | `body` (control, required), `after` (control, optional), `item` (data, `iteratorType`, optional) |
+| Output ports | `body` (control, required); `after` (control, optional); `item` (data, `iteratorType`, optional) |
 | Emitted SOL | `for <iteratorName> in <array> { <body-chain> }` |
 | Emit position | statement |
+| AST node | `Stmt::For { item, iter, body }` |
+| Notes | The `for-in` form takes NO parentheses (unlike `if` / `while`), matching the parser |
 
 ### Expression-form nodes
 
@@ -155,6 +197,8 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `result` (data, `binaryOpResultType(op, valueType)`, optional) |
 | Emitted SOL | `(<lhs> <op> <rhs>)` |
 | Emit position | expression |
+| AST node | `Expr::BinOp(lhs, op, rhs)` |
+| Notes | `op` is one of `+ - * / == != < > <= >= && \|\|`. Comparison and logical ops resolve to `bool` via `binaryOpResultType` |
 
 #### `unaryOp`
 
@@ -165,6 +209,8 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `result` (data, `unaryOpResultType(op, valueType)`, optional) |
 | Emitted SOL | `<op><operand>` |
 | Emit position | expression |
+| AST node | `Expr::UnaryOp(operand, op)` |
+| Notes | `op` is `-` (negation) or `!` (logical not). The editor emits `<op><operand>` without parentheses; the canonical formatter would re-emit it parenthesized as `(<op><operand>)`. Both parse |
 
 #### `varGet`
 
@@ -173,8 +219,9 @@ inline expressions, mirroring the emitter's precedence).
 | Data shape | `{ kind: 'varGet', varName: string, resolvedType: SolType }` |
 | Input ports | (none) |
 | Output ports | `value` (data, `resolvedType`, optional) |
-| Emitted SOL | the bare `<varName>` |
+| Emitted SOL | the bare `<varName>` (or `/* unset */` if `varName` is empty) |
 | Emit position | expression |
+| AST node | `Expr::Ident(varName)` |
 
 #### `literal`
 
@@ -182,9 +229,10 @@ inline expressions, mirroring the emitter's precedence).
 |---|---|
 | Data shape | `{ kind: 'literal', litType: SolPrimitive, value: string }` |
 | Input ports | (none) |
-| Output ports | `value` (data, `{kind: litType}`, optional) |
-| Emitted SOL | the value, formatted per type — `0` for empty int; `0.0` for empty float; `true`/`false` for bool; `"..."` with escapes for str; `'X'` for char |
+| Output ports | `value` (data, `{ kind: litType }`, optional) |
+| Emitted SOL | the value, formatted per type by `formatLiteral` — `0` for empty int; `0.0` for empty float and `N.0` for a float lacking a dot; `true`/`false` for bool; `"..."` with `\\` and `"` escaped for str; `'X'` (first char) for char |
 | Emit position | expression |
+| AST node | `Expr::Int` / `Expr::Float` / `Expr::Bool` / `Expr::Char` / `Expr::Str` |
 
 #### `arrayLiteral`
 
@@ -195,6 +243,7 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `array` (data, `[]itemType`, optional) |
 | Emitted SOL | `[<item:0>, <item:1>, …, <item:N-1>]` |
 | Emit position | expression |
+| AST node | `Expr::Array(Vec<Expr>)` |
 
 #### `structLiteral`
 
@@ -202,9 +251,10 @@ inline expressions, mirroring the emitter's precedence).
 |---|---|
 | Data shape | `{ kind: 'structLiteral', structName: string }` |
 | Input ports | one `field:<fieldName>` data port per declared field of the named struct |
-| Output ports | `value` (data, `{kind: 'named', name: structName}`, optional) |
+| Output ports | `value` (data, `{ kind: 'named', name: structName }`, optional) |
 | Emitted SOL | `<structName> { <fieldName>: <value>, … }` (or `<structName> {}` if no fields) |
 | Emit position | expression |
+| AST node | `Expr::StructInstance { name, fields }` |
 
 #### `fieldAccess`
 
@@ -215,6 +265,7 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `value` (data, field's declared type, optional) |
 | Emitted SOL | `<target>.<fieldName>` |
 | Emit position | expression |
+| AST node | `Expr::MemberAccess(target, fieldName)` |
 
 #### `fieldSet`
 
@@ -225,6 +276,7 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `next` (control, required) |
 | Emitted SOL | `<target>.<fieldName> = <value>;` |
 | Emit position | statement |
+| AST node | `Stmt::Assign { target: Target::MemberAccess, value }` |
 
 #### `indexRead`
 
@@ -235,6 +287,7 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `value` (data, `elementType`, optional) |
 | Emitted SOL | `<array>[<index>]` |
 | Emit position | expression |
+| AST node | `Expr::Index(array, index)` |
 
 #### `indexSet`
 
@@ -245,6 +298,7 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `next` (control, required) |
 | Emitted SOL | `<array>[<index>] = <value>;` |
 | Emit position | statement |
+| AST node | `Stmt::Assign { target: Target::Index, value }` |
 
 #### `enumVariant`
 
@@ -255,6 +309,7 @@ inline expressions, mirroring the emitter's precedence).
 | Output ports | `value` (data, `named(enumName)`, optional) |
 | Emitted SOL | `<enumName>::<variantName>` |
 | Emit position | expression |
+| AST node | `Expr::EnumVariant { enum_name, variant }` |
 
 #### `call`
 
@@ -263,9 +318,10 @@ inline expressions, mirroring the emitter's precedence).
 | Data shape | `{ kind: 'call', functionId: string }` |
 | Input ports | `prev` (control, required); one `arg:<paramName>` per param of the resolved function |
 | Output ports | `next` (control, required); `return` (data, function's return type, optional) — only when the resolved function returns non-void |
-| Emitted SOL | `<funcName>(<arg>, …);` (statement) or `<funcName>(<arg>, …)` (expression, only via `return` port) |
+| Emitted SOL | `<funcName>(<arg>, …);` (statement) or `<funcName>(<arg>, …)` (expression, only via the `return` port) |
 | Emit position | statement; or expression via `return` |
-| Notes | The auto-repair pass added in commit `3aab8e0` rewrites any `call` whose `functionId` doesn't resolve into a `print` placeholder so the resulting graph passes validation. See chapter 19 §19.3 |
+| AST node | `Expr::Call(Expr::Ident(funcName), args)` |
+| Notes | If `functionId` does not resolve in `workflow.functions`, the emitter falls back to the sentinel name `/* unknown */`, which does not parse. The Sol Man repair pass rewrites unresolved calls into `print` placeholders before emission (chapter 19 §19.3). Calls to external capabilities (`call("m.f", params)`, imported `m.f(args)`, namespace `m::rpc(args)`) are not produced by the Phase A graph emitter |
 
 ### Annotation nodes (editor-only)
 
@@ -275,7 +331,7 @@ inline expressions, mirroring the emitter's precedence).
 |---|---|
 | Data shape | `{ kind: 'note', text: string }` |
 | Input / output ports | (none) |
-| Emitted SOL | nothing — `emitStatement()` returns `''` for notes |
+| Emitted SOL | nothing — `emitStatement` returns `''` for notes |
 | Notes | Visual aid only |
 
 #### `frame`
@@ -289,7 +345,7 @@ inline expressions, mirroring the emitter's precedence).
 
 ---
 
-## 18.3 Inline expressions vs. wired data edges
+## 18.4 Inline expressions vs. wired data edges
 
 Every input port can be satisfied two ways:
 
@@ -298,7 +354,8 @@ Every input port can be satisfied two ways:
 2. **Inline expression** — set `node.expressions[portId]` to a
    non-empty string of SOL expression text.
 
-The **emitter prefers the inline form** (`src/emit/emit.ts:emitDataInput`):
+The **emitter prefers the inline form** (`emitDataInput` in
+`src/emit/emit.ts`):
 
 ```ts
 const inline = node?.expressions?.[portId];
@@ -308,210 +365,204 @@ if (inline !== undefined && inline.trim() !== '') {
 // fall back to the wired edge
 ```
 
-The **validator** (`src/graph/validate.ts`) was updated in commit
-`3aab8e0` to mirror that precedence: a required port is satisfied
-by either a wired edge or a non-empty inline expression. Before
-that change, every Sol-Man-generated `let amount = payload.amount`
-node showed a false "missing input" diagnostic because the editor
-stored the expression as inline text but the validator only looked
-at edges.
+The **validator** (`src/graph/validate.ts`) mirrors that
+precedence: a required port is satisfied by either a wired edge or
+a non-empty inline expression. Without that, every
+Sol-Man-generated `let amount = payload.amount` node would show a
+false `missing-input` diagnostic because the editor stores the
+expression as inline text rather than as an edge.
 
 The inline form is the Phase A escape hatch for fast authoring;
 the wired form is intended for more complex compositions that
 benefit from visualization. Tools should use whichever produces a
-more readable graph; the SOL output is identical either way.
+more readable graph; the emitted SOL is identical either way.
 
 ---
 
-## 18.4 Editor extensions documented as non-SOL
+## 18.5 Editor extensions documented as non-SOL
 
 | Editor concept | Canonical SOL equivalent | Status |
 |---|---|---|
-| `trigger` node + `# @trigger …` annotation | (none) | Editor extension; tolerated by the parser as a comment; T9001 |
+| `trigger` node + `# @trigger …` annotation | (none) | Editor extension; emitted as a `#` comment, stripped by the lexer |
 | `note` / `frame` annotations | (none) | Editor-only; never appear in emitted SOL |
-| `any` type marker on unresolved data edges | (none — SOL has no `any` type) | Editor-only; chapter 04 §4.1 |
-| Per-node `position`, `expressions` metadata | (none) | Stored in the workflow JSON for round-trip into the editor; not part of SOL itself |
+| `any` type marker on unresolved data ports | (none — SOL has no `any` type) | Editor-only; `typeLabel` emits the literal string `any`, which the parser reads as `Type::Named("any")` |
+| Per-node `position`, `expressions`, `meta` metadata | (none) | Stored in the workflow JSON for round-trip into the editor; not part of SOL itself |
 
-A SOL file produced by the editor and edited by hand will lose
-these concepts on its next visit unless the tool also preserves
-the workflow JSON.
+A SOL file produced by the editor and edited by hand keeps these
+concepts only if the tool also preserves the workflow JSON. The
+canonical formatter (`sol/src/format.rs`) drops comments, so a
+format round-trip loses the `# @trigger` annotation.
 
 ---
 
-## 18.5 Round-trip status
+## 18.6 Diagnostics: the bridge codes vs. the editor's structural checks
+
+There are TWO distinct diagnostic systems, and neither uses a
+numeric `E0xxx`/`T90xx` scheme.
+
+**The bridge** (`compiler-wasm/src/lib.rs`) emits exactly five
+codes, each with a severity / phase:
+
+| Severity | Phase | Code | When |
+|---|---|---|---|
+| Error | Parser | `E_PARSE` | parse failed (the parser's plain string message) |
+| Error | Codegen | `E_CODEGEN` | bytecode compilation failed |
+| Error | Analyzer | `E_NO_WORKFLOW` | `run_source_json` found no `workflow` declaration |
+| Warning | Runtime | `E_RUNTIME` | the VM returned `Failed(string)` or yielded an error during a run |
+| Error | Internal | `ICE0001` | a panic was caught inside the wasm bridge |
+
+The diagnostic JSON shape (severity, phase, code, message, span,
+related, help) is the stable editor contract in
+`src/compiler/types.ts`. Its `DiagnosticPhase` enumerates
+`Lexer | Parser | Analyzer | Codegen | Runtime | Internal`; `Lexer`
+is reserved and never emitted today. Runtime errors the browser
+sim surfaces are only `ExtCallBlocked { function_name, url }` (a
+`RemoteCall` the sim cannot fulfil) and `StepLimit { limit }`.
+
+**The editor's validator** (`src/graph/validate.ts`) runs
+structural checks on the graph BEFORE any SOL is emitted, with
+kebab-case codes (not bridge codes):
+
+`no-entry`, `unnamed-function`, `enum-first-char-collision`,
+`missing-input`, `bad-inline-expression`, `unset-struct`,
+`unknown-struct`, `unset-field`, `unset-enum`, `unknown-enum`,
+`unset-variant`, `unset-call`, `unknown-call`, `unset-var`,
+`unresolved-var`, `type-mismatch`.
+
+`enum-first-char-collision` is the editor's hazard warning: the
+canonical bytecode dispatches each enum variant by
+`(first_char as i128) % 10`, so two variants whose first
+characters share a mod-10 residue compare equal at runtime even
+though the by-name simulator runs them correctly. The validator
+surfaces this as a warning so the user is not surprised at deploy
+time.
+
+---
+
+## 18.7 Round-trip status
 
 | Direction | Status |
 |---|---|
-| Graph → SOL (emit) | **Implemented.** Walks the graph and produces text per the table above. |
-| SOL → Graph (parse → import) | **Not implemented today.** There is no parser-side hook in the editor that turns a hand-written `.sol` into a graph. Sources opened in the editor must come *from* the editor; arbitrary SOL is not roundtrippable. |
-
-This is recorded in the audit (`SOL_CRATE_IDE_READINESS_PLAN.md`
-§1, blockers #14 – #16) as a future-work item. Until SOL → Graph
-exists, the editor is **producer-only** for canonical SOL.
+| Graph to SOL (emit) | **Implemented** in `src/emit/emit.ts`. Walks the graph and produces canonical text per the table above. |
+| SOL to Graph (import) | Importer scaffolding exists (the `src/graph/import/` directory and the `FunctionGraph.meta.sourceLine` / `GraphNode.meta.sourceSpan` fields it populates). Hand-written arbitrary SOL is not reliably round-trippable today; treat the editor as producer-first. |
 
 ---
 
-## 18.6 Validator rules
+## 18.8 Validator rules
 
 The editor's validator (`src/graph/validate.ts`) is the source of
-truth for "is this graph emittable?". It mirrors the analyzer's
-rules where the language requires them, and adds a few editor-
-specific checks where the editor's structure goes beyond the
-language. The full diagnostic catalogue lives in
-[`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
+truth for "is this graph emittable?". Per-node check summary
+(each in addition to required-port satisfaction via edge or inline
+expression):
 
-Per-node check summary:
+| Node kind | Editor-side check | Code on failure |
+|---|---|---|
+| any function | non-empty name | `unnamed-function` |
+| any required input port | satisfied by edge OR non-empty inline expr | `missing-input` |
+| any inline expression | passes `lintInlineExpression` (`src/graph/expressionLint.ts`) | `bad-inline-expression` |
+| `structLiteral`, `fieldAccess`, `fieldSet` | struct name set and resolves in `workflow.structs` | `unset-struct` / `unknown-struct` |
+| `fieldAccess`, `fieldSet` | field name set | `unset-field` |
+| `enumVariant` | enum set and resolves; variant set | `unset-enum` / `unknown-enum` / `unset-variant` |
+| `call` | `functionId` set and resolves in `workflow.functions` | `unset-call` / `unknown-call` |
+| `assign` | `varName` set | `unset-var` |
+| `varGet` | `varName` set (warning); resolves in `let` / param / `forEach` scope (warning) | `unset-var` / `unresolved-var` |
+| workflow | at least one `start` function or trigger node | `no-entry` (warning) |
+| each enum | no two variants share a first character | `enum-first-char-collision` (warning) |
 
-| Node kind | Editor-side check (in addition to required-port satisfaction) |
-|---|---|
-| `structLiteral`, `fieldAccess`, `fieldSet` | struct name must resolve in `workflow.structs` |
-| `fieldAccess`, `fieldSet` | field name must be set |
-| `enumVariant` | enum name must resolve; variant name must be set |
-| `call` | `functionId` must be set and must resolve in `workflow.functions` |
-| `assign` | `varName` must be set |
-| `varGet` | `varName` must be set; should resolve in the function's `let` / param scope |
-
-Type-mismatch warnings fire on wired data edges whose source and
-target port types disagree (`typeEqual` check).
+Type-mismatch warnings (`type-mismatch`) fire on wired data edges
+whose source and target port types disagree, via the `typeEqual`
+check in `src/graph/schema.ts`.
 
 ---
 
-## 18.7 Where the editor can emit invalid SOL
+## 18.9 Where the editor can emit non-parsing SOL
 
-The editor's validator is structural — it checks port shapes,
-symbol references, and basic type compatibility on wired data
-edges. It does **not** validate the *content* of inline
-expression strings or check that the program's emitted SOL
-actually parses. Several paths exist where a graph that passes
-SolFlow validation produces SOL that the canonical compiler
+The validator is structural — it checks port shapes, symbol
+references, and basic type compatibility on wired data edges. It
+does NOT parse the content of inline expression strings or verify
+that the emitted program parses. Several paths exist where a graph
+that passes SolFlow validation produces SOL the canonical parser
 rejects.
 
 ### Inline expression strings are passed through verbatim
 
-The validator (`src/graph/validate.ts:82–96`) checks only that a
-required port has *either* a wired edge *or* a non-empty
-`node.expressions[portId]` string. It never lints the string's
-syntax, type, or content. The emitter
-(`src/emit/emit.ts:emitDataInput`) inserts the string as-is into
-the output SOL.
+`emitDataInput` inserts a non-empty `node.expressions[portId]`
+into the output SOL as-is. The validator's `bad-inline-expression`
+lint (`src/graph/expressionLint.ts`) blocks obviously-wrong
+strings (JS globals, method calls, statement keywords), but it is
+not a full SOL parser. A surviving string that is not a valid SOL
+expression still produces non-parsing SOL.
 
-A node with `expressions['value'] = "if true { 1 } else { 2 }"`
-passes validation and emits:
+SOL has no `if`-expression form — `if` is a statement. An inline
+`if true { 1 } else { 2 }` placed in a `let` value would emit:
 
 ```sol
 let x: int = if true { 1 } else { 2 };
 ```
 
-SOL has no `if`-expression form (chapter 07 §7.1 — `if` is a
-statement). The compiler parses this as `let x: int = if …` and
-calls `expression()`, which calls `primary()`, which doesn't
-recognize the `if` keyword as a primary form → parser exit with
-`not an expressionable token: If`.
+and fail at parse time, because `if` is not an expressionable
+token. The lint catches the leading `if` keyword; an expression
+that slips past the lint and is still malformed surfaces as a
+`E_PARSE` diagnostic from the bridge.
 
-**Recommendation:** The validator should at minimum reject inline
-expressions containing SOL keywords that aren't valid in
-expression position (`if`, `else`, `while`, `for`, `let`,
-`return`, `struct`, `enum`, `import`, `fn`, `ext`, `as`).
-A stronger fix would route inline expressions through a real SOL
-expression parser. Logged as **T9018**.
+### Sentinel strings for unsatisfied inputs
 
-### Literal node value text is unchecked
+When a required data input has neither an inline expression nor a
+wired edge, the emitter does not insert a SOL comment (SOL has no
+block comments). It inserts a sentinel string and pushes a
+warning:
 
-`literal` nodes carry a free-form `value: string` plus a
-`litType: SolPrimitive`. The formatter
-(`src/emit/emit.ts:formatLiteral`) does light type-aware
-formatting (`0` for empty int, `0.0` for empty float, escape
-double-quotes for strings) but never validates the value text
-against the type:
+| Situation | Sentinel emitted (`src/emit/emit.ts`) |
+|---|---|
+| missing required input | `__UNRESOLVED_INPUT__` |
+| `call` whose `functionId` does not resolve | `/* unknown */` |
+| `varGet` with empty `varName` | `/* unset */` |
+| expression node read via an invalid output port | `/* invalid */` |
 
-| `litType` | User typed | Emitted SOL | Compiler verdict |
-|---|---|---|---|
-| `int` | `"42"` | `42` | OK |
-| `int` | `"0xFF"` | `0xFF` | Parse error: lexer accepts `0`, then sees `x` as identifier start — produces `0` and `xFF` as separate tokens |
-| `int` | `"hello"` | `hello` | Parse error or semantic error depending on context |
-| `int` | `"3.14"` | `3.14` | Parses as a float literal; subsequent expression context determines whether it compiles |
-| `str` | `"foo"` | `"foo"` | OK |
-| `bool` | `"yes"` | `false` | Silently coerced to `false` (any value ≠ `"true"` → `false`) |
-| `char` | `""` | `' '` | Single space char — unintended but compiles |
-
-Each of these is a path where the editor emits parser-valid or
-parser-invalid SOL with no warning. Logged as **T9021**.
-
-### Apply-anyway produces `/* missing */` placeholders
-
-When the user clicks "Apply draft with errors" in the Sol Man
-modal (chapter 19), the validator's errors are bypassed but the
-emitter still runs. For each missing required input, the emitter
-inserts the literal string `/* missing */` (`src/emit/emit.ts:324`)
-and pushes a warning.
-
-`/* missing */` is a SOL block comment that the lexer consumes as
-trivia (`lexer.rs:319–328`). The parser then sees the surrounding
-text as if the missing port had no content — e.g.:
-
-- `let x: int = /* missing */;` reduces to `let x: int = ;`,
-  which is parse error E0001.
-- `if /* missing */ { … }` reduces to `if { … }`, which is also
-  a parse error (the parser tries to call `expression()` and
-  sees `{`).
-- `print(/* missing */);` reduces to `print();`, which the
-  parser accepts (empty arg list), but then bytecode emission
-  reaches `print` with `args.is_empty()` → no Print op is
-  emitted at all (the `&& !args.is_empty()` guard at
-  `bytecode.rs:424`). The call has no observable effect.
-
-The first two cases fail loudly at compile time — acceptable.
-The third case silently no-ops, which is a worse outcome than
-either passing or failing. Logged as **T9020**.
+None of these parse as canonical SOL: `__UNRESOLVED_INPUT__` lexes
+as a bare identifier (usually an unbound variable), and `/* … */`
+lexes as `/`, `*`, identifiers, `*`, `/` — there is no block
+comment in SOL, so the surrounding statement fails to parse. The
+validator's `missing-input` and the kind-specific `unset-*` /
+`unknown-*` codes are designed to stop a graph from reaching
+emission in any of these states; the sentinels are a last-resort
+fallback, not normal output.
 
 ### The editor's `any` type leaks into SOL
 
-The editor uses `{ kind: 'any' }` as a SolType for unresolved
-data ports. `typeLabel` emits this as the literal string `any`
-(`src/graph/schema.ts:typeLabel`). When used as a type in a
-`let` annotation (`let x: any = …;`), the canonical parser
-treats `any` as `Type::Ident("any")` — a nominal struct
-reference. The analyzer doesn't check struct existence at the
-decl site (T9009), so the program compiles. Any later field
-access on `x` would fail with "could not find struct `any` in
-scope".
-
-In practice this only fires when a node's data type genuinely
-cannot be resolved by the editor — typically inside a
-work-in-progress workflow. Logged as **T9019**.
-
-### Cross-layer audit table
-
-| What the editor's validator checks | What canonical SOL requires (analyzer) | Mismatch |
-|---|---|---|
-| Required input has edge OR non-empty inline expression | Required argument is well-typed and resolves | Validator passes nodes whose inline expression is gibberish |
-| Struct exists | Same; plus literal supplies every field (analyzer's `todo!` — chapter 09 §9.2) | Both validator and analyzer omit field-coverage check |
-| Enum exists; variant name is set | Same | OK |
-| Call's functionId resolves | Call's name is in scope as a `function`/`ext function` | OK; validator and analyzer agree |
-| `assign` has varName | Same | OK |
-| `varGet` resolves in function-local scope (heuristic) | Same plus scope-aware analyzer walk | Validator's heuristic doesn't honor control-flow reachability |
-| Data-edge type compatibility | Per-operator type rules (chapter 08) | Validator only checks edge endpoints; misses inline-expression type mismatches |
-| (none) | `if`/`while` condition must be `bool` | Validator does not type-check conditions |
-| (none) | Arithmetic operand types must match and be numeric | Validator does not type-check inline arithmetic |
-| (none) | Function call argument count matches signature | Validator's port system creates exact ports, so a structural mismatch surfaces as missing-input; but doesn't validate that the call's `functionId` selects a function with the right param shape after the user changed param names |
-| `varGet` resolves (warning) | Same | OK |
-| "No `start` function or trigger node" (warning) | None — SOL has no formal entry rule | Warning is editor-only |
+`typeLabel` emits the editor-only `{ kind: 'any' }` as the literal
+string `any`. Used in a `let` annotation (`let x: any = …;`), the
+canonical parser reads `any` as `Type::Named("any")` — a nominal
+type reference. There is no analyzer to reject an unknown named
+type at the declaration site, so the program parses and compiles;
+a later field access on `x` would fail at runtime when the VM
+cannot find a struct named `any`. This only fires when a node's
+data type genuinely cannot be resolved, typically in a
+work-in-progress workflow.
 
 The general pattern: the editor validates **structure** (graph
-shape), canonical SOL validates **content** (types, names,
-syntactic well-formedness of expressions). Any path that bridges
-the two — most prominently the inline expression mechanism — is
-where invalid SOL can be emitted from a "valid" graph.
+shape, symbol references); canonical SOL is checked only by
+**parsing and running** (there is no type checker). Any path that
+bridges the two — most prominently the inline expression
+mechanism — is where non-parsing SOL can come from a structurally
+valid graph.
 
 ---
 
-## 18.8 Sources cited in this chapter
+## 18.10 Sources cited in this chapter
 
+- `sol/src/ast.rs` — the canonical AST node set the emitter targets
+- `sol/src/format.rs` — the canonical pretty-printer (reference for
+  exact canonical formatting; drops comments)
+- `compiler-wasm/src/lib.rs` — the wasm bridge and its five
+  diagnostic codes
+- `src/compiler/types.ts` — the stable diagnostic JSON shape
 - `src/graph/schema.ts` — `NodeKind`, `NodeData`, `Port`,
-  `GraphNode`, `GraphEdge`
+  `GraphNode`, `GraphEdge`, `typeLabel`, `typeEqual`
+- `src/graph/kinds.ts` — palette catalog of node kinds
 - `src/graph/factory.ts` — port construction per kind
-- `src/graph/validate.ts` — port satisfaction rules; per-kind checks
-- `src/emit/emit.ts` — Graph → SOL emission walk
-- `src/sol-man/applyGraph.ts` — auto-repair pass (call → print)
-- [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md) — T9001 (trigger
-  annotation), T9003 (print single arg)
+- `src/graph/validate.ts` — port satisfaction rules; per-kind
+  checks; kebab-case diagnostic codes
+- `src/graph/expressionLint.ts` — inline-expression lint
+- `src/emit/emit.ts` — Graph to SOL emission walk
+- `src/sol-man/applyGraph.ts` — Sol Man repair pass (call to print)

