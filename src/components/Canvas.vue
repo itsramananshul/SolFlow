@@ -1141,7 +1141,7 @@ onBeforeUnmount(() => {
       @jump="onSearchJump"
       @close="closeSearch"
     />
-    <ExecutionTimeline v-if="!ui.runOpen" />
+    <ExecutionTimeline />
     <ExecutionControls />
 
     <!--
