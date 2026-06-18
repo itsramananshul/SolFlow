@@ -155,6 +155,7 @@ export type NodeKind =
   | 'indexSet'
   | 'enumVariant'
   | 'call'
+  | 'action'
   // annotations — non-executable visual aids for big workflows.
   // Notes hold free text; Frames wrap a region of nodes with a title.
   | 'note'
@@ -225,6 +226,11 @@ export type NodeData =
   | { kind: 'indexSet'; elementType: SolType }
   | { kind: 'enumVariant'; enumName: string; variantName: string }
   | { kind: 'call'; functionId: string } // refs FunctionGraph.id
+  // External capability call: `call("module.function", params)`. The
+  // controller resolves `capability` ("module.function") against a
+  // registered provider; Browser Simulation blocks it. `params` arrives
+  // on the data-in port; the provider's result leaves on the return port.
+  | { kind: 'action'; capability: string }
   // -----------------------------------------------------------
   // Annotations — render-only, not part of execution semantics.
   // Skipped by interpret/emit/validate; do not declare ports.

@@ -22,7 +22,8 @@ export type GeneratedNodeKind =
   | 'branch'
   | 'while'
   | 'forEach'
-  | 'call';
+  | 'call'
+  | 'action';
 
 export type GeneratedTriggerKind =
   | 'manual'

@@ -523,8 +523,21 @@ function importExprStatement(expr: Expr, state: FuncImportState): StmtImportResu
     }
   }
 
-  // Capability calls / Actions (call(...), module.fn(...), ns::fn(...))
-  // and unknown calls: preserve the call text honestly.
+  // Capability call `call("module.function", params)` → first-class
+  // `action` node. The capability must be a string literal; the params
+  // expression rides on the node's `params` port.
+  if ('WorkflowCall' in expr) {
+    const cap = expr.WorkflowCall.capability_expr;
+    if (cap && typeof cap === 'object' && 'Str' in cap) {
+      const data: NodeData = { kind: 'action', capability: cap.Str };
+      const realNode = createNode('action', { x: 0, y: 0 }, state.ctx, data);
+      realNode.expressions = { params: stringifyExpr(expr.WorkflowCall.params) };
+      return pushSimpleStatement(state, realNode, 'action', 'full');
+    }
+  }
+
+  // Other capability forms (module.fn(...), ns::fn(...)) and unknown
+  // calls: preserve the call text honestly on a placeholder.
   const isAction =
     'WorkflowCall' in expr || 'NamespaceCall' in expr || 'Call' in expr;
   return makeUnsupportedPlaceholder(

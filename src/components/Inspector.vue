@@ -228,6 +228,8 @@ const nodeSummary = computed<string>(() => {
       return d.functionId
         ? `Calls function "${graph.workflow.functions.find((f) => f.id === d.functionId)?.name ?? '?'}".`
         : 'Calls another function (pick which one).';
+    case 'action':
+      return `Calls the external capability "${d.capability}" via a registered provider.`;
     case 'note':
       return 'A sticky note. Does not affect execution.';
     case 'frame':
@@ -312,6 +314,7 @@ function sourceLabel(portId: string): string {
     case 'indexRead':    return 'arr[i]';
     case 'enumVariant':  return `${d.enumName}::${d.variantName}`;
     case 'call':         return 'function result';
+    case 'action':       return 'capability result';
     case 'trigger':      return `${d.triggerKind} trigger payload`;
     case 'arrayLiteral': return `[${d.length}]`;
     case 'structLiteral': return `${d.structName} {}`;
@@ -385,6 +388,7 @@ function describeNodeShort(n: GraphNode): string {
     case 'indexSet':      return 'arr[i] =';
     case 'enumVariant':   return `${d.enumName}::${d.variantName}`;
     case 'call':          return 'call()';
+    case 'action':        return `call("${d.capability}")`;
     case 'note':          return 'note';
     case 'frame':         return d.title || 'Section';
   }
@@ -1246,6 +1250,25 @@ const placeholderFor = (portId: string, kind: string): string => {
               </option>
             </select>
           </label>
+        </template>
+
+        <template v-else-if="selectedNode.data.kind === 'action'">
+          <label class="field">
+            <span class="field-label">Capability</span>
+            <input
+              :value="selectedNode.data.capability"
+              placeholder="module.function (e.g. demo.add)"
+              @input="(e) => update({ capability: (e.target as HTMLInputElement).value })"
+            />
+          </label>
+          <p class="help-blurb">
+            Emits <code>call("{{ selectedNode.data.capability }}", params)</code>.
+            Wire a value into the <strong>params</strong> port (or leave it for
+            <code>{}</code>); the provider's result leaves the
+            <strong>return</strong> port. Runs on a Local or Cloud Controller
+            that has a provider registered for this module; Browser Simulation
+            blocks it.
+          </p>
         </template>
 
         <template v-else-if="selectedNode.data.kind === 'frame'">

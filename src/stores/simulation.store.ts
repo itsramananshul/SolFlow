@@ -96,6 +96,7 @@ export const useSimulationStore = defineStore('simulation', () => {
       case 'indexSet':      return 'arr[i] =';
       case 'enumVariant':   return `${d.enumName}::${d.variantName}`;
       case 'call':          return 'call()';
+      case 'action':        return `call("${d.capability}")`;
       case 'note':          return 'note';
       case 'frame':         return d.title || 'Section';
     }

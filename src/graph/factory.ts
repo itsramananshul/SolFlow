@@ -79,6 +79,8 @@ export function defaultData(kind: NodeKind): NodeData {
       return { kind: 'enumVariant', enumName: '', variantName: '' };
     case 'call':
       return { kind: 'call', functionId: '' };
+    case 'action':
+      return { kind: 'action', capability: 'module.function' };
     case 'note':
       return { kind: 'note', text: 'Add a note…' };
     case 'frame':
@@ -366,6 +368,22 @@ export function rebuildPorts(data: NodeData, ctx: WorkflowCtx): NodePorts {
       }
       return { in: inPorts, out: outPorts };
     }
+    case 'action':
+      // External capability call. Dual-mode: a fire-and-forget statement
+      // (wired in the control-flow chain) OR an expression whose result is
+      // consumed downstream (data-wired, no control flow). So the control
+      // ports are optional — an unwired `prev` is valid when the node is
+      // used as a value. Params in, the provider's result out.
+      return {
+        in: [
+          CTL('prev', 'prev', false),
+          DATA('params', 'params', { kind: 'any' }, false),
+        ],
+        out: [
+          CTL('next', 'next', false),
+          DATA('return', 'return', { kind: 'any' }, false),
+        ],
+      };
     case 'note':
     case 'frame':
       // Annotations have no ports — they're visual aids only.

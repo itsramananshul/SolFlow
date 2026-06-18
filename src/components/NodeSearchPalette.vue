@@ -81,6 +81,8 @@ function describe(n: GraphNode): { label: string; detail: string } {
       return { label: `${d.enumName}::${d.variantName}`, detail: 'enum variant' };
     case 'call':
       return { label: 'call()', detail: 'function call' };
+    case 'action':
+      return { label: `call("${d.capability}")`, detail: 'capability call' };
     case 'note':
       return { label: 'note', detail: d.text.slice(0, 80) };
     case 'frame':

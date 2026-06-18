@@ -161,6 +161,13 @@ export const PALETTE: PaletteEntry[] = [
   // io / calls
   { kind: 'print', label: 'Print', category: 'io', description: 'print(…)', draggable: true },
   { kind: 'call', label: 'Call', category: 'call', description: 'call a function', draggable: true },
+  {
+    kind: 'action',
+    label: 'Capability Call',
+    category: 'io',
+    description: 'call("module.fn", params) — runs on a controller with a registered provider',
+    draggable: true,
+  },
 
   // annotations — visual only, don't affect runtime
   {
