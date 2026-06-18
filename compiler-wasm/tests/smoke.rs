@@ -57,6 +57,19 @@ fn helper_call_shows_call_and_return_in_trace() {
 }
 
 #[test]
+fn blocked_external_call_traces_extcall_and_points_at_call_site() {
+    let src = r#"import http; workflow "main" { http.fetch({ url: "x" }); return 0; }"#;
+    let out = run_source_json(src);
+    println!("BLOCK TRACE => {out}");
+    // Browser sim blocks the call, but the trace still shows the external
+    // call and a source mapped error at the call site.
+    assert!(out.contains("\"kind\":\"extcall\""), "{out}");
+    assert!(out.contains("\"kind\":\"error\""), "{out}");
+    assert!(out.contains("blocked in Browser Simulation"), "{out}");
+    assert!(out.contains("\"runtime_error_source_span\":{"), "{out}");
+}
+
+#[test]
 fn runtime_error_trace_points_at_failing_statement() {
     let src = r#"
         fn risky(n: int) <- int { return n / 0; }

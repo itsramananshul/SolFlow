@@ -152,6 +152,8 @@ fn trace_kind_str(k: &TraceKind) -> &'static str {
         TraceKind::Stmt => "stmt",
         TraceKind::Call => "call",
         TraceKind::Return => "return",
+        TraceKind::ExtCall => "extcall",
+        TraceKind::ExtResult => "extresult",
         TraceKind::Error => "error",
     }
 }
@@ -206,7 +208,16 @@ pub fn run_source_json(source: &str) -> String {
                     break;
                 }
                 Ok(StepResult::Yielded(_)) => continue,
-                Ok(StepResult::RemoteCall { capability, .. }) => { runtime_error = Some(RtErr::ExtCallBlocked { function_name: capability, url: String::new() }); break; }
+                Ok(StepResult::RemoteCall { capability, .. }) => {
+                    // Browser Simulation has no providers: external Actions are
+                    // blocked. Record a source mapped error at the call site so
+                    // the Trace tab and the run point at the exact call(...).
+                    exec.trace_ext_error(format!(
+                        "external call '{capability}' is blocked in Browser Simulation; run on a Local Controller with a registered provider"
+                    ));
+                    runtime_error = Some(RtErr::ExtCallBlocked { function_name: capability, url: String::new() });
+                    break;
+                }
                 Ok(StepResult::Failed(reason)) => { diagnostics.push(diag("Warning", "Runtime", "E_RUNTIME", reason)); break; }
                 Err(e) => { diagnostics.push(diag("Warning", "Runtime", "E_RUNTIME", e)); break; }
             }
