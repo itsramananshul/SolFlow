@@ -41,6 +41,8 @@ interface RunEnvelope {
     return_value: number | null;
     output: string[];
     runtime_error: { kind: string } | null;
+    runtime_error_source_span: { start: number; end: number } | null;
+    trace: Array<{ kind: string }>;
   } | null;
 }
 
@@ -115,6 +117,22 @@ describe('Prod c50 — sample workflows compile cleanly via canonical compiler',
         expect(env.run).not.toBeNull();
         expect(env.run!.runtime_error).toBeNull();
         expect(env.run!.output.length).toBeGreaterThan(0);
+      });
+    }
+
+    // A provider-backed sample compiles cleanly and, in Browser Simulation
+    // (no providers), blocks its external call clearly at the call site.
+    if (sample.requiresProvider) {
+      it(`${sample.id} — blocks its external call in Browser Simulation`, () => {
+        const { source } = emit(sample.build());
+        const env = JSON.parse(wasm.run_source_json(source)) as RunEnvelope;
+        expect(env.ok).toBe(true);
+        expect(env.run).not.toBeNull();
+        expect(env.run!.runtime_error?.kind).toBe('ExtCallBlocked');
+        // The block is tied to the failing call's source span.
+        expect(env.run!.runtime_error_source_span).not.toBeNull();
+        // The trace still shows the external call attempt.
+        expect(env.run!.trace.some((s) => s.kind === 'extcall')).toBe(true);
       });
     }
   }

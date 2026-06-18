@@ -310,11 +310,13 @@ function toggleSampleMenu() {
               <span class="menu-title">{{ s.name }}</span>
               <span
                 class="menu-runnable"
-                :class="s.runnable ? 'runs' : 'demo'"
+                :class="s.runnable ? 'runs' : s.requiresProvider ? 'provider' : 'demo'"
                 :title="s.runnable
                   ? 'Runs end to end with no providers'
-                  : 'Uses helper functions or capabilities the runtime does not execute on its own'"
-              >{{ s.runnable ? 'Runs standalone' : 'Structure demo' }}</span>
+                  : s.requiresProvider
+                    ? 'Runs on a controller with a matching provider registered; blocked in Browser Simulation'
+                    : 'Uses helper functions or capabilities the runtime does not execute on its own'"
+              >{{ s.runnable ? 'Runs standalone' : s.requiresProvider ? 'Needs provider' : 'Structure demo' }}</span>
               <span
                 v-if="metaFor(s.id).nodeCount > 0"
                 class="menu-size"
@@ -639,6 +641,7 @@ function toggleSampleMenu() {
   letter-spacing: 0.3px;
 }
 .menu-runnable.runs { color: var(--sf-success); background: rgba(0, 204, 136, 0.12); }
+.menu-runnable.provider { color: #e8bf7a; background: rgba(220, 170, 90, 0.14); }
 .menu-runnable.demo { color: var(--sf-text-2);  background: var(--sf-bg-3); }
 .menu-title {
   flex: 1;
