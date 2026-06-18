@@ -18,7 +18,6 @@
 
 use serde::{Deserialize, Serialize};
 use solflow_compiler::bytecode::Inst;
-use solflow_compiler::SolDiagnostic;
 
 /// The host-spec major version. Bump on breaking shape changes.
 /// Minor / patch live in `Cargo.toml::version`.
@@ -516,6 +515,55 @@ impl From<solflow_compiler::SourceSpan> for SourceSpan {
     fn from(s: solflow_compiler::SourceSpan) -> Self {
         Self { start: s.start, end: s.end }
     }
+}
+
+// =============================================================
+//  Diagnostics (locally owned wire types)
+// =============================================================
+//
+// host-spec owns its wire types ("pure data + serde; no transport,
+// no impl"). These mirror the shape the editor expects (and the
+// compiler-wasm bridge emits) byte for byte, so the wire JSON and
+// the editor's `runtime-host/types.ts` are unchanged — only the
+// crate that defines the type moved.
+
+/// Severity tier for a diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+    Note,
+}
+
+/// Which pipeline stage produced the diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiagnosticPhase {
+    Lexer,
+    Parser,
+    Analyzer,
+    Codegen,
+    Runtime,
+    Internal,
+}
+
+/// Secondary span pointing at related context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelatedSpan {
+    pub span: SourceSpan,
+    pub message: String,
+}
+
+/// A diagnostic produced by any pipeline stage. Field order matches
+/// the natural display order and the wire contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolDiagnostic {
+    pub severity: DiagnosticSeverity,
+    pub phase: DiagnosticPhase,
+    pub code: String,
+    pub message: String,
+    pub span: Option<SourceSpan>,
+    pub related: Vec<RelatedSpan>,
+    pub help: Option<String>,
 }
 
 // =============================================================
