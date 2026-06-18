@@ -44,17 +44,17 @@ export function buildEnterprise(): SolWorkflow {
   ]);
 
   // --- helper: scoreOrder() ---
-  const score = addFunction(b, 'scoreOrder', [], { kind: 'int' });
+  const score = addFunction(b, 'scoreOrder', [], { kind: 'int' }, false);
   const scoreId = score.id;
   node(b, 'return', { x: 240, y: 60 }, { kind: 'return', hasValue: true });
 
   // --- helper: sendNotification() ---
-  const notify = addFunction(b, 'sendNotification');
+  const notify = addFunction(b, 'sendNotification', [], { kind: 'void' }, false);
   const notifyId = notify.id;
   node(b, 'print', { x: 240, y: 60 });
 
   // --- helper: dispatchFulfillment() ---
-  const dispatch = addFunction(b, 'dispatchFulfillment');
+  const dispatch = addFunction(b, 'dispatchFulfillment', [], { kind: 'void' }, false);
   const dispatchId = dispatch.id;
   node(b, 'print', { x: 240, y: 60 });
 

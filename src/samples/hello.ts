@@ -36,7 +36,7 @@ export function buildHello() {
   // -----------------------------------------------------------
   const printPersonFn = addFunction(b, 'print_person', [
     { name: 'p', type: { kind: 'named', name: 'Person' } },
-  ]);
+  ], { kind: 'void' }, false);
   const pp_start = getStart(b);
   const pp_print1 = node(b, 'print', { x: 280, y: 60 });
   const pp_fld_name = node(b, 'fieldAccess', { x: 80, y: 160 }, {
