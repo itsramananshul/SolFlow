@@ -17,7 +17,6 @@
 //! major version refuse to connect. See architecture doc §5.3.
 
 use serde::{Deserialize, Serialize};
-use solflow_compiler::bytecode::Inst;
 
 /// The host-spec major version. Bump on breaking shape changes.
 /// Minor / patch live in `Cargo.toml::version`.
@@ -54,14 +53,13 @@ pub struct WorkflowSubmission {
     #[serde(default)]
     pub description: Option<String>,
 
-    /// Canonical-compiled bytecode (`bincode`-encoded
-    /// `Vec<solflow_compiler::bytecode::Inst>`).
-    /// Wire format is base64-of-bincode in JSON transports.
+    /// SOL source bytes. The controller compiles + runs them on the
+    /// canonical openprem-sol-v2 VM. Named `bytecode` for wire
+    /// back-compat; the blob is opaque to host-spec.
     pub bytecode: Vec<u8>,
 
-    /// Per-instruction span sidecar (`bincode`-encoded
-    /// `Vec<Option<SourceSpan>>` parallel to `bytecode`).
-    /// Same wire format as `bytecode`.
+    /// Optional per-instruction span sidecar, opaque `Vec<u8>` on the
+    /// wire (JSON-encoded `Vec<Option<SourceSpan>>` in practice).
     pub instruction_spans: Vec<u8>,
 
     /// Optional original SOL source — purely for editor debug
@@ -502,19 +500,13 @@ pub enum RuntimeErrorView {
     ResourceLimit { resource: String, limit: u64 },
 }
 
-/// Byte-range source span. Mirrors `solflow_compiler::SourceSpan`
-/// but locally-declared so this crate doesn't expose serde
-/// internals of the compiler crate to the editor.
+/// Byte-range source span into the SOL source. Locally declared so
+/// this wire crate owns its serde shape and carries no compiler
+/// dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceSpan {
     pub start: usize,
     pub end: usize,
-}
-
-impl From<solflow_compiler::SourceSpan> for SourceSpan {
-    fn from(s: solflow_compiler::SourceSpan) -> Self {
-        Self { start: s.start, end: s.end }
-    }
 }
 
 // =============================================================
@@ -596,46 +588,16 @@ pub struct ScheduleRecord {
 // =============================================================
 
 // =============================================================
-//  Bytecode wire encoding (C.2 c59)
+//  Workflow submission payload
 // =============================================================
 //
 // `WorkflowSubmission.bytecode` is a `Vec<u8>` at the wire-type
-// level. The format INSIDE that vec is opaque from the host-spec
-// perspective, but in practice the editor + controller agree on
-// JSON-encoded `Vec<Inst>`. JSON over bincode for C.2 because:
-//   - debuggability (you can curl + jq a bytecode payload)
-//   - simpler dep graph (serde_json is already in the workspace)
-//   - bytecode size isn't a perf concern at C.2 scale
-// Bincode is a future optimization if payload sizes matter.
-
-/// Encode bytecode for the wire. Same format on both sides;
-/// callers must use this helper rather than `serde_json::to_vec`
-/// directly so any future format change (e.g. bincode) happens
-/// in one place.
-pub fn encode_bytecode(insts: &[Inst]) -> Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_vec(insts)
-}
-
-/// Decode bytecode from the wire. Inverse of `encode_bytecode`.
-pub fn decode_bytecode(bytes: &[u8]) -> Result<Vec<Inst>, serde_json::Error> {
-    serde_json::from_slice(bytes)
-}
-
-/// Encode the per-instruction span sidecar for the wire. Same
-/// format invariant as `encode_bytecode`.
-pub fn encode_instruction_spans(
-    spans: &[Option<SourceSpan>],
-) -> Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_vec(spans)
-}
-
-/// Decode the per-instruction span sidecar. Inverse of
-/// `encode_instruction_spans`.
-pub fn decode_instruction_spans(
-    bytes: &[u8],
-) -> Result<Vec<Option<SourceSpan>>, serde_json::Error> {
-    serde_json::from_slice(bytes)
-}
+// level: the editor submits SOL *source* bytes and the controller
+// compiles + runs them on the canonical openprem-sol-v2 VM
+// (`canonical_exec`). host-spec stays a pure-data wire crate with no
+// compiler dependency, so it neither encodes nor inspects that blob.
+// `instruction_spans` is an opaque `Vec<u8>` sidecar on the same
+// terms.
 
 /// `GET /healthz` response.
 ///
@@ -949,35 +911,19 @@ mod tests {
     }
 
     #[test]
-    fn bytecode_round_trips_through_wire_encoding() {
-        // C.2 c59: editor compiles → encode_bytecode → wire →
-        // decode_bytecode → controller runs. Roundtrip must
-        // preserve exact instruction sequence.
-        use solflow_compiler::bytecode::Inst;
-        use solflow_compiler::parser::Ast;
-        let bytecode = vec![
-            Inst::PushConst(Ast::ExprInteger(42)),
-            Inst::PushConst(Ast::ExprInteger(7)),
-            Inst::IntAdd,
-            Inst::Ret,
-        ];
-        let bytes = encode_bytecode(&bytecode).expect("encode");
-        let restored = decode_bytecode(&bytes).expect("decode");
-        // Inst doesn't derive PartialEq; re-encode + compare bytes.
-        let bytes2 = encode_bytecode(&restored).expect("re-encode");
-        assert_eq!(bytes, bytes2, "bytecode round-trip stable");
-    }
-
-    #[test]
-    fn instruction_spans_round_trip_through_wire_encoding() {
+    fn source_span_round_trips_through_serde() {
+        // host-spec owns SourceSpan's wire shape (no compiler dep).
+        // The editor mirror in runtime-host/types.ts must match this
+        // `{ start, end }` JSON exactly.
         let spans: Vec<Option<SourceSpan>> = vec![
             Some(SourceSpan { start: 0, end: 10 }),
             None,
             Some(SourceSpan { start: 12, end: 20 }),
-            None,
         ];
-        let bytes = encode_instruction_spans(&spans).expect("encode");
-        let restored = decode_instruction_spans(&bytes).expect("decode");
+        let json = serde_json::to_string(&spans).expect("encode");
+        assert_eq!(json, r#"[{"start":0,"end":10},null,{"start":12,"end":20}]"#);
+        let restored: Vec<Option<SourceSpan>> =
+            serde_json::from_str(&json).expect("decode");
         assert_eq!(spans, restored);
     }
 
