@@ -76,6 +76,9 @@ field.
   WRONG → \`value: "Send order for approval"\` (bare prose)
   RIGHT → \`value: "\\"Send order for approval\\""\` (quoted string)
 
+  WRONG → \`value: "[u.email for u in users]"\` (comprehension — SOL has none)
+  RIGHT → a forEach node over \`users\`; do the per-item work in its body
+
 The pattern: when the model wants to write a statement, it should
 INSTEAD emit a separate node of the matching kind. The expression
 field carries ONE thing — the immediate datum the node operates on.

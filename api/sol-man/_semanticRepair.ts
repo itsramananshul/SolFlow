@@ -48,6 +48,7 @@ export type SemanticRepairKind =
   | 'strip_print_wrapper'
   | 'strip_leading_keyword'
   | 'unwrap_for_loop'
+  | 'unwrap_comprehension'
   | 'strip_pseudocode_brackets'
   | 'extract_inner_expression'
   | 'quote_bare_identifier_label'
@@ -213,6 +214,15 @@ function repairExpression(input: string): ExprRepairResult {
     reasons.push('extracted array from "for x in y" loop header');
   }
 
+  // 4b. Comprehension / embedded `for`: `[EXPR for X in Y]` → `Y`.
+  const compUnwrap = tryUnwrapComprehension(s);
+  if (compUnwrap && compUnwrap !== s) {
+    s = compUnwrap;
+    changed = true;
+    lastKind = 'unwrap_comprehension';
+    reasons.push('reduced a comprehension to its iterable');
+  }
+
   // 5. Remove placeholder brackets like `<the user's email>` and
   //    `{user_email}` that the model uses for pseudocode. We try
   //    to recover the inner identifier when it looks safe; we
@@ -319,6 +329,22 @@ function tryUnwrapForLoop(s: string): string | null {
   const inMatch = s.match(/^for\s*\(?\s*[A-Za-z_][A-Za-z0-9_]*\s+(?:in|of)\s+(.+?)\s*\)?\s*$/);
   if (inMatch) return inMatch[1].trim();
   return null;
+}
+
+function tryUnwrapComprehension(s: string): string | null {
+  // Python-style comprehension or an embedded `for`, e.g.
+  //   `[u.email for u in users]`  →  `users`
+  //   `sum(x for x in nums)`      →  `nums`
+  // SOL has no comprehensions, so the least-wrong recovery is the
+  // iterable; the per-item logic belongs in a forEach node. We only
+  // fire when the `for ... in/of ...` appears mid-expression (the
+  // leading-header case is handled by tryUnwrapForLoop above).
+  const m = s.match(/\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+(?:in|of)\s+([^\]\)]+?)\s*[\]\)]?\s*$/);
+  if (!m) return null;
+  if (/^for\b/.test(s.trim())) return null; // leading header → handled elsewhere
+  let iter = m[1].trim();
+  iter = iter.replace(/\s+if\s+.*$/i, '').trim(); // drop a trailing filter clause
+  return iter || null;
 }
 
 function stripPseudocodeBrackets(s: string): string | null {
