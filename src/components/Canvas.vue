@@ -69,26 +69,11 @@ function onMouseMove(e: MouseEvent) {
   lastCursor.value = { x: e.clientX, y: e.clientY };
 }
 
-// Auto-fit the viewport whenever the active function changes (e.g. when
-// loading a sample workflow, switching function tab, or creating a new
-// workflow). nextTick lets Vue Flow finish rendering the new node set
-// before we measure. Also dismiss any open Quick-Add palette so it
-// doesn't hover stale over the new graph.
-watch(
-  () => graph.activeFunctionId,
-  async () => {
-    if (qaOpen.value) closeQuickAdd();
-    await nextTick();
-    setTimeout(() => {
-      try {
-        fitView({ padding: 0.2, duration: 250 });
-      } catch {
-        /* fitView is no-op before mount */
-      }
-    }, 30);
-  },
-  { immediate: true },
-);
+// NOTE: the active-function auto-fit watcher is registered further down,
+// after the Quick-Add state (`qaOpen` / `closeQuickAdd`) it references is
+// declared. Registering it here with `immediate: true` hit those bindings
+// in their temporal dead zone, which threw on first load and broke the
+// initial fit-to-view (the graph looked like it was missing nodes).
 
 const SolNodeRaw = markRaw(SolNode);
 // Derive Vue Flow's node-type registry from PALETTE so adding a new kind to
@@ -704,6 +689,30 @@ function closeQuickAdd() {
   qaOpen.value = false;
   qaSourceContext.value = undefined;
 }
+
+// Auto-fit the viewport whenever the active function changes (loading a
+// sample, switching function tab, creating a workflow). Declared here so
+// the `immediate` run touches `qaOpen` / `closeQuickAdd` after they exist.
+// We fit twice: once after Vue Flow renders the new node set, and again
+// after a short settle so custom-node dimensions (measured asynchronously)
+// are included and every node ends up inside the view.
+function fitGraph() {
+  try {
+    fitView({ padding: 0.2, duration: 250 });
+  } catch {
+    /* fitView is a no-op before mount */
+  }
+}
+watch(
+  () => graph.activeFunctionId,
+  async () => {
+    if (qaOpen.value) closeQuickAdd();
+    await nextTick();
+    setTimeout(fitGraph, 30);
+    setTimeout(fitGraph, 220);
+  },
+  { immediate: true },
+);
 
 function onQuickAddSelect(
   kind: NodeKind,

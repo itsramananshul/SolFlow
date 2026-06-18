@@ -1328,7 +1328,11 @@ function formatReturn(v: unknown): string {
   align-items: center;
   /* Pin the dialog to the left so it never reaches the right-docked panels. */
   justify-content: flex-start;
-  padding: 32px clamp(32px, 30vw, 460px) 32px clamp(20px, 4vw, 56px);
+  /* Safe margins on every side so the dialog never clips on the left or
+     bottom. The dialog is only ~640px wide and left-pinned, so it does
+     not reach the right-docked panels on wide screens; narrow screens
+     center it (media query below). */
+  padding: clamp(16px, 3vh, 28px) clamp(16px, 4vw, 48px);
 }
 .modal {
   /* Re-enable interaction on the dialog itself (backdrop is click-through). */
@@ -1346,8 +1350,10 @@ function formatReturn(v: unknown): string {
   border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-lg);
   box-shadow: var(--sf-shadow-3);
-  width: min(640px, calc(100vw - 440px));
-  max-height: 80vh;
+  /* Always fit the viewport: cap to the available width and height with
+     a small margin so the dialog is never clipped. */
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(82vh, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1618,11 +1624,17 @@ function formatReturn(v: unknown): string {
 .body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* The body itself does not scroll; each tab pane is its own scroll
+     container so long content (e.g. a many-step Trace) scrolls within
+     the dialog instead of growing it past the viewport. */
+  overflow: hidden;
   background: var(--sf-bg-1);
 }
 .pane {
   padding: 16px;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 .empty {
   color: var(--sf-text-3);
