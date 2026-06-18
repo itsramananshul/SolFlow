@@ -102,6 +102,8 @@ pub fn router(controller: LocalController) -> Router {
         .route("/events/*path", post(post_event))
         // Phase C C.4 — connectors
         .route("/connectors", get(get_connectors))
+        // Phase 3 — real providers the controller resolves call(...) against
+        .route("/providers", get(get_providers))
         // Phase C C.5 — SSE run-event stream
         .route("/runs/:id/events", get(get_run_events))
         // Phase C C.6 — orchestration introspection
@@ -275,6 +277,15 @@ async fn get_connectors(
     State(s): State<AppState>,
 ) -> Result<Json<Vec<ConnectorMeta>>, ApiError> {
     Ok(Json(s.controller.list_connectors()))
+}
+
+/// `GET /providers` — the real providers the controller resolves
+/// `call("module.function", …)` against (the `SOLFLOW_CONNECTORS`
+/// registry). This is the honest "what will run for real" listing the
+/// editor shows so users know which capability calls execute versus
+/// block. Empty when no providers are configured.
+async fn get_providers() -> Json<Vec<solflow_host_spec::ProviderInfo>> {
+    Json(crate::canonical_exec::provider_list())
 }
 
 // =============================================================

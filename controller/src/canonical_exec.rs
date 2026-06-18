@@ -64,6 +64,38 @@ pub struct CanonicalOutcome {
     pub error_span: Option<SourceSpan>,
 }
 
+/// Default per-call connector timeout when none is configured.
+const DEFAULT_CONNECTOR_TIMEOUT_MS: u64 = 30_000;
+
+/// The providers `run_canonical` resolves external Actions against, plus
+/// the per-call HTTP timeout. Built from the environment in production
+/// (`ProviderConfig::from_env`) and injected directly in tests.
+#[derive(Debug, Clone)]
+pub struct ProviderConfig {
+    /// Module name -> connector base URL. A `"*"` key is a wildcard that
+    /// catches every Action regardless of module.
+    pub endpoints: HashMap<String, String>,
+    /// Hard per connector-call HTTP timeout in milliseconds.
+    pub timeout_ms: u64,
+}
+
+impl ProviderConfig {
+    /// Read providers from `SOLFLOW_CONNECTORS` and the per-call timeout
+    /// from `SOLFLOW_CONNECTOR_TIMEOUT_MS` (default 30s).
+    pub fn from_env() -> Self {
+        let timeout_ms = std::env::var("SOLFLOW_CONNECTOR_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|ms| *ms > 0)
+            .unwrap_or(DEFAULT_CONNECTOR_TIMEOUT_MS);
+        Self { endpoints: load_connectors(), timeout_ms }
+    }
+
+    fn resolve(&self, module: &str) -> Option<&String> {
+        self.endpoints.get(module).or_else(|| self.endpoints.get("*"))
+    }
+}
+
 /// The entry workflow name to run: the first `workflow "name" {}`
 /// declaration in the source. `None` when the source has no
 /// workflow (a pure library) or fails to parse.
@@ -88,12 +120,8 @@ pub fn run_canonical(
     user_cancel: Arc<AtomicBool>,
     timeout: Arc<AtomicBool>,
     handle: Handle,
+    providers: &ProviderConfig,
 ) -> CanonicalOutcome {
-    // Registered connectors: module name -> base HTTP URL, read from
-    // the SOLFLOW_CONNECTORS env (a JSON object). External Actions
-    // whose module is registered execute for real; the rest stay
-    // honestly blocked.
-    let connectors = load_connectors();
     // Clear any print residue left on this pooled blocking thread
     // by a previous run (the output buffer is thread-local).
     let _ = take_output();
@@ -149,19 +177,29 @@ pub fn run_canonical(
                 // Resolve the module to an endpoint; fall back to a "*"
                 // wildcard connector that catches every Action regardless
                 // of module name (handy for demos / a single gateway).
-                let endpoint = connectors.get(&module).or_else(|| connectors.get("*"));
+                let endpoint = providers.resolve(&module);
                 match endpoint {
                     Some(base_url) => {
                         info!("action {capability}: calling connector {base_url}");
-                        match invoke_connector(&handle, base_url, &module, &func, &params) {
+                        match invoke_connector(
+                            &handle, base_url, &module, &func, &params, providers.timeout_ms,
+                        ) {
                             Ok(result) => {
                                 if let Err(e) = exec.resolve_remote_call(&capability, result) {
+                                    exec.trace_ext_error(format!(
+                                        "provider '{module}' returned a value '{func}' could not accept: {e}"
+                                    ));
                                     error = Some(classify(e));
                                     break;
                                 }
                                 // resumed — keep stepping the workflow
                             }
                             Err(message) => {
+                                // Tie the provider failure to its call site
+                                // in the trace, then surface it structurally.
+                                exec.trace_ext_error(format!(
+                                    "provider '{module}' failed calling '{func}': {message}"
+                                ));
                                 error = Some(RuntimeErrorView::ExtCallFailed {
                                     connector: module,
                                     function_name: func,
@@ -173,8 +211,13 @@ pub fn run_canonical(
                     }
                     None => {
                         info!(
-                            "action {capability}: no connector registered (module `{module}`, no `*` fallback) — blocked"
+                            "action {capability}: no provider registered (module `{module}`, no `*` fallback) — blocked"
                         );
+                        // Record a clear, source mapped error at the call site:
+                        // which module/function had no provider.
+                        exec.trace_ext_error(format!(
+                            "no provider registered for module '{module}' (capability '{capability}'); register a connector or switch to a target that has one"
+                        ));
                         error = Some(RuntimeErrorView::ExtCallBlocked {
                             function_name: capability,
                             url: String::new(),
@@ -235,6 +278,8 @@ fn to_trace_steps(src: &str, events: &[openprem_sol_v2::TraceEvent]) -> Vec<Trac
                 TraceKind::Stmt => "stmt",
                 TraceKind::Call => "call",
                 TraceKind::Return => "return",
+                TraceKind::ExtCall => "extcall",
+                TraceKind::ExtResult => "extresult",
                 TraceKind::Error => "error",
             }
             .to_string(),
@@ -296,6 +341,18 @@ fn load_connectors() -> HashMap<String, String> {
     }
 }
 
+/// The providers the controller will actually resolve `call(...)` against,
+/// for `GET /providers`. Reads the same `SOLFLOW_CONNECTORS` registry the
+/// execution path uses, so the listing reflects reality. Sorted by module.
+pub fn provider_list() -> Vec<solflow_host_spec::ProviderInfo> {
+    let mut out: Vec<solflow_host_spec::ProviderInfo> = load_connectors()
+        .into_iter()
+        .map(|(module, url)| solflow_host_spec::ProviderInfo { module, url })
+        .collect();
+    out.sort_by(|a, b| a.module.cmp(&b.module));
+    out
+}
+
 /// Split a capability into (module, function). Handles both the
 /// `module::func` namespace form and the `module.func` member form.
 fn split_capability(cap: &str) -> (String, String) {
@@ -318,6 +375,7 @@ fn invoke_connector(
     module: &str,
     func: &str,
     params: &Value,
+    timeout_ms: u64,
 ) -> Result<Value, String> {
     let body = serde_json::json!({
         "module": module,
@@ -326,13 +384,22 @@ fn invoke_connector(
     });
     let url = base_url.to_string();
     let resp: serde_json::Value = handle.block_on(async move {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|e| format!("connector client init failed: {e}"))?;
         let r = client
             .post(&url)
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("connector request failed: {e}"))?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    format!("connector timed out after {timeout_ms}ms")
+                } else {
+                    format!("connector request failed: {e}")
+                }
+            })?;
         let status = r.status();
         if !status.is_success() {
             return Err(format!("connector returned HTTP {}", status.as_u16()));
@@ -382,5 +449,159 @@ fn json_to_value(j: serde_json::Value) -> Value {
         J::String(s) => Value::Str(s),
         J::Array(a) => Value::Array(a.into_iter().map(json_to_value).collect()),
         J::Object(m) => Value::Struct(m.into_iter().map(|(k, v)| (k, json_to_value(v))).collect()),
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+    use axum::{routing::post, Router};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    /// What a mock connector should do for one scenario.
+    #[derive(Clone, Copy)]
+    enum Mock {
+        Ok,       // 200 + JSON 42
+        Error500, // 500
+        NotJson,  // 200 + text/plain
+        Slow,     // sleeps 2s then 200 + JSON
+    }
+
+    /// Spawn a mock connector on an ephemeral port; return its base URL.
+    async fn spawn_mock(kind: Mock) -> String {
+        let app = Router::new().route(
+            "/",
+            post(move |_body: String| async move {
+                match kind {
+                    Mock::Ok => axum::response::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from("42"))
+                        .unwrap(),
+                    Mock::Error500 => axum::response::Response::builder()
+                        .status(500)
+                        .body(axum::body::Body::from("boom"))
+                        .unwrap(),
+                    Mock::NotJson => axum::response::Response::builder()
+                        .header("content-type", "text/plain")
+                        .body(axum::body::Body::from("not json at all"))
+                        .unwrap(),
+                    Mock::Slow => {
+                        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                        axum::response::Response::builder()
+                            .body(axum::body::Body::from("1"))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        // Suppress the unused `_body` binding warning is unnecessary; just go.
+        format!("http://{addr}")
+    }
+
+    fn cfg(module: &str, url: &str, timeout_ms: u64) -> ProviderConfig {
+        let mut endpoints = HashMap::new();
+        endpoints.insert(module.to_string(), url.to_string());
+        ProviderConfig { endpoints, timeout_ms }
+    }
+
+    /// Run a workflow that makes one external call through `providers`.
+    async fn run_with(providers: ProviderConfig, src: &str) -> CanonicalOutcome {
+        let handle = tokio::runtime::Handle::current();
+        let src = src.to_string();
+        tokio::task::spawn_blocking(move || {
+            run_canonical(
+                &src,
+                "start",
+                1_000_000,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                handle,
+                &providers,
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    const CALL_SRC: &str = r#"
+        workflow "start" {
+            let r: int = call("demo.add", { a: 20, b: 22 });
+            print(r);
+            return r;
+        }
+    "#;
+
+    #[tokio::test]
+    async fn provider_success_runs_end_to_end_and_traces_extcall() {
+        let url = spawn_mock(Mock::Ok).await;
+        let out = run_with(cfg("demo", &url, 5_000), CALL_SRC).await;
+        assert!(out.error.is_none(), "expected success, got {:?}", out.error);
+        assert_eq!(out.return_value, Some(42));
+        // Trace shows the external call AND its result, both source mapped.
+        let call = out.trace.iter().find(|s| s.kind == "extcall").expect("extcall");
+        assert_eq!(call.detail.as_deref(), Some("demo.add"));
+        assert!(call.line.is_some(), "ext call must carry a source line");
+        assert!(out.trace.iter().any(|s| s.kind == "extresult"));
+    }
+
+    #[tokio::test]
+    async fn missing_provider_blocks_clearly_with_source_line() {
+        // No provider for "demo".
+        let out = run_with(cfg("other", "http://127.0.0.1:1", 5_000), CALL_SRC).await;
+        match out.error {
+            Some(RuntimeErrorView::ExtCallBlocked { ref function_name, .. }) => {
+                assert!(function_name.contains("demo"), "names the capability: {function_name}");
+            }
+            other => panic!("expected ExtCallBlocked, got {other:?}"),
+        }
+        // A source mapped error step points at the failing call.
+        let err = out.trace.iter().find(|s| s.kind == "error").expect("error step");
+        assert!(err.detail.as_deref().unwrap_or("").contains("no provider"));
+        assert!(err.line.is_some(), "blocked error must carry a source line");
+        assert!(out.error_span.is_some(), "error span surfaced for the UI");
+    }
+
+    #[tokio::test]
+    async fn provider_http_error_fails_clearly() {
+        let url = spawn_mock(Mock::Error500).await;
+        let out = run_with(cfg("demo", &url, 5_000), CALL_SRC).await;
+        match out.error {
+            Some(RuntimeErrorView::ExtCallFailed { ref message, .. }) => {
+                assert!(message.contains("500"), "carries the status: {message}");
+            }
+            other => panic!("expected ExtCallFailed, got {other:?}"),
+        }
+        assert!(out.trace.iter().any(|s| s.kind == "error"));
+    }
+
+    #[tokio::test]
+    async fn provider_invalid_response_fails_clearly() {
+        let url = spawn_mock(Mock::NotJson).await;
+        let out = run_with(cfg("demo", &url, 5_000), CALL_SRC).await;
+        match out.error {
+            Some(RuntimeErrorView::ExtCallFailed { ref message, .. }) => {
+                assert!(message.contains("not JSON"), "explains the decode failure: {message}");
+            }
+            other => panic!("expected ExtCallFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_timeout_fails_clearly() {
+        let url = spawn_mock(Mock::Slow).await;
+        // Short per-call timeout; the mock sleeps 2s.
+        let out = run_with(cfg("demo", &url, 200), CALL_SRC).await;
+        match out.error {
+            Some(RuntimeErrorView::ExtCallFailed { ref message, .. }) => {
+                assert!(message.contains("timed out"), "reports a timeout: {message}");
+            }
+            other => panic!("expected ExtCallFailed (timeout), got {other:?}"),
+        }
     }
 }

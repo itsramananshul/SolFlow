@@ -12,6 +12,12 @@ path = "src/lib.rs"
 name = "solflow-controller"
 path = "src/bin/server.rs"
 
+# Tiny demo connector so at least one capability workflow runs end to
+# end against a real provider. See src/bin/demo-connector.rs.
+[[bin]]
+name = "demo-connector"
+path = "src/bin/demo-connector.rs"
+
 [dependencies]
 # Core SOL compilation + execution. The controller hosts the
 # canonical VM so production runs use exactly the same semantics
