@@ -934,6 +934,27 @@ mod tests {
         assert_eq!(arr[0]["default_policy"]["timeout_ms"], 10_000);
     }
 
+    #[tokio::test]
+    async fn get_providers_returns_an_array() {
+        // With no SOLFLOW_CONNECTORS configured the real-provider listing
+        // is an empty array (honest: nothing resolves). The route shape is
+        // a JSON array of `{ module, url }`.
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/providers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert!(list.is_array(), "providers must be a JSON array: {list}");
+    }
+
     // =============================================================
     //  Phase C C.5 — SSE event-stream route tests
     // =============================================================
