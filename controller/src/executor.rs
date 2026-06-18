@@ -446,6 +446,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_run_user_function_calls_succeed() {
+        // The controller runs the same canonical openprem-sol-v2 VM as
+        // Browser Simulation, so user-defined helper functions (with
+        // nested calls and values returned across calls) must execute here
+        // too. This is the controller-side parity guard for helper calls.
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let src = r#"
+            fn label(n: int) { print("value:"); print(to_str(n)); }
+            fn add(a: int, b: int) <- int { return a + b; }
+            workflow "start" {
+                let s: int = add(20, 22);
+                label(s);
+                return s;
+            }
+        "#;
+        let wf = submit_test_workflow(&p, src).await;
+        let record = RunRecord {
+            id: format!("run_{}", uuid::Uuid::new_v4()),
+            workflow_id: wf,
+            status: RunStatus::Queued,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: now_ms(),
+            started_at: None,
+            completed_at: None,
+        };
+        let run_id = record.id.clone();
+        execute_run(p.clone(), record, RunPolicy::default(), None, None, None).await;
+        let got = p.get_run(&run_id).await.unwrap();
+        assert_eq!(got.status, RunStatus::Succeeded, "record={got:?}");
+        let out = got.output.unwrap();
+        assert_eq!(out.return_value, Some(42));
+        assert_eq!(out.output, vec!["value:".to_string(), "42".to_string()]);
+    }
+
+    #[tokio::test]
     async fn execute_run_div_by_zero_fails() {
         let p = SqlitePersistence::open_in_memory().await.unwrap();
         let wf = submit_test_workflow(
