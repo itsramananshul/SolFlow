@@ -384,6 +384,31 @@ button.ghost:hover {
 .vue-flow__node:hover .vue-flow__resize-control,
 .vue-flow__node.selected .vue-flow__resize-control { opacity: 1; }
 
+/* Dark mode: every surface becomes dark glass so nothing stays a white
+   card on the dark canvas. Subtle hierarchy kept: light = elevated,
+   pill = medium, dark = deepest. */
+:root[data-theme='dark'] .sf-node.surf-light {
+  --sf-text-0: #f1f3f9; --sf-text-1: #cfd3e0; --sf-text-2: #9aa0b3; --sf-text-3: #7c8295;
+  --sf-bg-1: #383c4e; --sf-bg-2: #30333f; --sf-bg-3: #3e4256; --sf-bg-4: #4a4f68;
+  --sf-border: #3e4256; --sf-border-strong: #4f546d;
+  background: linear-gradient(180deg, #34384a 0%, #2a2d39 100%);
+  color: #f1f3f9;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+:root[data-theme='dark'] .sf-node.surf-pill {
+  --sf-text-0: #eef0f6; --sf-text-1: #c4c8d6; --sf-text-2: #9aa0b3; --sf-text-3: #7c8295;
+  --sf-bg-1: #34384a; --sf-bg-2: #2a2d3a; --sf-bg-3: #3a3e52; --sf-bg-4: #454a63;
+  --sf-border: #3a3e52; --sf-border-strong: #4a4f68;
+  background: linear-gradient(180deg, #2c2f3b 0%, #24262f 100%);
+  color: #eef0f6;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+:root[data-theme='dark'] .sf-node .node-icon { background: rgba(255, 255, 255, 0.08); }
+:root[data-theme='dark'] .sf-node .header-badge { background: rgba(255, 255, 255, 0.10); color: #cfd3e0; }
+:root[data-theme='dark'] .handle.dot { border-color: #2a2d3a; }
+
 /* =================================================================
  *  Handles — bigger hit area, never bigger visual dot
  * ================================================================= */
