@@ -245,6 +245,15 @@ pub struct RunOutput {
     pub output: Vec<String>,
     /// Total VM steps executed.
     pub steps: usize,
+    /// Real execution trace recorded by the VM, in order. Mirrors
+    /// the browser-sim `run.trace[]` so the editor renders both run
+    /// targets identically. Empty only if the run produced no steps.
+    #[serde(default)]
+    pub trace: Vec<TraceStep>,
+    /// Whether the trace hit its cap and stopped recording further
+    /// events (the run still completed; only the trace is partial).
+    #[serde(default)]
+    pub trace_truncated: bool,
 }
 
 /// Full state returned by `GET /runs/:id`. Includes events only
@@ -509,6 +518,29 @@ pub struct SourceSpan {
     pub end: usize,
 }
 
+/// One step of a run's execution trace. Mirrors the browser-sim
+/// `run.trace[]` shape byte for byte so the editor's Trace tab
+/// renders controller and browser runs identically.
+///
+/// `kind` is `"stmt" | "call" | "return" | "error"`. `line` is the
+/// 1-based source line the span starts on (for click-to-highlight).
+/// `function` is the workflow or helper executing; `depth` is the
+/// call depth (0 = workflow body). `detail` carries the callee name
+/// for `call` and the message for `error`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraceStep {
+    pub step: u64,
+    pub kind: String,
+    pub function: String,
+    #[serde(default)]
+    pub span: Option<SourceSpan>,
+    #[serde(default)]
+    pub line: Option<usize>,
+    pub depth: usize,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
 // =============================================================
 //  Diagnostics (locally owned wire types)
 // =============================================================
@@ -695,6 +727,8 @@ mod tests {
                 return_value: Some(42),
                 output: vec!["hello".into()],
                 steps: 12,
+                trace: Vec::new(),
+                trace_truncated: false,
             }),
             diagnostics: Vec::new(),
             created_at: 1_700_000_000_000,
@@ -714,6 +748,8 @@ mod tests {
                 return_value: Some(7),
                 output: vec!["hi".into()],
                 steps: 3,
+                trace: Vec::new(),
+                trace_truncated: false,
             },
         };
         round_trip(&e);

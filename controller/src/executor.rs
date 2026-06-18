@@ -261,7 +261,10 @@ pub async fn execute_run(
         },
         output: outcome.output.clone(),
         steps: outcome.steps as usize,
+        trace: outcome.trace.clone(),
+        trace_truncated: outcome.trace_truncated,
     };
+    let error_span = outcome.error_span;
     record.status = if timed_out {
         RunStatus::TimedOut
     } else if vm_error.is_some() {
@@ -306,7 +309,7 @@ pub async fn execute_run(
         } else {
             match vm_error {
                 Some(err) => {
-                    c.emit(failed_event(c, err, None)).await;
+                    c.emit(failed_event(c, err, error_span)).await;
                 }
                 None => c.emit(completed_event(c, final_output)).await,
             }
@@ -334,6 +337,8 @@ async fn finalize_timed_out(
             "[controller] wall-clock timeout: {wall_clock_secs}s (VM did not honor cancel)",
         )],
         steps: 0,
+        trace: Vec::new(),
+        trace_truncated: false,
     });
     if let Err(e) = persistence.put_run(&record).await {
         tracing::error!("finalize_timed_out persistence put_run failed: {e}");
@@ -361,6 +366,8 @@ async fn finalize_failed(
         return_value: None,
         output: vec![format!("[controller] {reason}")],
         steps: 0,
+        trace: Vec::new(),
+        trace_truncated: false,
     });
     if let Err(e) = persistence.put_run(&record).await {
         tracing::error!("finalize_failed persistence put_run failed: {e}");
@@ -481,6 +488,52 @@ mod tests {
         let out = got.output.unwrap();
         assert_eq!(out.return_value, Some(42));
         assert_eq!(out.output, vec!["value:".to_string(), "42".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn execute_run_records_a_real_trace() {
+        // Controller-side parity guard for Phase 2: the same canonical VM
+        // records an execution trace here exactly as in Browser Simulation.
+        // A real run must produce a non-empty trace with helper call/return
+        // events and 1-based source lines for click-to-highlight.
+        let p = SqlitePersistence::open_in_memory().await.unwrap();
+        let src = r#"
+            fn dbl(x: int) <- int { return x * 2; }
+            workflow "start" { return dbl(21); }
+        "#;
+        let wf = submit_test_workflow(&p, src).await;
+        let record = RunRecord {
+            id: format!("run_{}", uuid::Uuid::new_v4()),
+            workflow_id: wf,
+            status: RunStatus::Queued,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::json!({}),
+            output: None,
+            diagnostics: Vec::new(),
+            created_at: now_ms(),
+            started_at: None,
+            completed_at: None,
+        };
+        let run_id = record.id.clone();
+        execute_run(p.clone(), record, RunPolicy::default(), None, None, None).await;
+        let got = p.get_run(&run_id).await.unwrap();
+        assert_eq!(got.status, RunStatus::Succeeded, "record={got:?}");
+        let out = got.output.unwrap();
+        assert_eq!(out.return_value, Some(42));
+        assert!(!out.trace.is_empty(), "trace must not be empty for a real run");
+        assert!(
+            out.trace.iter().any(|s| s.kind == "call" && s.detail.as_deref() == Some("dbl")),
+            "expected a call event for dbl, got {:?}",
+            out.trace
+        );
+        assert!(
+            out.trace.iter().any(|s| s.kind == "return" && s.function == "dbl"),
+            "expected a return event from dbl"
+        );
+        assert!(
+            out.trace.iter().all(|s| s.span.is_none() || s.line.is_some()),
+            "every spanned step must carry a source line"
+        );
     }
 
     #[tokio::test]

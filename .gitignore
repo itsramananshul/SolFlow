@@ -46,3 +46,5 @@ pkg-node/
 _qa/
 _qa*.mjs
 dev-server.log
+
+scripts/qa-trace*.png

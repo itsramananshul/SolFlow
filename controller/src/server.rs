@@ -888,7 +888,9 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let rb = axum::body::to_bytes(resp.into_body(), 8 * 1024).await.unwrap();
+            // The record now carries a bounded execution trace, so allow a
+            // few MB here (the controller caps the persisted trace).
+            let rb = axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024).await.unwrap();
             let rec: serde_json::Value = serde_json::from_slice(&rb).unwrap();
             if rec["status"] == "Cancelled" {
                 landed = true;
@@ -961,6 +963,8 @@ mod tests {
                 return_value: Some(0),
                 output: vec!["hi".into()],
                 steps: 5,
+                trace: Vec::new(),
+                trace_truncated: false,
             }),
             diagnostics: Vec::new(),
             created_at: 0,
@@ -980,6 +984,8 @@ mod tests {
                     return_value: Some(0),
                     output: vec![],
                     steps: 1,
+                    trace: Vec::new(),
+                    trace_truncated: false,
                 },
             },
         ];
@@ -1065,6 +1071,8 @@ mod tests {
                 return_value: Some(0),
                 output: vec![],
                 steps: 1,
+                trace: Vec::new(),
+                trace_truncated: false,
             },
         })
         .await

@@ -126,10 +126,25 @@ pub enum Expr {
 }
 
 /// A block statement — a sequence of statements delimited by `{ }`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Block {
     /// The statements in this block.
     pub stmts: Vec<Stmt>,
+    /// Byte span `(start, end)` of each statement, parallel to `stmts`.
+    /// Drives the execution trace's source mapping. Empty for blocks not
+    /// produced by the parser.
+    #[serde(default)]
+    pub stmt_spans: Vec<(usize, usize)>,
+}
+
+/// Structural equality ignores `stmt_spans`: spans are positional artifacts
+/// of where a block was parsed, not part of its meaning. Two blocks with the
+/// same statements are equal even if their source positions differ (e.g.
+/// before and after reformatting).
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.stmts == other.stmts
+    }
 }
 
 /// A statement in the Sol language.

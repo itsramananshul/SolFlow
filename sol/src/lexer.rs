@@ -151,13 +151,40 @@ pub enum Token {
 #[derive(Clone)]
 pub struct Lexer {
     chars: Vec<char>,
+    /// Byte offset of each char (plus a final sentinel = total byte
+    /// length), so the parser can report real byte spans into the source
+    /// for the execution trace and editor source-mapping.
+    byte_offsets: Vec<usize>,
     pos: usize,
+    tok_start: usize,
+    tok_end: usize,
 }
 
 impl Lexer {
     /// Create a new lexer for the given source string.
     pub fn new(source: &str) -> Self {
-        Self { chars: source.chars().collect(), pos: 0 }
+        let chars: Vec<char> = source.chars().collect();
+        let mut byte_offsets = Vec::with_capacity(chars.len() + 1);
+        let mut b = 0usize;
+        for c in &chars {
+            byte_offsets.push(b);
+            b += c.len_utf8();
+        }
+        byte_offsets.push(b);
+        Self { chars, byte_offsets, pos: 0, tok_start: 0, tok_end: 0 }
+    }
+
+    /// Byte offset of char position `pos` (clamped to the end sentinel).
+    fn byte_at(&self, pos: usize) -> usize {
+        self.byte_offsets
+            .get(pos)
+            .copied()
+            .unwrap_or_else(|| self.byte_offsets.last().copied().unwrap_or(0))
+    }
+
+    /// Byte span (start, end) of the most recently produced token.
+    pub fn token_span(&self) -> (usize, usize) {
+        (self.tok_start, self.tok_end)
     }
 
     /// Return the current character without consuming it.
@@ -254,17 +281,33 @@ impl Lexer {
     /// Returns `Some(Token::EOF)` when the end of input is reached.
     /// Skips single-line comments beginning with `#`.
     pub fn next_token(&mut self) -> Option<Token> {
-        self.skip_whitespace();
-        match self.advance() {
-            None => Some(Token::EOF),
-            Some('#') => {
-                // Comment — skip until newline
+        self.skip_trivia();
+        self.tok_start = self.byte_at(self.pos);
+        let tok = self.scan_token();
+        self.tok_end = self.byte_at(self.pos);
+        tok
+    }
+
+    /// Skip whitespace and `#` line comments so the next token's recorded
+    /// span starts at the first real character.
+    fn skip_trivia(&mut self) {
+        loop {
+            self.skip_whitespace();
+            if self.peek() == Some('#') {
                 while let Some(c) = self.peek() {
                     if c == '\n' { break; }
                     self.advance();
                 }
-                self.next_token()
+            } else {
+                break;
             }
+        }
+    }
+
+    /// Scan a single token from the current (trivia-skipped) position.
+    fn scan_token(&mut self) -> Option<Token> {
+        match self.advance() {
+            None => Some(Token::EOF),
             Some('(') => Some(LParen),
             Some(')') => Some(RParen),
             Some('{') => Some(LBrace),
