@@ -29,6 +29,7 @@
                               // async_trait wrapper lands when
                               // reference impls do.
 
+pub mod canonical_exec;
 pub mod connector;
 pub mod event_sink;
 pub mod executor;

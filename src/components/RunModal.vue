@@ -172,54 +172,85 @@ async function execute() {
 
 async function executeControllerLocal() {
   controllerAbort = new AbortController();
-  const abortSignal = controllerAbort.signal;
+  const signal = controllerAbort.signal;
 
-  // The real OpenPrem controller (openprem-controller-v2) is source
-  // based: it compiles + runs the SOL source itself. We submit the
-  // emitted source plus the entry workflow name and poll for the
-  // return value. No client side bytecode, no SSE in this path.
+  // The controller compiles + runs canonical SOL *source* itself
+  // through the openprem-sol-v2 VM (the same engine as the browser
+  // sim). We carry the source in the submission's opaque bytecode
+  // blob, so there is no client-side bytecode and no cross-crate
+  // bytecode-format coupling: register the workflow (POST /workflows),
+  // start a run (POST /runs), then poll GET /runs/:id to completion.
   controllerRun.value = { kind: 'submitting' };
   liveEvents.value = [];
   const submitStart = Date.now();
   const workflowName = entryWorkflowName();
+  const client = controller.getClient();
+  const source = graph.emitted.source;
   try {
-    const outcome = await controller.runOnOprem(
-      graph.emitted.source,
-      workflowName,
-      abortSignal,
-    );
-    const durationMs = Date.now() - submitStart;
-    const status: RunStatus = outcome.status === 'completed' ? 'Succeeded' : 'Failed';
-    const record: RunRecord = {
-      id: outcome.workflowId,
-      workflow_id: outcome.workflowId,
-      status,
-      trigger: { kind: 'Manual' },
-      inputs: {},
-      output: {
-        return_value: typeof outcome.result === 'number' ? outcome.result : null,
-        // The controller does not return print output over HTTP; on
-        // failure it returns the reason, which we surface as a line.
-        output: outcome.error ? [`[controller] ${outcome.error}`] : [],
-        steps: outcome.stepCount ?? 0,
+    const enc = new TextEncoder();
+    const wf = await client.submitWorkflow(
+      {
+        name: workflowName,
+        bytecode: Array.from(enc.encode(source)),
+        instruction_spans: Array.from(enc.encode('[]')),
+        source,
       },
-      diagnostics: [],
-      created_at: submitStart,
-      started_at: submitStart,
-      completed_at: submitStart + durationMs,
+      { signal, timeoutMs: 10_000 },
+    );
+    const created = await client.createRun(
+      { workflow_id: wf.workflow_id, trigger: { kind: 'Manual' } },
+      { signal, timeoutMs: 10_000 },
+    );
+    controllerRun.value = {
+      kind: 'running',
+      workflowId: wf.workflow_id,
+      runId: created.run_id,
+      record: {
+        id: created.run_id,
+        workflow_id: wf.workflow_id,
+        status: created.status,
+        trigger: { kind: 'Manual' },
+        inputs: {},
+        diagnostics: [],
+        created_at: submitStart,
+        started_at: submitStart,
+      },
+      startedAt: submitStart,
     };
+    const record = await client.pollRun(created.run_id, {
+      signal,
+      intervalMs: 200,
+      overallTimeoutMs: 60_000,
+    });
+    const durationMs = Date.now() - submitStart;
     controllerRun.value = {
       kind: 'done',
-      workflowId: outcome.workflowId,
-      runId: outcome.workflowId,
+      workflowId: wf.workflow_id,
+      runId: created.run_id,
       record,
       durationMs,
     };
+    runHistory.record({
+      controllerUrl: controller.url,
+      workflowId: wf.workflow_id,
+      runId: created.run_id,
+      workflowName,
+      status: record.status,
+      durationMs,
+      submittedAt: submitStart,
+    });
   } catch (e) {
-    const error: ControllerClientError = isOpremClientError(e)
-      ? opremErrorToControllerError(e.payload)
-      : { kind: 'network', message: e instanceof Error ? e.message : String(e) };
-    controllerRun.value = { kind: 'controller_error', phase: 'submit', error };
+    const phase: 'submit' | 'create' | 'poll' =
+      controllerRun.value.kind === 'running' ? 'poll' : 'submit';
+    const error: ControllerClientError =
+      e instanceof ControllerClientErr
+        ? e.payload
+        : { kind: 'network', message: e instanceof Error ? e.message : String(e) };
+    const ids =
+      controllerRun.value.kind === 'running'
+        ? { workflowId: controllerRun.value.workflowId, runId: controllerRun.value.runId }
+        : {};
+    controllerRun.value = { kind: 'controller_error', phase, error, ...ids };
   } finally {
     controllerAbort = null;
   }

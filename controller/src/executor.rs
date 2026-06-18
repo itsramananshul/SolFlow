@@ -19,11 +19,15 @@ use crate::event_sink::{
 };
 use crate::{Persistence, SqlitePersistence};
 use solflow_host_spec::{
-    decode_bytecode, RunEvent, RunOutput, RunRecord, RunStatus, RuntimeErrorView,
+    RunEvent, RunOutput, RunRecord, RunStatus, RuntimeErrorView,
 };
+// NOTE: the legacy `solflow_runtime` VM is no longer used to execute
+// runs (the canonical openprem-sol-v2 VM is, via `canonical_exec`).
+// These imports remain only for the still-present (dead) connector
+// ExtCall bridge below, kept for the upcoming capability wiring.
+#[allow(unused_imports)]
 use solflow_runtime::{
-    run_program_with, CancelCallback, ExtCallContext, ExtCallError, ExtCallHandler,
-    ExtCallHandlerArc, ExtCallValue, PrintCallback, RunError, RunOptions,
+    ExtCallContext, ExtCallError, ExtCallHandler, ExtCallHandlerArc, ExtCallValue, RunError,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -112,8 +116,12 @@ pub async fn execute_run(
         c.emit(started_event(c)).await;
     }
 
-    // Load + decode bytecode + per-instruction span sidecar.
-    let (bc_bytes, spans_bytes) =
+    // Phase C/D — canonical execution. The editor submits SOL
+    // *source* (stored in the workflow's blob); the controller
+    // compiles + runs it through the canonical openprem-sol-v2 VM
+    // so production runs share the exact semantics of the browser
+    // sim. No client-side bytecode, no cross-crate format coupling.
+    let (bc_bytes, _spans_bytes) =
         match persistence.get_workflow_bytecode(&record.workflow_id).await {
             Ok(p) => p,
             Err(e) => {
@@ -122,92 +130,48 @@ pub async fn execute_run(
                 return;
             }
         };
-    let bytecode = match decode_bytecode(&bc_bytes) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!("execute_run decode_bytecode failed: {e}");
+    let source = String::from_utf8_lossy(&bc_bytes).into_owned();
+    let workflow_name = match crate::canonical_exec::first_workflow_name(&source) {
+        Some(n) => n,
+        None => {
             finalize_failed(
                 persistence,
                 record,
-                format!("bytecode decode failed: {e}"),
+                "no workflow declaration found in submitted source".into(),
                 ctx.clone(),
             )
             .await;
             return;
         }
     };
-    // Spans are best-effort — a missing/malformed sidecar means
-    // events don't get click-to-source affordances, not that the
-    // run fails. Decode into a sharable Arc so the print
-    // callback (sync, blocking thread) can look up by inst_ptr.
-    let spans: Arc<Vec<Option<solflow_host_spec::SourceSpan>>> = Arc::new(
-        solflow_host_spec::decode_instruction_spans(&spans_bytes).unwrap_or_default(),
-    );
-
-    // Build VM options. PrintCallback + ExtCallHandler both
-    // emit events through the shared ctx so the seq stream
-    // stays monotonic across sources.
-    let print_callback: Option<PrintCallback> = ctx.as_ref().map(|c| {
-        let (seq, sink, handle, run_id) = c.split_for_print();
-        let spans = spans.clone();
-        Arc::new(move |line: &str, inst_ptr: usize| {
-            // Look up the source span for the Print instruction
-            // so the editor can render click-to-source on each
-            // print row.
-            let source_span = spans
-                .get(inst_ptr)
-                .and_then(|s| s.as_ref().copied());
-            let event = RunEvent::Print {
-                run_id: run_id.clone(),
-                seq: seq.fetch_add(1, Ordering::Relaxed),
-                ts: now_ms(),
-                text: line.to_string(),
-                source_span,
-            };
-            let sink_clone = sink.clone();
-            handle.spawn(async move { sink_clone.emit(event).await });
-        }) as PrintCallback
-    });
 
     // Phase C C.6 c90 — user cancel flag (set via DELETE /runs/:id).
     // Phase C C.6 c94 — internal timeout flag distinct from user
-    // cancel: when wall-clock fires we set this so the VM's
-    // cancel callback returns true + the VM exits cleanly, but
-    // the run_manager's reconcile can tell user cancellation
-    // apart from timeout (so terminal status lands on TimedOut
-    // rather than Cancelled).
+    // cancel: when wall-clock fires we set this so the VM exits at
+    // its next cancel poll, but reconcile can tell user
+    // cancellation apart from timeout.
     let user_cancel = cancel_flag
         .clone()
         .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let timeout_flag = Arc::new(AtomicBool::new(false));
-    let cb_user = user_cancel.clone();
-    let cb_timeout = timeout_flag.clone();
-    let cancel_callback: CancelCallback = Arc::new(move || {
-        cb_user.load(Ordering::Relaxed) || cb_timeout.load(Ordering::Relaxed)
-    });
-    let opts = RunOptions {
-        step_limit: Some(policy.step_limit),
-        trace: false, // C.5 trace streaming via events lands here too eventually
-        ext_call_handler: connectors.map(|registry| {
-            Arc::new(ControllerExtCallHandler {
-                registry,
-                tokio_handle: tokio::runtime::Handle::current(),
-                ctx: ctx.clone(),
-                // Connector also sees the combined flag — a
-                // timeout fired during a slow connector call
-                // aborts it via the same path as a user cancel.
-                cancel_flag: Some(user_cancel.clone()),
-                timeout_flag: Some(timeout_flag.clone()),
-            }) as ExtCallHandlerArc
-        }),
-        print_callback,
-        cancel_callback: Some(cancel_callback),
-        max_output_lines: Some(policy.max_output_lines),
-        max_events_per_run: Some(policy.max_events_per_run),
-    };
-    let bytecode_for_task = bytecode.clone();
+    // Connectors aren't bound into the canonical capability model
+    // yet; external Actions surface as ExtCallBlocked (the same
+    // honest signal as the browser sim). Consume the param so it
+    // doesn't read as unused.
+    let _ = connectors;
+    let step_limit = policy.step_limit as u64;
+    let run_source = source.clone();
+    let run_name = workflow_name.clone();
+    let task_cancel = user_cancel.clone();
+    let task_timeout = timeout_flag.clone();
     let mut vm_handle = tokio::task::spawn_blocking(move || {
-        run_program_with(&bytecode_for_task, opts)
+        crate::canonical_exec::run_canonical(
+            &run_source,
+            &run_name,
+            step_limit,
+            task_cancel,
+            task_timeout,
+        )
     });
     // Race the VM against the wall-clock budget. On timeout: flip
     // the timeout flag so the VM exits at its next cancel poll +
@@ -279,10 +243,10 @@ pub async fn execute_run(
         return_value: if vm_error.is_some() {
             None
         } else {
-            Some(outcome.return_value as i64)
+            outcome.return_value
         },
         output: outcome.output.clone(),
-        steps: outcome.steps,
+        steps: outcome.steps as usize,
     };
     record.status = if timed_out {
         RunStatus::TimedOut
@@ -311,7 +275,7 @@ pub async fn execute_run(
         } else {
             match vm_error {
                 Some(err) => {
-                    c.emit(failed_event(c, run_error_to_view(&err), None)).await;
+                    c.emit(failed_event(c, err, None)).await;
                 }
                 None => c.emit(completed_event(c, final_output)).await,
             }

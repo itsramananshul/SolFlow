@@ -21,6 +21,10 @@ solflow_runtime = { path = "../runtime" }
 # Wire-protocol shapes (RunRecord, RunEvent, ...) + bytecode
 # encoding helpers.
 solflow_host_spec = { path = "../host-spec" }
+# Canonical SOL compiler + VM (the single source of truth for the
+# language). The controller compiles + runs submitted SOL source
+# through this, exactly as the editor's WASM does in the browser.
+openprem-sol-v2 = { path = "../sol" }
 
 # Async runtime + trait support.
 async-trait = "0.1"
