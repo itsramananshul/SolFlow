@@ -1,106 +1,71 @@
 # 03 — Syntax Reference
 
-> **Status:** Substantive (commit 2). Cross-checked against `lexer.rs`
-> (~390 lines) and `parser.rs` (~750 lines).
+This chapter is the broad surface syntax reference for SOL: trivia, token
+kinds, top level items, statements, and expression forms. Operator
+precedence and the normative grammar in EBNF form live in
+[`GRAMMAR.md`](./GRAMMAR.md). Every fact here is checked against
+`sol/src/lexer.rs` and `sol/src/parser.rs`.
 
-This chapter is the broad surface-syntax reference for SOL: every
-trivia rule, every token kind, every top-level declaration, every
-statement, every expression form. Operator precedence and the deep
-semantics of each construct live in chapters 04 – 14; the normative
-grammar in EBNF form lives in [`GRAMMAR.md`](./GRAMMAR.md).
-
-For every construct the chapter shows:
-
-- the form the parser accepts,
-- a minimal valid example (a real fixture where one exists),
-- a minimal invalid example with the diagnostic the compiler prints.
+SOL has no type checker and no semantic analysis phase. The lexer and
+parser produce string errors (`Result<_, String>`); there are no error
+codes. "Invalid example" below means "the parser returns an error
+message"; the exact wording is an implementation detail and may change.
 
 ---
 
-## 3.1 Trivia — whitespace, comments, and `_`
+## 3.1 Trivia — whitespace and comments
 
 ### Whitespace
 
-Whitespace separates tokens. Anything `is_whitespace()` per
-Rust's Unicode rules — ASCII space, tab, newline, carriage return,
-form feed, plus the Unicode whitespace set — is consumed and
-discarded by the lexer (`lexer.rs:307`). There is no significant
-indentation; the language is brace-delimited.
+Whitespace (spaces, tabs, newlines, carriage returns) separates tokens and
+is otherwise discarded by the lexer (`sol/src/lexer.rs`). There is no
+significant indentation; the language is brace delimited.
 
-### Line comments
+### Comments
 
-```
-// runs to end of line
-```
-
-Confirmed `(lexer.rs:311–317)`.
-
-### Block comments
-
-```
-/* spans
-   any number of lines */
-```
-
-Confirmed `(lexer.rs:319–328)`. Block comments are **not nestable** —
-the lexer scans for the first `*/` after the opening `/*` and treats
-intervening `/*` as ordinary characters.
-
-### The underscore quirk (Confirmed)
-
-The lexer treats a bare `_` as trivia, *outside* of identifiers and
-numeric literals (`lexer.rs:307`). Two practical consequences:
+Comments begin with `#` and run to the end of the line.
 
 ```sol
-let _x = 5;      # tokenizes as `let x = 5;` — the leading _ is eaten
-let n = 1_000;   # tokenizes as `let n = 1; 000;` — TWO integers
+# runs to end of line
+let x: int = 5;   # trailing comment
 ```
 
-Inside an identifier (after the first alphabetic character) `_` is
-allowed as a name character (`lexer.rs:336`):
+There are no block comments and no `//` line comments. The `#` form is the
+only comment syntax (`sol/src/lexer.rs`).
 
-```sol
-let order_id: int = 7;   # fine — `_` lies between alphanumerics
+### Identifiers
+
+```
+[A-Za-z_][A-Za-z0-9_]*
 ```
 
-Rule of thumb: **never lead an identifier with `_` and never use
-`_` as a numeric digit separator.** Use `snake_case` only between
-two letters or digits.
+An identifier is ASCII alphanumeric plus `_`. It may start with `_` but not
+with a digit. Unicode identifiers are not supported. Underscores are
+ordinary identifier characters; `order_id` and `_tmp` are both valid names.
+There are no numeric digit separators.
 
 ---
 
 ## 3.2 Lexical tokens
 
-The exact lexer output is enumerated in
-[`GRAMMAR.md`](./GRAMMAR.md) §1; this section gives the human
-summary.
+The exact lexer output is enumerated in [`GRAMMAR.md`](./GRAMMAR.md) §1;
+this section is the human summary.
 
-### Keywords (15 total)
-
-```
-ext  for  in  as  function  if  else  import  while
-struct  enum  let  return  true  false
-```
-
-Source: `lexer.rs:341–356`.
-
-**There is no `export` keyword.** Any source written with
-`export function …` is rejected by the parser as "unknown
-declaration" because the top-level dispatcher (`parser.rs:182–193`)
-admits exactly: `ext`, `function`, `let`, `struct`, `enum`,
-`import`. This is the single most common cross-source surprise
-— see [§3.3](#33-top-level-declarations).
-
-### Identifiers
+### Keywords (22 total)
 
 ```
-[A-Za-z][A-Za-z0-9_]*
+bool  int  float  char  str
+let  if  else  while  for  in  return
+fn  workflow  emit  call
+struct  enum  import  from
 ```
 
-The first character must be alphabetic (Unicode `is_alphabetic()`,
-`lexer.rs:215`); subsequent characters may be alphanumeric or `_`.
-There is no separate "raw identifier" form; the keywords above are
-reserved unconditionally.
+That is twenty two keywords (`sol/src/lexer.rs`). `true` and `false` are
+bool literals, not keywords. There is no `function`, no `ext`, no `export`,
+no `match`, no `break`, no `continue`, no `as`.
+
+The five primitive type names (`bool int float char str`) are real
+keyword tokens, so they cannot be used as identifiers.
 
 ### Integer literal
 
@@ -108,12 +73,8 @@ reserved unconditionally.
 [0-9]+
 ```
 
-Decimal only. No binary / octal / hex prefixes. No digit separators
-(see the underscore quirk in §3.1). Parsed as `i128` at lex time
-(`lexer.rs:383`), then truncated to `i64` at runtime
-(`vm.rs:143–146`). Values that overflow `i64` therefore *parse*
-successfully but compute with truncated arithmetic — this is
-documented in [chapter 14](./14-runtime-semantics.md).
+Decimal only. No binary, octal, or hex prefixes; no digit separators.
+Stored as `i64`.
 
 ### Float literal
 
@@ -121,9 +82,9 @@ documented in [chapter 14](./14-runtime-semantics.md).
 [0-9]+\.[0-9]+
 ```
 
-A digit must appear on both sides of the `.` (`lexer.rs:370–376`).
-`1.` and `.5` are not floats; the lexer terminates the integer at
-the dot in both cases.
+A digit must appear on both sides of the `.`. `1.` and `.5` are not
+floats; a leading dot terminates the integer at the dot
+(`sol/src/lexer.rs`). Stored as `f64`.
 
 ### String literal
 
@@ -131,15 +92,9 @@ the dot in both cases.
 "..."
 ```
 
-Delimited by double quotes. The lexer stores every character between
-the quotes verbatim — **there are no escape sequences**
-(`lexer.rs:224–233`). A literal newline inside the quotes becomes a
-newline in the string. `\n`, `\t`, `\"`, `\\` are stored as the
-two-character sequences they look like, not interpreted.
-
-> **Uncertain:** whether the tooling surface ever intends to add
-> escapes. Document the current state explicitly; flag any future
-> change.
+Delimited by double quotes. The lexer processes these escapes: `\n`, `\t`,
+`\r`, `\\`, `\"`, `\'`. Any other backslash sequence passes through
+literally (`sol/src/lexer.rs`).
 
 ### Character literal
 
@@ -147,11 +102,9 @@ two-character sequences they look like, not interpreted.
 'X'
 ```
 
-A single source character between two single quotes
-(`lexer.rs:218–223`). The lexer skips exactly one character then
-the closing quote — it does **not** check that the closing quote is
-present, and it does **not** support escape sequences. `''` would
-read whatever character happens to follow as the value.
+Exactly one source character between single quotes. There is NO escape
+processing for char literals; the lexer reads one character then the
+closing quote.
 
 ### Boolean literal
 
@@ -159,63 +112,60 @@ read whatever character happens to follow as the value.
 true   false
 ```
 
-Keywords, not identifiers.
+These are bool literal tokens, not keywords.
 
 ### Operators and punctuation
 
-Single-character punctuation:
-
 ```
-( ) [ ] { } . , : ; = ! < > + - * / & | ^ ~
++  -  *  /
+==  !=  <  >  <=  >=
+&&  ||  !
+=        (assignment)
+<-       (return-type arrow)
+.        (member access)
+::       (double colon)
+,  :  ;  (  )  {  }  [  ]
 ```
 
-Two-character operators (lexer maximal-munch):
-
-```
-::  ->  ==  !=  <=  >=  <<  >>  &&  ||
-```
-
-Source: `lexer.rs:238–296`. The Pratt precedence table in
-[chapter 08](./08-expressions.md) and [`GRAMMAR.md`](./GRAMMAR.md)
-shows which of these are binary operators, which are unary, which
-are postfix, and which are pure punctuation.
+Source: `sol/src/lexer.rs`. The return type arrow is `<-`, written as the
+`Arrow` token. There is no `->`; writing `->` lexes as two tokens
+(`Minus`, then `Gt`) and fails to parse. There is no `%`, no `**`, no
+bitwise `& | ^ ~`, no shift `<< >>`, and no ternary `? :`.
 
 ---
 
-## 3.3 Top-level declarations
+## 3.3 Top-level items
 
-The file-level parser is one straight loop over `declaration()`
-(`parser.rs:177–179`). It dispatches on the first keyword
-(`parser.rs:180–194`) and admits exactly these forms:
+The file level parser is a loop over `parse_top_level`
+(`sol/src/parser.rs`). It dispatches on the leading keyword and admits
+exactly these forms:
 
-| First token | Form |
+| First token | Item |
 |---|---|
-| `ext` | external-function declaration |
-| `function` | function declaration with body |
-| `let` | top-level variable declaration |
+| `import` | import declaration |
+| `fn` | function declaration |
 | `struct` | struct declaration |
 | `enum` | enum declaration |
-| `import` | import statement |
+| `workflow` | workflow declaration |
 
-Anything else `panic!`s with "unknown declaration".
+Anything else is a parse error.
 
 ### Function declaration
 
 ```sol
-fn name(p1: T1, p2: T2) -> R {
+fn name(p1: T1, p2: T2) <- RetType {
     # body
 }
 ```
 
-The return arrow and type are optional; omission means `Void`
-(`parser.rs:315–320`). The parameter list may be empty; a trailing
-comma is not accepted by the standard production (it terminates the
-loop without a comma — `parser.rs:309–312`).
+The `<- RetType` clause is optional; omit it for no declared return type
+(`sol/src/parser.rs`). Parameters are `name: Type`, comma separated. The
+parameter list may be empty.
 
 *Valid:*
 
 ```sol
-fn add(a: int, b: int) -> int {
+fn add(a: int, b: int) <- int {
     return a + b;
 }
 
@@ -224,198 +174,187 @@ fn announce() {
 }
 ```
 
-*Invalid (missing brace):*
-
-```sol
-fn start() -> int
-    return 0;
-```
-
-Diagnostic: `expected `{` after for loop declaration` — actually, the
-parser tries `block()`, which only opens a block on `{`; otherwise
-it falls through to `statement()` which sees `return` and proceeds —
-so this particular shape *parses*. The real invalid shape is a
-missing right brace, which produces:
-
-```
-left curly brace is never closed
-```
-
-### External-function declaration
-
-```sol
-ext fn name(p1: T1, …) -> R;
-```
-
-No body; **terminated with a semicolon** (`parser.rs:284`). The
-host runtime supplies the implementation (see [chapter 12](./12-imports-and-controllers.md)).
-
-### Variable declaration (top-level or local)
-
-```sol
-let name: T;          # declaration with no initializer (parser-accepted)
-let name: T = expr;   # declaration with initializer
-```
-
-The initializer is optional at the parser level (`parser.rs:337`),
-**but** the analyzer does not currently type-check the initializer
-against the declared type (`analyzer.rs:138–141`). Anything you
-write between `=` and `;` is parsed as an expression and stored in
-the AST, but the analyzer never walks it. See
-[chapter 06](./06-variables-and-scope.md) and
-[chapter 15](./15-errors-and-diagnostics.md).
-
-*Valid:*
-
-```sol
-let amount: int = 100;
-let flag: bool;
-```
-
-*Invalid (empty initializer):*
-
-```sol
-let x: int = ;
-```
-
-Diagnostic chain: the parser advances past `=`, calls
-`expression()`, which reaches `primary()` and sees `;` which is not
-an expression-starting token. The compiler prints:
-
-```
-not an expressionable token: Semi
-could not parse expression!
-```
-
-Fixture: `error_parse1.sol`.
-
 ### Struct declaration
 
 ```sol
 struct Name {
-    field_a: T,
-    field_b: T,
+    field_a: T1;
+    field_b: T2;
 }
 ```
 
-Comma-separated fields. The trailing comma is optional; the parser
-breaks the field loop when it sees anything other than `,` after a
-field (`parser.rs:510–513`). Empty bodies are accepted (the loop
-terminates on the closing brace).
-
-**Field order is not preserved internally.** The parser stores
-fields in a `HashMap` (`parser.rs:48`); the iteration order on
-round-trip is unspecified. Code should refer to fields by name, not
-by position.
+Fields are `name: Type` pairs, each terminated with a semicolon
+(`sol/src/parser.rs`). Note that struct fields use `;` separators, not
+commas; this is different from struct literal construction (which uses
+commas). An empty struct body is accepted.
 
 ### Enum declaration
 
 ```sol
 enum Name {
-    Variant,
-    Variant = 5,
-    NextOne,
+    Variant1;
+    Variant2;
 }
 ```
 
-Each variant carries an `isize` value, assigned by the rule:
-"start at `0`, increment after each variant; if a variant has
-`= N`, reset the counter to `N` and continue from there"
-(`parser.rs:530–550`). Variant data is also `HashMap`-stored; the
-same field-order caveat applies.
+Each variant is an identifier terminated with a semicolon
+(`sol/src/parser.rs`). Variants carry no explicit value in the syntax.
 
-### Import statement
+> Runtime note: the canonical bytecode dispatches each enum variant by
+> `(first_char as i128) % 10`, so two variants whose first characters
+> share a residue mod 10 can compare equal at runtime. The editor flags
+> this as the `enum-first-char-collision` warning
+> (`src/graph/validate.ts`).
+
+### Workflow declaration
 
 ```sol
-import path.segment.more;
-import path.segment as alias;
+workflow "name" {
+    # body
+}
 ```
 
-A dotted path of identifiers (`parser.rs:440–474`). The alias
-clause is optional. At the analyzer level the import only registers
-the alias as a `Void`-typed name (`analyzer.rs:166–171`); no module
-resolution happens today. **Treat `import` as parser-accepted but
-semantically inert** until the analyzer wires it up.
+The workflow name is a string literal. A workflow body is a block of
+statements. A file may declare more than one workflow.
 
-### `let` at top level — **don't use**
+### Import declaration
 
-`let` is a valid top-level declaration (it's in the dispatcher at
-`parser.rs:185`), and the analyzer happily registers it in the
-global type table — but the **runtime is broken for this case**.
-The codegen's per-function reset of the local-slot counter
-combined with the runtime's frame-pointer arithmetic means a
-function-body read of a top-level binding either panics on
-out-of-bounds stack access or silently returns unrelated stack
-data.
+```sol
+import module;              # import a module
+import "name" from module;  # import a named Action from a module
+```
 
-Full mechanics in [chapter 06 §6.1](./06-variables-and-scope.md),
-[chapter 20 §20.2](./20-implementation-notes.md), and
-[`ERROR_REFERENCE.md#T9014`](./ERROR_REFERENCE.md#t9014--top-level-let-is-broken-reading-from-a-function-panics-at-runtime).
-Idiomatic SOL puts every variable declaration inside a function
-body.
+A module is a bare identifier; the named form takes a string literal name
+(`sol/src/parser.rs`). Imports name external Action providers that the host
+resolves at runtime; no module resolution happens at parse time.
 
 ---
 
 ## 3.4 Statements
 
-Inside a function body, `statement()` (`parser.rs:361–382`)
+Inside a function or workflow body, `parse_stmt` (`sol/src/parser.rs`)
 dispatches on the leading token:
 
 | Leading token | Statement |
 |---|---|
-| `for` | for-in loop |
-| `if` | if / else |
-| `import` | import (yes, in statement position too) |
-| `while` | while loop |
 | `let` | local variable declaration |
+| `if` | if / else |
+| `while` | while loop |
+| `for` | for-in loop |
 | `return` | return |
-| `{` | nested block |
-| anything else | expression statement (terminated by `;`) |
+| `emit` | emit event |
+| anything else | expression or assignment statement |
 
-Each statement form is covered in the chapter that owns its
-semantics:
+A bare `{` in statement position is an error; blocks appear only as the
+bodies of `if`, `while`, `for`, `fn`, and `workflow`.
 
-- `let` — [chapter 06](./06-variables-and-scope.md)
-- assignment (an expression statement using `=`) — [chapter 06](./06-variables-and-scope.md)
-- `if` / `while` / `for` / `return` — [chapter 07](./07-control-flow.md)
-- nested blocks — [chapter 06](./06-variables-and-scope.md)
+### Variable declaration
 
-### Expression statements
+```sol
+let name: Type = value;   # with type annotation
+let name = value;          # without annotation
+```
+
+The type annotation is optional. If it is omitted the AST records `bool`
+by default (`sol/src/parser.rs`), so annotate the type when it matters. An
+initializer is required after `=`. The trailing `;` is optional but
+recommended.
+
+```sol
+let amount: int = 100;
+let name = "ada";
+```
+
+### Assignment
+
+```sol
+target = value;
+```
+
+`target` is an identifier, a member access `a.field`, or an index `a[i]`
+(`sol/src/parser.rs`). Assignment is a statement, not an expression; it
+does not nest inside other expressions.
+
+```sol
+counter = counter + 1;
+point.x = 0;
+items[0] = "first";
+```
+
+### if / else
+
+```sol
+if (cond) {
+    # ...
+} else {
+    # ...
+}
+```
+
+Parentheses around the condition are required. The `else` block is
+optional. An `else if` chain is written by nesting:
+
+```sol
+if (a) {
+    print("a");
+} else {
+    if (b) {
+        print("b");
+    }
+}
+```
+
+### while
+
+```sol
+while (cond) {
+    # ...
+}
+```
+
+Parentheses around the condition are required.
+
+### for-in
+
+```sol
+for item in iterable {
+    # ...
+}
+```
+
+No parentheses. The iterable is typically an array; `item` is bound to
+each element in turn.
+
+### return
+
+```sol
+return;          # no value
+return value;    # with value
+```
+
+### emit
+
+```sol
+emit "event_name";
+```
+
+The event is a string literal.
+
+### Expression statement
 
 ```sol
 print("hello");
 add(1, 2);
-counter = counter + 1;
 ```
 
-An expression statement is any expression followed by `;`. The
-parser requires the semicolon (`parser.rs:373`). Diagnostic on
-omission:
-
-```
-expected semicolon to follow exprstmt
-```
-
-Fixture: `error_parse2.sol`.
-
-### Assignment is an expression
-
-```sol
-counter = counter + 1;
-```
-
-Assignment is parsed at the top of the expression precedence stack
-(`parser.rs:584–585`), so it is *technically* an expression. In
-practice it is only useful as a statement; its "value" is the
-right-hand side, but no construct in the language reads that value.
+Any expression followed by an optional `;`.
 
 ---
 
 ## 3.5 Expressions
 
-The full expression grammar — including operator precedence — is in
-[chapter 08](./08-expressions.md) and [`GRAMMAR.md`](./GRAMMAR.md).
-This section is a *catalogue* of expression forms.
+The full precedence chain is in [`GRAMMAR.md`](./GRAMMAR.md) §4. This
+section catalogues the expression forms.
 
 ### Literals
 
@@ -424,6 +363,7 @@ This section is a *catalogue* of expression forms.
 - String: `"hello"`
 - Char: `'a'`
 - Bool: `true`, `false`
+- Array: `[1, 2, 3]`
 
 ### Identifier reference
 
@@ -431,32 +371,24 @@ This section is a *catalogue* of expression forms.
 name
 ```
 
-Resolves against the current lexical scope (chapter 06). Resolution
-distinguishes variables from types — a struct or enum name is a
-*type*, not an expression, and using one as a bare identifier in
-expression position fails name resolution.
-
 ### Function call
 
 ```
-f(arg1, arg2, arg3)
+f(arg1, arg2)
 ```
 
-The arguments are expressions, comma-separated, with an optional
-trailing comma (the parser doesn't accept a trailing comma — it
-breaks the loop on anything other than `,`; `parser.rs:670–681`).
-Calls work for declared functions, `ext` functions, the
-special-cased `print`, and the RPC helpers documented in
-[chapter 13](./13-builtins-and-stdlib.md).
+Arguments are comma separated expressions. The callee is any expression
+that resolves to something callable: a declared `fn`, a builtin
+(`print`, `len`, `to_str`, `type_name`), or an imported module action.
 
-### Field access (postfix)
+### Member access (postfix)
 
 ```
 expr.field
 ```
 
-Left-associative postfix (`parser.rs:608–617`). Requires the
-left-hand side to be a struct value; see chapter 09.
+Reads a struct field, or names an imported module action as in
+`module.func(args)`.
 
 ### Index access (postfix)
 
@@ -464,41 +396,7 @@ left-hand side to be a struct value; see chapter 09.
 expr[index]
 ```
 
-Left-associative postfix (`parser.rs:618–623`). Requires the
-left-hand side to be an array (chapter 11). Indexes are integers
-(see [chapter 11](./11-arrays.md) for the float-index quirk in the
-analyzer).
-
-### Struct literal
-
-```
-Name { field_a: expr, field_b: expr }
-```
-
-`Name` is an identifier that resolves to a struct type. The body is
-field-name / expression pairs separated by commas
-(`parser.rs:683–697`).
-
-**Caveat:** struct literals are *only* parsed in expression
-positions where the parser's `can_struct` flag is true. The flag is
-forced to `false` inside `if`, `while`, and `for-in` conditions
-(`parser.rs:394–397`, `408–411`, `428–431`) so that
-`if cond { … }` is unambiguous. To use a struct literal in a
-condition, wrap it in parentheses — the `(` re-enables struct
-parsing (`parser.rs:714–716`).
-
-```sol
-if (Point { x: 0, y: 0 }) { … }   # OK
-if Point { x: 0, y: 0 } { … }      # parses as `if Point { … }` (block as if body)
-```
-
-### Enum variant reference
-
-```
-EnumName::VariantName
-```
-
-Parsed only in primary position (`parser.rs:699–706`).
+Indexes an array.
 
 ### Array literal
 
@@ -506,12 +404,56 @@ Parsed only in primary position (`parser.rs:699–706`).
 [expr1, expr2, expr3]
 ```
 
-Comma-separated expressions inside square brackets
-(`parser.rs:726–739`). All elements should share a type; the
-analyzer presently does not enforce this for the literal itself
-because `ExprArrayInit` falls through the analyzer's `todo!()`
-catch (`analyzer.rs:500`), but the bytecode emitter and VM expect
-homogeneous arrays.
+Comma separated expressions inside square brackets. Elements should share
+a type; the VM expects homogeneous arrays.
+
+### Struct literal
+
+```
+Name { field_a: expr, field_b: expr }
+```
+
+A named struct literal. Fields inside the literal are comma separated
+(this differs from the struct declaration, where fields are `;`
+separated). An anonymous struct literal omits the name:
+
+```sol
+let p = { x: 0, y: 0 };
+```
+
+The parser peeks past the `{` to tell a struct literal from a block, so
+struct literals work in most positions without extra parentheses
+(`sol/src/parser.rs`).
+
+### Enum variant
+
+```
+EnumName::Variant
+```
+
+### Namespace / RPC call (postfix `::`)
+
+```
+expr::name(args)
+```
+
+A `::` followed by a name and a parenthesized argument list is a namespace
+call. At runtime it becomes a `RemoteCall` with capability `"expr::name"`
+(`sol/src/parser.rs`, `sol/src/vm.rs`).
+
+### Capability call
+
+```
+call("module.action", params)
+```
+
+`call` is a keyword form, not an ordinary function. It takes a capability
+string and a single params value (commonly a struct literal). At runtime
+it becomes a `RemoteCall` with the given capability string.
+
+```sol
+call("discord.send", { channel: "general", body: "hi" });
+```
 
 ### Parenthesized expression
 
@@ -519,79 +461,55 @@ homogeneous arrays.
 (expr)
 ```
 
-Acts as a grouping construct and *re-enables struct literals*
-inside the parentheses regardless of the surrounding `can_struct`
-state (`parser.rs:714–716`).
+A grouping construct.
 
 ### Unary expressions
 
 ```
--expr      # numeric negation (int / float)
-!expr      # logical not (and acts on int/float per the analyzer)
-~expr      # bitwise complement (int only)
+-expr      # numeric negation
+!expr      # logical not
 ```
 
-Parsed at the unary level (`parser.rs:596–604`). `!` is unusually
-permissive: the analyzer accepts it on `bool`, `int`, *and* `float`
-(`analyzer.rs:317–324`), where the integer and float cases are
-treated as "is value zero". Prefer `!` for booleans only.
+These are the only two unary operators (`sol/src/parser.rs`). There is no
+bitwise complement.
 
 ### Binary expressions
 
-Every binary form is covered in [chapter 08](./08-expressions.md);
-the table summary is in [`GRAMMAR.md`](./GRAMMAR.md). Per-operator
-type rules are enforced by `analyzer.rs:241–303`.
+Binary operators, lowest to highest precedence: `||`, `&&`, the comparison
+operators (`== != < > <= >=`, non associative), `+ -`, then `* /`. See
+[`GRAMMAR.md`](./GRAMMAR.md) §4 for the full chain.
 
 ---
 
-## 3.6 What the parser **does not** accept
+## 3.6 What the parser does not accept
 
-A short list of constructs that look like they should work but do
-not, sourced from the absence of corresponding tokens / productions:
+Constructs that look plausible but are not in the language:
 
 | Construct | Why it fails |
 |---|---|
-| `export function …` | No `export` keyword in the lexer; the top-level dispatcher rejects it as an unknown declaration |
-| `break;` / `continue;` | No `break` / `continue` keywords in the lexer (`lexer.rs:341–356`). The analyzer keeps a `can_break` flag but no statement ever sets it |
-| C-style `for (init; cond; step) { … }` | The parser's `for_stmt` admits only the `for name in expr { … }` form (`parser.rs:383–404`) |
-| `match expr { … }` | No `match` keyword |
-| `cond ? a : b` ternary | No conditional operator in the precedence table (`parser.rs:584–595`) |
-| `expr % expr` | No `%` operator token in the lexer |
-| `e.method(args)` | `.` is parsed as field access; the result is *not* callable because the lexer has no chained "call" production after a member access |
-| `[1; N]` array repeat literal | Only comma-separated literals are accepted |
-| Numeric digit separators (`1_000`) | `_` is consumed as trivia (§3.1) |
+| `fn f() -> int { }` | The return arrow is `<-`, not `->`; `->` lexes as `-` then `>` |
+| `// comment` | The only comment syntax is `#` |
+| `function f() { }` | The function keyword is `fn`; there is no `function` keyword |
+| `ext` / `export` | No such keywords |
+| `match expr { }` | No `match` keyword |
+| `break;` / `continue;` | No such keywords |
+| C-style `for (init; cond; step)` | Only `for item in iterable` exists |
+| `cond ? a : b` ternary | No conditional operator |
+| `expr % expr` | No `%` operator |
+| `a & b`, `a << b`, `~a` | No bitwise or shift operators |
+| `1_000` digit separators | No digit separators |
 | Hex / octal / binary integer literals | Lexer accepts only `[0-9]+` |
-| String escape sequences (`"\n"`) | The lexer stores raw characters; `\n` is the two characters `\` then `n` |
+| `T[]` postfix array type | Array types are prefix: `[]T` |
 
 ---
 
 ## 3.7 Sources cited in this chapter
 
-- `lexer.rs:215` — identifier first-char rule
-- `lexer.rs:218–223` — character literal
-- `lexer.rs:224–233` — string literal
-- `lexer.rs:238–296` — operator and punctuation table
-- `lexer.rs:307` — whitespace + underscore handling
-- `lexer.rs:311–328` — comments
-- `lexer.rs:336` — identifier continuation rule
-- `lexer.rs:341–356` — keyword table
-- `lexer.rs:370–386` — numeric literal
-- `parser.rs:177–194` — top-level declaration dispatcher
-- `parser.rs:196–248` — type parser
-- `parser.rs:250–287` — `ext function` declaration
-- `parser.rs:289–325` — `function` declaration
-- `parser.rs:326–345` — `let` declaration
-- `parser.rs:347–360` — block / statement entry
-- `parser.rs:361–382` — statement dispatcher
-- `parser.rs:383–404` — `for` statement
-- `parser.rs:405–438` — `if` / `while` statements
-- `parser.rs:440–474` — `import` statement
-- `parser.rs:475–486` — `return` statement
-- `parser.rs:487–558` — struct / enum declarations
-- `parser.rs:584–629` — expression precedence chain and postfix
-- `parser.rs:630–751` — primary expression dispatcher
-- `analyzer.rs:138–171` — what gets analyzed for `let` and `import`
-- `analyzer.rs:317–324` — `!` analyzer rule
-- `analyzer.rs:500` — `todo!` fallthrough for struct / array literals
-- Fixtures: `error_parse1.sol`, `error_parse2.sol`, every positive
-  fixture for the *valid* shapes above
+- `sol/src/lexer.rs` — tokens, keywords, comments, literals, the `<-`
+  arrow
+- `sol/src/parser.rs` — top level items, statements, expressions,
+  precedence chain
+- `sol/src/ast.rs` — AST node shapes
+- `sol/src/vm.rs` — `RemoteCall` semantics for `call`, `module.func`, and
+  `::` calls
+- `src/graph/validate.ts` — the `enum-first-char-collision` editor warning

@@ -1,340 +1,204 @@
-# 12 — Imports, External Functions, and the Host Runtime
+# 12 — Imports, External Actions, and the Host Controller
 
-> **Status:** Substantive (commit 4). Language-level rules sourced
-> from `parser.rs:250–287, 440–474`, `analyzer.rs:84–89, 166–171`,
-> and `bytecode.rs:454–466`. The host-runtime integration is a
-> **snapshot** of one host observed on 2026-05-26 and may evolve
-> independently of the language.
+> **Status:** Canonical. Sourced from the `sol/` crate (package
+> `openprem-sol-v2`): `sol/src/parser.rs`, `sol/src/ast.rs`,
+> `sol/src/vm.rs`, `sol/src/analysis.rs`, and the editor bridge
+> `compiler-wasm/src/lib.rs`.
 
-A SOL program is a self-contained file: it cannot read other
-`.sol` files at compile time, and there is no module system in the
-language proper. What a SOL program *can* do is declare names that
-the host runtime will supply (`ext fn`) and use names that
-the host runtime will arrange to call back into (the conventional
-`start` function plus any other plain `fn`).
+A SOL program is a self-contained source string. It cannot read other
+`.sol` files, and there is no module-resolution step in the language.
+What a SOL workflow *can* do is reach **external Actions** that the host
+(the controller) supplies and resolves on its behalf. There is no
+in-language "external function" declaration: SOL has no `ext fn` keyword
+(it is not in the canonical lexer). Instead, a workflow names a
+capability, the VM pauses with a `RemoteCall`, and the host resolves it.
 
 This chapter has two parts:
 
-- **§12.1 – §12.3** — the language surface that is stable across
-  any host.
-- **§12.4** — a snapshot of one specific host's wiring (TOML
-  configuration shape, endpoint mapping rules). Anything in §12.4
-  is not part of SOL and may change with the host.
+- **§12.1 – §12.3** — the language surface (`import`, the three ways to
+  reach an Action) that is stable across any host.
+- **§12.4** — how a host controller resolves a `RemoteCall` and resumes
+  the VM. This is the integration contract, not language syntax.
 
 ---
 
-## 12.1 `ext fn` — declaring an external function
+## 12.1 `import` — naming a module
+
+The lexer has two import-related keywords, `import` and `from`. The
+parser accepts exactly two forms (`sol/src/parser.rs`, `sol/src/ast.rs`
+`ImportSpec`):
 
 ```sol
-ext fn fetch_orders(query: str) -> str;
-ext fn notify(channel: str, body: str);
+import system;                 # ImportSpec::Module("system")
+import "get" from numbers;     # ImportSpec::Named { name: "get", module: "numbers" }
 ```
 
-Parsed at `parser.rs:250–287`. Syntactic differences from a normal
-`fn`:
+- `import module;` introduces a module name. A later `module.func(args)`
+  call inside a workflow or function becomes an external Action with the
+  capability string `"module.func"`.
+- `import "name" from module;` introduces a bare named binding.
 
-- The keyword `ext` precedes `fn`.
-- **No body**; the declaration ends with `;`.
-- Otherwise the parameter list and return type are identical.
+There is no `as alias` clause, no dotted path, no `export` keyword, and
+no module resolution. Imports are recorded in the AST and are consumed
+only by capability analysis (§12.3) and by the VM when it lowers a
+qualified call into a `RemoteCall`.
 
-### Analyzer behavior
+---
 
-At the analyzer level (`analyzer.rs:84–89`) an `ext fn`
-declaration is registered in the global type table exactly like a
-regular function — same signature shape, same name lookup, same
-duplicate-name rule. The call-site type checks (chapter 05 §5.2)
-make no distinction between calling an `ext` function and calling
-a local one.
+## 12.2 Three ways a workflow reaches an external Action
+
+Every external Action becomes a single VM `RemoteCall { capability,
+params }` (`sol/src/vm.rs`, `StepResult::RemoteCall`). The `capability`
+is a string; `params` is a single value, commonly a struct literal
+`{ ... }`. There are three source forms, all equivalent at the VM level:
+
+### `call("module.func", params)`
+
+The built-in `call` form names the capability directly as a string
+literal and passes one params value:
 
 ```sol
-ext fn lookup(id: int) -> str;
-
-fn start() -> int {
-    let name: str = lookup(42);   # call site is indistinguishable
-    print(name);
-    return 0;
+workflow "ingest" {
+    let cpu = call("system.cpu", { sample: "1m" });
+    print(cpu);
 }
 ```
 
-### Bytecode emission
+The VM's `WorkflowCall` instruction pops the params and the capability
+string and yields `RemoteCall { capability: "system.cpu", params }`.
 
-The bytecode emitter does distinguish — for each call it checks
-whether the target name is in the `ext_functions` set
-(`bytecode.rs:454–466`). If yes:
+### Imported `module.func(args)`
 
-1. Each argument is compiled (pushed onto the stack in source
-   order).
-2. The function name and its bound endpoint URL are pushed as
-   string constants.
-3. An `Inst::ExtCall(arg_types, ret_type)` op is emitted.
-
-The runtime dispatches the call through the host's transport layer
-(opaque to the program) and pushes the return value back onto the
-stack. From the program's point of view the call is synchronous
-and returns a single value (or `Void`).
-
-### Runtime transport (snapshot, 2026-05-26)
-
-The VM implements `Inst::ExtCall` with hand-rolled HTTP/1.1
-over a plain `TcpStream` (`vm.rs:469–579`). This is a snapshot of
-one host's transport and is **not** part of the language; a future
-runtime may switch transports. Today's behavior:
-
-| Aspect | Behavior |
-|---|---|
-| Transport | TCP socket. **HTTP/1.1 only.** No HTTPS. The runtime strips a literal `http://` prefix and then assumes the rest is `host[:port]/path`. URLs starting with `https://` will be parsed incorrectly (the runtime strips nothing, the host portion becomes `https:`, the port parse falls back to `80`) and either fail to connect or connect to the wrong place. |
-| Connection | New TCP connection per call; `Connection: close` header. No keep-alive. No retries. |
-| Timeout | **None.** A dead or hung endpoint will hang the SOL session indefinitely. |
-| Default port | `80` when the URL has no `:port`. |
-| Request body | `{"type":"request", "name":"<function-name>", "args":[ … ]}`. Arguments are encoded per `arg_types`: `Type::Integer` → JSON number; `Type::Float` → JSON number (or `null` if `NaN`/`inf` un-encodable); `Type::String` → JSON string; `Type::Bool` → JSON bool; `Type::Char` → JSON string of one character; any other type → Debug-formatted string fallback. |
-| Response | Reads the status line, drains headers until a blank line, reads the remainder as JSON. **No HTTP status-code check** — a `400` or `500` with a JSON body is treated identically to a `200`. |
-| Response shape | Expects a JSON object with a `data` field. Missing / wrong-typed `data` produces the default value for the declared return type — `0` for `int`, `0.0` for `float`, `false` for `bool`, `"?"` for `char`, the stringified JSON for `str`. **No error is raised** — the program continues with the default value. |
-| Panics | `unwrap()` is used liberally for connect failure, network write, JSON parse, and JSON serialize failures. Any of these panics terminates the session (chapter 14 §14.9). |
-
-The combined effect: ExtCall is best treated as *eventually
-consistent best-effort*. A program that depends on it should
-treat the default return value as "the call may have silently
-failed" and design accordingly — for example, by validating the
-response shape itself via `rpc_data` and `if` checks before
-acting on it.
-
-Logged as **T9012** in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
-
-### Endpoint resolution at compile time
-
-The host runtime supplies a *function-name → endpoint-URL* mapping
-when it constructs the code generator
-(`bytecode.rs:93–96, 457–460`). If an `ext fn` is **declared
-in the source but not in the host's mapping**, the bytecode emitter
-exits at compile time with:
-
-```
-no endpoint configured for ext function `<name>`
-```
-
-This is a deliberate fail-fast: a program that calls an external
-function with no transport bound to it would otherwise crash at
-runtime with no explanation.
-
-### What `ext fn` is *not*
-
-- Not asynchronous. The compiled call sites block until the
-  runtime returns.
-- Not a typeclass or trait — there is no way to declare multiple
-  `ext fn` names with the same signature and a dispatch
-  rule.
-- Not an opaque type — the language enforces the declared
-  signature on every call site; the host must honor it.
-
----
-
-## 12.2 No `export` keyword
-
-SOL has no `export` keyword. The lexer's keyword table
-(`lexer.rs:341–356`) is fifteen entries; `export` is not among
-them. The host runtime calls back *into* the program by invoking a
-named regular `fn`; the convention is `start`. There is no
-language-level mechanism for marking a function as "visible from
-outside" — every top-level `fn` is callable by the host that
-loaded the program.
-
-If you encounter a source that uses `export fn`, it will fail
-at parse time with:
-
-```
-unknown declaration: Ident("export")
-```
-
-Treat such sources as bugs; rewrite as a plain `fn`.
-
----
-
-## 12.3 `import path.to.thing [as alias];`
+After `import module;`, a member call on the module lowers to the same
+`RemoteCall` with capability `"module.func"`:
 
 ```sol
-import controllers.warehouse;
-import controllers.warehouse as wh;
+import system;
+
+workflow "ingest" {
+    let cpu = system.cpu({ sample: "1m" });
+    print(cpu);
+}
 ```
 
-Parsed at `parser.rs:440–474`. The path is one or more
-dot-separated identifiers; the `as alias` clause is optional.
+### Namespace `module::rpc(args)`
 
-### Current semantics — mostly inert
+A `::` namespace call (the `ModuleCall` instruction) produces a
+capability of the form `"module::rpc"`:
 
-At the analyzer level (`analyzer.rs:166–171`) the import only adds
-the alias as a `Void`-typed variable in the **current scope**:
+```sol
+import system;
+
+workflow "ingest" {
+    let cpu = system::cpu({ sample: "1m" });
+    print(cpu);
+}
+```
+
+The VM formats the capability as `"{module}::{rpc}"` and carries the
+single params value (defaulting to an empty struct when no argument is
+supplied). See `Instruction::ModuleCall` handling in `sol/src/vm.rs`.
+
+In every case the call carries **one** params value. To pass several
+fields, wrap them in a struct literal `{ a: 1, b: "x" }`.
+
+---
+
+## 12.3 Capability analysis
+
+Static capability discovery lives in `sol/src/analysis.rs`, not in a
+type checker. Two entry points:
 
 ```rust
-if let Some(a) = alias {
-    self.add_entry(a.to_owned(), Symbol::Variable { kind: Box::from(Type::Void) });
+pub fn extract_capabilities(source: &str) -> Result<Vec<String>, String>;
+pub fn analyze_workflow(source: &str, name: &str) -> Result<WorkflowAnalysis, String>;
+```
+
+- `extract_capabilities` returns the sorted, deduplicated set of every
+  capability a source references.
+- `analyze_workflow` returns a `WorkflowAnalysis { workflow_name,
+  call_graph, imported_modules, capabilities }`, where `call_graph` is an
+  ordered list of `WorkflowCallSite { module, capability }`.
+
+A "capability" is gathered from two source shapes: the string literal
+inside `call("cap", ...)`, and an imported `module.func(...)` member
+call (capability analysis only records the member call when `module` is
+an imported module name). A `call(...)` whose capability is a dynamic
+expression rather than a string literal is skipped by static analysis
+and resolved at runtime. For example:
+
+```sol
+import numbers;
+
+workflow "test" {
+    let a = call("system.cpu", {});
+    let b = numbers.get(42);
+    print(a, b);
 }
 ```
 
-That's it. The path is parsed and stored in the AST but not used
-by the analyzer or the bytecode emitter. There is **no module
-resolution**, no namespace, no symbol re-export. The import
-statement exists as a grammar slot for future development; treat
-it as inert in the current language.
-
-### Statement-position `import` adds a *local* alias
-
-The parser's statement dispatcher (`parser.rs:365`) also accepts
-`Token::Import`, so an `import x.y as alias;` form is valid
-**inside** a function body. The alias is then added to the
-function's local scope, not the global scope. Two consequences
-specific to that case:
-
-- The alias goes out of scope at the end of the enclosing block,
-  same as any other local.
-- The alias's slot is **never initialized at runtime** — the
-  analyzer registers it but the bytecode emitter does not emit a
-  `StoreLocal` for an import. Reading the alias produces
-  whatever happens to be in that stack slot, which is undefined.
-
-Don't use `import` in function bodies. The form is parser-
-accepted for symmetry with the top-level dispatcher but has no
-useful runtime behavior.
-
-### Recommendation
-
-Until the import system is implemented, don't write `import` in
-production SOL. The form parses cleanly and won't break anything,
-but it also doesn't do anything useful, and the alias-as-Void
-binding can shadow a real variable name if you reuse the alias
-later in scope.
+`extract_capabilities` returns `["numbers.get", "system.cpu"]`.
 
 ---
 
-## 12.4 Host runtime wiring (snapshot, 2026-05-26)
+## 12.4 The host controller resolves the `RemoteCall`
 
-> **Snapshot.** This section describes how one specific host
-> arranges the compile- and run-time integration of SOL programs.
-> The shape may evolve independently of the language. Anything in
-> this section that depends on configuration-file keys is **not**
-> part of SOL.
+The language does not perform external work; it pauses and hands the
+host a capability plus params. The driving loop is `Vm::step(budget)`
+(`sol/src/vm.rs`):
 
-The host loads a SOL program in three stages:
+1. The host calls `step(budget)` repeatedly. `budget` is a **statement
+   budget** (it counts `StmtBoundary` crossings, not raw instructions).
+2. When the VM reaches an external Action it returns
+   `StepResult::RemoteCall { capability, params }` and pauses.
+3. The host inspects `capability` (for example `"system.cpu"` or
+   `"system::cpu"`), performs the real work however it chooses
+   (HTTP, SDK, local function, anything), and produces a result `Value`.
+4. The host calls `resolve_remote_call(capability, result)`, which
+   stashes the result, advances past the call site, and arranges for the
+   resumed step to skip the next statement boundary so the budget is not
+   double-counted.
+5. The host resumes by calling `step(budget)` again. The stashed result
+   is pushed onto the stack as the call's return value.
 
-1. **Read the host configuration file.** The file is TOML; the
-   relevant top-level keys are summarized below.
-2. **For each session, compile its `.sol` source** with the
-   per-controller external-function mapping passed to the
-   bytecode emitter. The compiled VM is associated with the
-   session name.
-3. **Hold the compiled VM ready** to be invoked by name (or to
-   auto-start, depending on session configuration). When the host
-   serves a request, it dispatches to the named session's VM,
-   which begins executing at `start` (or the named function the
-   host chose).
+There is no transport baked into the language: HTTP, timeouts, retries,
+and authentication are all host concerns. The VM only ever sees a
+`capability` string and a single params `Value`, and only ever expects a
+single result `Value` back.
 
-### Configuration shape
+### Wrapping host-native helpers
 
-```toml
-[controller]
-name = "my-controller"
-api_url = "http://0.0.0.0:3000"
-
-[access_points]
-some-access-point = { type = "http", method = "POST", url = "..." }
-other-access-point = { type = "sdk", endpoint = "...", sdk_lib = "..." }
-
-[sessions]
-default = "my-session"
-
-[session.my-session]
-source = "tests/my_program.sol"
-start_on_init = true
-
-[nodes]
-"warehouse" = "http://192.168.1.50:3000/rpc"
-"shipping" = "http://192.168.1.51:3000/rpc"
-
-[ext]
-"warehouse" = [ "products_list", "stock_check", "is_available" ]
-"shipping"  = [ "schedule_pickup" ]
-```
-
-Source: the host's loader (an `init.rs` of approximately 130
-lines that consumes the TOML and constructs the controller). The
-TOML keys above are:
-
-| Section | Meaning |
-|---|---|
-| `[controller]` | Identity of this controller process and the URL it serves |
-| `[access_points]` | Inbound surfaces — HTTP endpoints or SDK shims — the host exposes |
-| `[sessions]` | Default session for this controller |
-| `[session.<name>]` | A session — `source` points to a `.sol` file; `start_on_init` is an optional boolean |
-| `[nodes]` | A directory of *node-name → URL* for remote services |
-| `[ext]` | For each node, the list of function names that node provides |
-
-### How `ext` resolves to a URL
-
-The host flattens `[ext]` × `[nodes]` into a single
-*function-name → URL* mapping (`init.rs:96–105`):
-
-```text
-for (node, funcs) in [ext]:
-    url = [nodes][node]    // panic if node not in [nodes]
-    for func in funcs:
-        ext_flat[func] = url
-```
-
-The flattened map is what is handed to the SOL bytecode emitter
-via `Codegen::with_ext_endpoints(...)` (chapter 12 §12.1, third
-paragraph). If a SOL source declares `ext fn f();` and `f`
-is not present in this map, compilation fails with:
-
-```
-no endpoint configured for ext function `f`
-```
-
-### How the program is started
-
-The bytecode emitter, at the end of code generation, appends a
-single `Inst::Call(start_addr, 0)` for the function named `start`
-(`bytecode.rs:159–161`). If no `start` exists, no startup call is
-appended and the host's session VM is "ready but idle" — the host
-may still invoke the program by selecting a different entry
-function and calling `VM::call_entry`. The conventional shape is
-to have `start` and let the host call it implicitly.
-
-### Snapshot caveats
-
-Everything in §12.4 is host-specific and may change. The pieces of
-behavior that are **language**-level, and therefore stable, are:
-
-- The form `ext fn name(…) -> T;`
-- The form `fn name(…) -> T { … }` and the convention of
-  using `start` as the host-invoked entry
-- The compile-time fail-fast when an `ext` declaration has no
-  configured endpoint (this happens inside the SOL compiler, so it
-  is part of the language toolchain regardless of host)
+A host can also expose synchronous native helpers via
+`Vm::register_native(name, func)` (`sol/src/vm.rs`). A registered native
+takes precedence over the built-in dispatch when a `Call` names it. This
+is how a host exposes, for example, the crate's `crypto` routines
+(ed25519 sign/verify, sha512 in `sol/src/crypto.rs`), which are *not*
+SOL built-ins (chapter 13). Native helpers run inline and return
+immediately; they do not produce a `RemoteCall`.
 
 ---
 
-## 12.5 Common diagnostics
+## 12.5 What does not exist
 
-| Diagnostic | Cause | Where |
-|---|---|---|
-| `unknown declaration: Ident("export")` | `export function …` at top level | parser |
-| `expected `function` keyword after `ext`` | `ext` followed by anything other than `function` | parser |
-| `expected semicolon after ext function declaration` | `ext function …` body or missing `;` | parser |
-| `no endpoint configured for ext function `<name>`` | `ext function` declared but no host mapping | bytecode emitter |
-| `attempting to make a function call on an undefined name `<name>`` | Call site refers to a name not declared as `function` or `ext function` | analyzer |
-| `error: redefinition of `<name>`` | Same name used for two top-level functions (or `ext function` and `function`) | analyzer |
-| `node `<node>` defined in [ext] but not found in [nodes]` | Host TOML refers to an undefined node | host (`init.rs:99–101`) |
-
-Full entries in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
+- No `ext fn` / `ext function` declaration. SOL never declares external
+  functions in-language; it names capabilities and pauses.
+- No `export` keyword, no `as alias`, no dotted import paths.
+- No compile-time endpoint binding or "no endpoint configured" error.
+  Capability-to-host wiring happens entirely on the host side at
+  resolve time.
+- No type checking of Action params or results. Mismatches surface at
+  runtime as `StepResult::Failed(string)` (chapter 15).
 
 ---
 
 ## 12.6 Sources cited in this chapter
 
-- `parser.rs:250–287` — `ext function` parser
-- `parser.rs:440–474` — `import` parser
-- `analyzer.rs:84–89` — `ext function` registration
-- `analyzer.rs:166–171` — `import` alias registration
-- `bytecode.rs:93–96, 132–138, 454–466` — codegen ext handling
-- `bytecode.rs:159–161` — `start` autocall
-- (Snapshot) `init.rs:10–127` — host configuration loader
-- Fixtures: `gemini_long.sol`, `s1.sol`, `s2.sol`
+- `sol/src/parser.rs`, `sol/src/ast.rs` — `import` parsing, `ImportSpec`
+- `sol/src/vm.rs` — `WorkflowCall` / `ModuleCall` lowering,
+  `StepResult::RemoteCall`, `step`, `resolve_remote_call`,
+  `register_native`
+- `sol/src/analysis.rs` — `extract_capabilities`, `analyze_workflow`,
+  `WorkflowAnalysis`, `WorkflowCallSite`
+- `sol/src/crypto.rs` — host-wrappable ed25519 / sha512 helpers
+- `compiler-wasm/src/lib.rs` — `analyze_source_json` surfaces the
+  analysis to the editor

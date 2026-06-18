@@ -1,145 +1,140 @@
 # 16 — Examples
 
-> **Status:** Substantive (commit 4). Annotated walkthroughs of
-> canonical sample programs. Each walkthrough cross-references the
-> chapter(s) that explain the rules a given construct relies on.
+> **Status:** Substantive. Annotated walkthroughs of canonical SOL
+> programs. Every example is valid, runnable canonical SOL: a
+> `workflow "name" { ... }` is the executable entry point, comments
+> use `#`, functions use `fn` with the `<-` return arrow, and arrays
+> use the prefix `[]T` form.
 
-This chapter is the guided tour. The lookup index of every
-fixture lives in [`EXAMPLES.md`](./EXAMPLES.md).
+This chapter is the guided tour. Each example is written against the
+canonical `openprem-sol-v2` crate (`sol/src/*`). The editor bridge
+(`compiler-wasm/src/lib.rs`) runs the first `workflow` it finds.
 
 ---
 
-## 16.1 `retest.sol` — minimal viable program
+## 16.1 Minimal viable program
 
 ```sol
-fn sub_func(x: int) -> int {
+fn double(x: int) <- int {
     return x * 2;
 }
 
-fn start() -> int {
-    let y: int = sub_func(9);
+workflow "minimal" {
+    let y: int = double(9);
     print(y);
 }
 ```
 
 ### Annotations
 
-- **Line 1.** Function declaration; one `int` parameter; `int`
-  return. Chapter 05 §5.1.
-- **Line 2.** `return x * 2;` — `*` is multiplicative, binds tighter
-  than additive (chapter 08 §8.6); the result type matches the
-  parameter type (chapter 04 §4.2.1).
-- **Line 5.** Entry function `start` (chapter 05 §5.6).
-- **Line 6.** `let y: int = sub_func(9);` — declared type, call
-  expression as initializer. Forward declarations are unnecessary
-  here because the analyzer's two-pass design registers all
-  top-level functions before any body is walked (chapter 05 §5.5).
-- **Line 7.** `print(y);` — one argument; dispatched to `PrintInt`
-  at the bytecode (chapter 13 §13.1).
-- **Missing.** This `start` has no `return;`. The function is
-  declared `-> int` but the analyzer doesn't enforce the return
-  path (chapter 05 §5.1). The top-of-stack value at function exit
-  is undefined; idiomatic SOL would add `return 0;`.
+- **`fn double(x: int) <- int`** declares a function with one `int`
+  parameter and an `int` return annotation. The return arrow is `<-`,
+  not `->`. The annotation is recorded but not statically enforced
+  (chapter 04); a mismatch would surface at runtime as a string error.
+- **`return x * 2;`** uses `*`, which binds tighter than `+`
+  (chapter 08).
+- **`workflow "minimal" { ... }`** is the executable entry point. Its
+  name is a string literal.
+- **`let y: int = double(9);`** binds a `let` with an explicit type
+  annotation and a call expression initializer. Annotating the type
+  is recommended: an omitted annotation defaults to `bool` in the AST
+  (chapter 06).
+- **`print(y);`** writes `y` and a newline to the captured output
+  buffer. `print` is one of the four VM built-ins (chapter 13).
 
 ---
 
-## 16.2 `jjsi.sol` — struct + helper + start
+## 16.2 Struct plus helper plus workflow
 
 ```sol
-fn is_high(val: int, limit: int) -> bool {
-    if val > limit {
+fn is_high(val: int, limit: int) <- bool {
+    if (val > limit) {
         return true;
     }
     return false;
 }
 
 struct Person {
-    name: str,
-    age: int,
+    name: str;
+    age: int;
 }
 
-fn print_person(p: Person) {
+fn describe(p: Person) {
     print(p.name);
     print(p.age);
 }
 
-fn start() -> int {
+workflow "describe-person" {
     let p: Person = Person {
         name: "evan",
         age: 19,
     };
-    print_person(p);
-    return 0;
+    describe(p);
 }
 ```
 
 ### Annotations
 
-- **Lines 1–6.** A pure helper. Note the `if val > limit { return
-  true; } return false;` shape — there is no `else` because the
-  early `return` makes the trailing `return` unreachable when
-  the condition is true.
-- **Lines 8–11.** Struct declaration; field types are
-  primitives. Field-order is name-keyed (chapter 09 §9.1).
-- **Lines 13–16.** Function consumes a `Person` by reference
-  (chapter 14 §14.6). Two `print` calls — one per value, since
-  only the first argument of a `print` is emitted (chapter 13
-  §13.1).
-- **Lines 19–22.** Struct literal with field-order matching the
-  declaration. The literal could equally read `Person { age: 19,
-  name: "evan" }` — fields are by name (chapter 09 §9.2).
-- **Line 24.** `return 0;` — idiomatic end of `start`.
+- **`is_high`** is a pure helper. The `if (val > limit) { return
+  true; } return false;` shape needs no `else`: when the condition is
+  true the early `return` runs, otherwise control falls through to
+  `return false;`. The condition is parenthesized, as `if` requires.
+- **`struct Person { name: str; age: int; }`** declares a struct.
+  Struct fields are semicolon terminated.
+- **`describe`** has no return annotation; it returns `Unit`. It
+  consumes a `Person` and makes two `print` calls.
+- **`Person { name: "evan", age: 19 }`** is a struct literal. Literal
+  fields are comma separated and matched by name, so `Person { age:
+  19, name: "evan" }` is equivalent (chapter 09).
 
 ---
 
-## 16.3 `s1.sol` — small orchestration
+## 16.3 Enums, control flow, and a small orchestration
 
 ```sol
-import EdgeRouter.SecurityControl.AuthApp.ValidateToken.Expiration as TokenTimeout;
-import GlobalRouter.InventoryControl.WarehouseApp.GetStock.Level as StockLevel;
-
 enum AppHealth {
-    Offline,
-    Initializing,
-    Stable = 200,
-    Overloaded = 503,
+    Offline;
+    Booting;
+    Stable;
+    Throttled;
 }
 
 struct ProcessNode {
-    id: int,
-    threshold: float,
-    tag: char,
-    service_name: str,
-    is_active: bool,
-    metrics: [4]int,
+    id: int;
+    threshold: float;
+    tag: char;
+    service_name: str;
+    is_active: bool;
+    metrics: []int;
 }
 
 fn start_service(name: str) {
     print("started service:");
     print(name);
 }
+
 fn stop_service(name: str) {
     print("stopped service:");
     print(name);
 }
 
-fn verify_capacity(node: ProcessNode, current: float) -> AppHealth {
-    if current > node.threshold {
-        return AppHealth::Overloaded;
+fn verify_capacity(node: ProcessNode, current: float) <- AppHealth {
+    if (current > node.threshold) {
+        return AppHealth::Throttled;
     } else {
-        if node.is_active {
+        if (node.is_active) {
             return AppHealth::Stable;
         } else {
-            return AppHealth::Initializing;
+            return AppHealth::Booting;
         }
     }
 }
 
-fn orchestrate_service(request_id: int) -> int {
+fn orchestrate(request_id: int) <- int {
     let limit: float = 90.5;
     let identity: char = 'S';
-    let label: str = "Inventory_Orchestrator";
-    let data_history: [4]int = [10, 22, 15, 30];
+    let label: str = "inventory_orchestrator";
+    let data_history: []int = [10, 22, 15, 30];
 
     let current_node: ProcessNode = ProcessNode {
         id: request_id,
@@ -152,11 +147,11 @@ fn orchestrate_service(request_id: int) -> int {
 
     let status: AppHealth = verify_capacity(current_node, 85.2);
 
-    if status == AppHealth::Stable {
+    if (status == AppHealth::Stable) {
         start_service(current_node.service_name);
         return 1;
     } else {
-        if status == AppHealth::Overloaded {
+        if (status == AppHealth::Throttled) {
             stop_service(current_node.service_name);
             return 0;
         } else {
@@ -165,139 +160,125 @@ fn orchestrate_service(request_id: int) -> int {
     }
 }
 
-fn inc(x: int) -> int {
-    return x + 1;
-}
-
-fn start() {
-    print(orchestrate_service(0));
+workflow "orchestrate-service" {
+    print(orchestrate(0));
 }
 ```
 
 ### Annotations
 
-- **Lines 1–2.** `import … as …;` syntax (chapter 12 §12.3). At
-  the analyzer level these only bind `TokenTimeout` and
-  `StockLevel` as `Void` variables. They serve as comments today.
-- **Lines 4–9.** Enum with mixed implicit and explicit values. The
-  parser-level iota would map `Offline → 0, Initializing → 1,
-  Stable → 200, Overloaded → 503`. **At runtime, the bytecode
-  uses `first_char % 10` instead** (chapter 10 §10.5) — so
-  `Offline → 79 % 10 = 9`, `Initializing → 73 % 10 = 3`,
-  `Stable → 83 % 10 = 3`, `Overloaded → 79 % 10 = 9`. The
-  collision table for this exact enum:
-
-  | Variant | First char | Runtime value |
-  |---|---|---|
-  | `Offline` | `'O'` | **9** |
-  | `Initializing` | `'I'` | **3** |
-  | `Stable` (= 200 in source) | `'S'` | **3** ← collides with Initializing |
-  | `Overloaded` (= 503 in source) | `'O'` | **9** ← collides with Offline |
-
-  Every comparison in `verify_capacity` is therefore broken at
-  runtime: `if status == AppHealth::Stable` matches both
-  `Stable` *and* `Initializing`; `if status == AppHealth::Overloaded`
-  matches both `Overloaded` *and* `Offline`. The dispatch is
-  semantically meaningless — the program "works" only because
-  the host inspects the final return value, not the side
-  effects. **This is a good illustration of why T9002 is a
-  real-world bug, not a theoretical one** — and a concrete
-  example of why chapter 17 §17.1's recommendation ("no two
-  variants in an enum share a first character") is a hard
-  requirement, not a style preference.
-- **Lines 11–18.** Struct with a fixed-size `[4]int` field. Note
-  the bytecode treats `[4]int` and `[]int` interchangeably for
-  type-equality purposes (chapter 04 §4.6).
-- **Lines 20–27.** Two void-returning helper functions; each makes
-  two `print` calls. Idiomatic — one `print` per value.
-- **Lines 29–39.** Nested `if`/`else` inside a function that
-  returns an enum. The two-level nesting is the language's
-  workaround for the absence of `match`.
-- **Lines 41–67.** Composing struct literal, call, and conditional
-  return. The `let current_node: ProcessNode = ProcessNode { … }`
-  pattern is the canonical way to build a typed record before
-  threading it through helpers.
-
-### Caveat for runtime behavior
-
-Because of T9002 (enum-variant hash collision) and T9003 (print
-first-arg-only), this program's *observable behavior* differs
-from what the source reads:
-
-- Comparisons against `AppHealth::Stable` / `AppHealth::Overloaded`
-  may match unintended variants.
-- The `print("started service:"); print(name);` pattern works as
-  expected — that's two separate statements.
-
-Treat `s1.sol` as a structural example, not a behavioral
-specification.
+- **`enum AppHealth { ... }`** declares an enum. Variants are
+  semicolon terminated and carry no payload. The variants here begin
+  with distinct first characters (`O`, `B`, `S`, `T`). This matters:
+  the canonical bytecode dispatches each variant by `(first_char as
+  i128) % 10`, so two variants whose first characters share a mod-10
+  residue compare equal at runtime (chapter 10). Choosing distinct
+  leading characters avoids that hazard.
+- **`metrics: []int`** uses the prefix array form. Array types are
+  written `[]T`, never with a postfix size.
+- **`verify_capacity`** returns an enum value through nested
+  `if`/`else`. Nesting is the canonical workaround for the absence of
+  a `match` construct.
+- **`status == AppHealth::Stable`** compares an enum value to a
+  variant. Because the variant first characters are distinct, the
+  comparisons behave as written.
+- **`workflow "orchestrate-service"`** drives the whole program and
+  prints the integer result of `orchestrate(0)`.
 
 ---
 
-## 16.4 `test_control.sol` — control-flow exhaustive
+## 16.4 Control-flow patterns
 
-See the full source in `reference/sol files/test_control.sol`. This
-fixture is a regression harness rather than a single program;
-the relevant patterns are:
+```sol
+workflow "control-flow" {
+    # early-return style lives inside helpers; here we show loops.
+    let total: int = 0;
+    let i: int = 0;
+    while (i < 5) {
+        total = total + i;
+        i = i + 1;
+    }
+    print(total);
 
-- `if (cond) { return X; }` followed by `return Y;` — the
-  early-return pattern (chapter 07 §7.4).
-- `while i < N { … i = i + 1; }` — counter loop (chapter 07 §7.2).
-- `for item in [list] { … }` and `for item in empty_array { … }`
-  — the iteration variable inherits the element type (chapter 11
-  §11.5).
-- `if ((true || false) && !false) { … }` — combined logical ops,
-  non-short-circuiting (chapter 08 §8.3).
+    let nums: []int = [3, 7, 11];
+    for n in nums {
+        print(n);
+    }
 
-Use this fixture as a "what shape does my control flow want?"
-reference; pattern-match against the test name that most closely
-describes your scenario.
+    if ((true || false) && !false) {
+        print("logic ok");
+    }
+}
+```
 
----
+### Annotations
 
-## 16.5 `test_struct.sol` — struct exhaustive
-
-See the full source in `reference/sol files/test_struct.sol`. Most
-useful patterns:
-
-- `struct Empty {}` — empty struct (`test_empty_struct`).
-- `struct Nested { p: Point, label: str }` — struct-in-struct
-  (`test_struct_in_struct`).
-- `Point { y: 99, x: 11 }` — field-order doesn't matter
-  (`test_field_order`).
-- `p.x = 100;` — field mutation (`test_mutate_field`).
-- `fn test_struct_in_func(p: Point) -> int { return p.x + p.y; }`
-  — struct pass-through (`test_pass_struct`). Mutation
-  visibility through the parameter is reference-semantics by
-  default (chapter 14 §14.6).
+- **`while (i < 5) { ... }`** is the counter loop. `while` requires
+  parentheses around the condition; the body increments the counter.
+- **`for n in nums { ... }`** iterates an array. `for ... in` takes no
+  parentheses.
+- **`if ((true || false) && !false) { ... }`** combines logical
+  operators. The outer parentheses are the `if` condition delimiter;
+  the inner parentheses group the disjunction. Logical operators work
+  on `Bool` values, or on `Int` where nonzero is true (chapter 08).
 
 ---
 
-## 16.6 Reading the larger fixtures
+## 16.5 Calling external Actions
 
-Two larger fixtures — `gemini_long.sol` and `largemini.sol` —
-exercise the broader surface end-to-end. They are useful as
-*self-tests* after a documentation change: anything in those
-files that you can't trace back to a chapter rule is either a
-documentation gap or a fixture quirk worth flagging.
+```sol
+import inventory;
 
-When reading either:
+workflow "check-stock" {
+    # capability-string form: becomes a RemoteCall with capability "warehouse.get_stock"
+    let level: int = call("warehouse.get_stock", { sku: "A-100" });
+    print(level);
 
-1. Start at `start` — the conventional entry. Walk every call it
-   makes.
-2. For each helper, identify the chapter that explains its core
-   construct (call → chapter 05, branch → chapter 07, struct
-   literal → chapter 09, etc.).
-3. Cross-check enum and `print` behavior against T9002 / T9003 in
-   the error reference. These two real-world bugs distort the
-   observable behavior of any program that uses them.
+    # imported-module form: becomes a RemoteCall with capability "inventory.reserve"
+    let ok: bool = inventory.reserve({ sku: "A-100", qty: 2 });
+    print(ok);
+}
+```
+
+### Annotations
+
+- **`call("warehouse.get_stock", { sku: "A-100" })`** is the
+  capability-string call form. It carries a single params value
+  (commonly a struct literal) and becomes a `RemoteCall` with the
+  capability string `"warehouse.get_stock"`. The host resolves it and
+  resumes the workflow with the result (chapter 12).
+- **`inventory.reserve({ ... })`** is the imported-module call form.
+  After `import inventory;`, a `module.func(args)` call becomes a
+  `RemoteCall` with the capability string `"inventory.reserve"`.
+- Both forms yield a `RemoteCall` from `Vm::step`; the workflow pauses
+  until the host calls `resolve_remote_call`.
+
+---
+
+## 16.6 Emitting events
+
+```sol
+workflow "emit-events" {
+    let amount: int = 1500;
+    if (amount > 1000) {
+        emit "high_value_order";
+    } else {
+        emit "standard_order";
+    }
+}
+```
+
+### Annotations
+
+- **`emit "high_value_order";`** emits a named event. The event name
+  is a string literal. `emit` is a statement, not an expression.
 
 ---
 
 ## 16.7 Sources cited
 
-- Fixtures: `retest.sol`, `jjsi.sol`, `s1.sol`,
-  `test_control.sol`, `test_struct.sol`, `gemini_long.sol`,
-  `largemini.sol`
-- Cross-references: chapters 04 – 14 throughout
-- [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md) — T9002, T9003
+- Canonical crate: `sol/src/lexer.rs`, `sol/src/parser.rs`,
+  `sol/src/ast.rs`, `sol/src/compiler.rs`, `sol/src/vm.rs`,
+  `sol/src/value.rs`, `sol/src/workflow.rs`.
+- Editor bridge: `compiler-wasm/src/lib.rs`.
+- Cross references: chapters 04 to 14 throughout.

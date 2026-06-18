@@ -1,51 +1,39 @@
-# 11 — Arrays
+# 11. Arrays
 
-> **Status:** Substantive (commit 3). Cross-checked against
-> `parser.rs:210–225` (array type parser), `parser.rs:726–739`
-> (array literal parser), `parser.rs:618–623` (index access),
-> `analyzer.rs:201–217, 455–466` (semantic handling),
-> `vm.rs:7–11` (heap layout), and the fixtures `test_array.sol`,
-> `test_control.sol`.
+> **Status:** Rewritten against the canonical `openprem-sol-v2`
+> crate (`sol/`). Cross-checked against `sol/src/parser.rs`
+> (`parse_type` for array types, array-literal parsing), `sol/src/vm.rs`
+> (the `Index` instruction and `for-in` execution), `sol/src/value.rs`
+> (`Value::Array`), and `sol/src/ast.rs`.
 
-A SOL array is a homogeneous, integer-indexed sequence of values
-stored on the runtime heap. Arrays are constructed with a literal
-expression, written into via assignment, read out of via indexing,
-and iterated with `for-in`. There is no built-in `length`
-operator and no slice or concat helper.
+A SOL array is an integer-indexed sequence of runtime values. Arrays
+are constructed with a literal expression, read with indexing,
+written with index assignment, and iterated with `for-in`. The `len`
+builtin returns the element count. There is no `.length` field and
+no slice or concat helper.
 
 ---
 
 ## 11.1 Array type syntax
 
-Two forms (`parser.rs:210–225`):
+One form:
 
 ```
-[N]T      // size N (an integer literal), element type T
-[]T       // unsized — element count not part of the type
+[]T
 ```
 
-The size `N` must be an `INTEGER` literal token. The parser refuses
-anything else:
+The bracket is a **prefix** and is always empty: `[]int`, `[]str`,
+`[]Point`. The parser reads `[`, then `]`, then the element type
+(`sol/src/parser.rs`, `parse_type`), producing
+`Type::Array(Box<Type>)` (`sol/src/ast.rs`). There is no sized array
+form (`[N]T` does not exist) and no postfix form (`T[]` does not
+exist).
 
-```
-only integers can be used to specify an array size
-```
+Nested arrays stack the prefix: an array of arrays of int is
+`[][]int`, an array of arrays of `Point` is `[][]Point`.
 
-The element type `T` is any type — primitive, array, struct, or
-enum. Nested arrays are written as `[][]int`, `[3][]Point`, etc.
-
-### When to use sized vs unsized
-
-The two forms are interchangeable for the analyzer's `type_eq`
-helper, which compares only the inner element type and ignores the
-size (chapter 04 §4.6). Idiomatic SOL uses `[]T` everywhere the
-literal supplies the size implicitly. Reserve `[N]T` for cases
-where the size is part of the contract — e.g. "this function takes
-a 3-element vector".
-
-> **Uncertain.** The runtime's behavior when a sized `[3]int`
-> variable is given a 5-element literal hasn't been audited. The
-> bytecode emitter (commit 4) will resolve this.
+The element type `T` may be any type: a primitive, another array, a
+struct, or an enum.
 
 ---
 
@@ -56,28 +44,23 @@ a 3-element vector".
 []
 ```
 
-Parsed at `parser.rs:726–739`. Comma-separated expressions inside
-`[ ]`. The loop terminates the first time it encounters a non-comma
-token, so a trailing comma is **not** accepted (the loop would
-break after the last comma's element with the next token being `]`,
-which is the close).
-
-The empty literal `[]` is accepted; the element type is determined
-by the surrounding context (typically a `let` annotation):
+Array literals are comma-separated expressions between `[ ]`
+(`sol/src/parser.rs`), producing `Expr::Array(Vec<Expr>)`. The
+empty literal `[]` is accepted; its element type comes from the
+surrounding `let` annotation:
 
 ```sol
 let xs: []int = [];
 ```
 
-Demonstrated by `test_control.sol::test_for_empty`.
-
 ### Type uniformity
 
-All elements of an array literal *should* share a type. The
-analyzer does not currently validate this — `ExprArrayInit` falls
-through the analyzer's `todo!()` catch (`analyzer.rs:500`). The
-bytecode emitter and VM expect homogeneous arrays; passing a
-heterogeneous literal is undefined behavior at runtime.
+There is no type-checker, so the parser and compiler do not validate
+that every element shares a type. At runtime an array is
+`Value::Array(Vec<Value>)`, which can technically hold mixed values.
+Keep array literals homogeneous so that index reads and `for-in`
+bodies behave consistently; a mixed array will only error if a later
+operation encounters an unexpected element type.
 
 ---
 
@@ -87,35 +70,32 @@ heterogeneous literal is undefined behavior at runtime.
 arr[i]
 ```
 
-Postfix, left-associative (`parser.rs:618–623`). The LHS must be of
-type `Type::Array { … }`; the index expression must be `int` (the
-analyzer also accepts `float` by what is almost certainly a typo;
-`analyzer.rs:459`).
+Postfix index access (`sol/src/parser.rs`), producing
+`Expr::Index(Box<Expr>, Box<Expr>)`. At runtime the `Index`
+instruction pops the index and the array, requires the array to be
+`Value::Array` and the index to be `Value::Int`, and reads the
+element (`sol/src/vm.rs`):
 
 ```sol
 let arr: []int = [10, 20, 30];
-let middle: int = arr[1];      // 20
+let middle: int = arr[1];      # 20
 ```
 
-Demonstrated by `test_array.sol::test_array_basic`.
+### Out-of-bounds is a runtime error
 
-### Diagnostics
+The index is dynamic, so range validity is a **runtime** check, not
+a compile-time one. The `Index` instruction does a bounds check and,
+when the index is out of range, fails the step with a plain string
+message:
 
-| Cause | Diagnostic |
-|---|---|
-| LHS not an array | `Type Error: Cannot index into a non-array type` |
-| Index wrong type | `Type Error: Array index must be an integer or float` |
+```
+index N out of bounds
+```
 
-(Both at `analyzer.rs:459–466`.)
-
-### Out-of-bounds
-
-The analyzer cannot tell whether an index is in range — the value
-is dynamic. The runtime behavior of `arr[N]` where `N` is out of
-bounds is *uncertain* — to be resolved by reading the bytecode op
-that backs index access in commit 4. Until then, treat
-out-of-bounds as undefined behavior and validate ranges
-defensively.
+Indexing a non-array value, or indexing with a non-int, likewise
+fails at runtime with a string message such as `cannot index <v>
+with <i>`. None of these are compile-time diagnostics; they appear
+as a `Failed(string)` step result.
 
 ---
 
@@ -125,12 +105,11 @@ defensively.
 arr[i] = expr;
 ```
 
-Parses as a `ExprBinary { op: Eq }` over a `ExprArrAcc` LHS. The
-analyzer's `Eq` rule (`analyzer.rs:291–297`) requires matching
-types between the element type and the RHS.
-
-Demonstrated by `test_array.sol::test_array_write`,
-`::test_array_mutate_in_loop`.
+Index assignment is a statement whose target is `Target::Index`
+(`sol/src/ast.rs`). The runtime evaluates the array, the index, and
+the value, and stores the value into the array slot. As with reads,
+an out-of-range or wrong-typed index is a runtime error, not a
+compile-time one.
 
 ---
 
@@ -142,17 +121,10 @@ for elem_name in array_expr {
 }
 ```
 
-Covered in detail in [chapter 07 §7.3](./07-control-flow.md).
-Recap relevant for array users:
-
-- `array_expr` is type-checked as an array; the iteration variable
-  inherits the element type.
-- The iteration variable *leaks into the enclosing scope* (chapter
-  06 §6.5). Wrap the loop in an extra block if you want the
-  binding tightly scoped.
-- There is no `break` or `continue`. Use `return` to exit early.
-
-Examples:
+`for-in` has **no parentheses** around the header (`sol/src/parser.rs`).
+The runtime expects `array_expr` to evaluate to an array and binds
+`elem_name` to each element in order (`sol/src/vm.rs`). There is no
+`break` or `continue`; use `return` to exit a function early.
 
 ```sol
 let xs: []int = [10, 20, 30];
@@ -163,7 +135,7 @@ for item in xs {
 ```
 
 ```sol
-let people: []Person = [...];
+let people: []Person = [];
 for p in people {
     if (p.active) {
         print(p.name);
@@ -175,87 +147,81 @@ for p in people {
 
 ## 11.6 Arrays of structs
 
-Arrays may hold struct values. Construction uses the obvious form:
+Arrays may hold struct values:
 
 ```sol
-struct Point { x: int, y: int }
+struct Point { x: int; y: int; }
 
-let arr: []Point = [
-    Point { x: 1, y: 2 },
-    Point { x: 3, y: 4 },
-];
+workflow "demo" {
+    let arr: []Point = [
+        Point { x: 1, y: 2 },
+        Point { x: 3, y: 4 }
+    ];
 
-let total: int = arr[0].x + arr[0].y + arr[1].x + arr[1].y;
+    let total: int = arr[0].x + arr[0].y + arr[1].x + arr[1].y;
+}
 ```
 
-Demonstrated by `test_array.sol::test_array_of_struct`.
-
 Field access chains through index access naturally: `arr[i].field`.
+Note the struct fields are declared with **semicolons**
+(`x: int; y: int;`) while the struct-literal and array-literal
+elements are separated by **commas**.
 
 ---
 
-## 11.7 What arrays do not have
+## 11.7 Length and what arrays do not have
 
 | Feature | Status |
 |---|---|
-| `.length` | Not supported. Field access requires the LHS to be a struct (`analyzer.rs:409–414`). Maintain a counter alongside the array, or get the length from an `ext function` |
-| `.push(x)` / `.pop()` | No mutating methods exist; no method syntax in the language at all |
+| `len(arr)` | Supported. The `len` builtin returns the element count as an int (`sol/src/vm.rs`) |
+| `.length` field | Not supported; use `len(arr)` |
+| `.push(x)` / `.pop()` | No methods; the language has no method-call syntax |
 | Slicing (`arr[1:3]`) | Not supported |
 | Repeat literal (`[0; 10]`) | Not supported |
-| Concatenation (`arr1 + arr2`) | Not supported; `+` requires `int` or `float` operands |
-| Comparison (`arr1 == arr2`) | Parser accepts; runtime not implemented; treat as `Uncertain` |
-| Negative indexing | Not supported semantically; behavior is undefined |
-| Iterator-from-range (`for i in 0..n`) | No range syntax exists; use `while` with a counter |
+| Concatenation (`arr1 + arr2`) | Not supported; `+` is defined on numbers and on two strings |
+| Comparison (`arr1 == arr2`) | Not part of the documented value operations; do not rely on it |
+| Negative indexing | Not supported; a negative index fails the runtime bounds check |
+| Range iteration (`for i in 0..n`) | No range syntax; use a `while` loop with a counter |
 
-If you need any of these, the convention is to define an
-`ext function` that the host implements.
+If you need richer array behavior, a host can register native
+functions that the workflow calls.
 
 ---
 
 ## 11.8 Runtime layout
 
-Arrays live on the runtime heap as `HeapObject::Array(Vec<u64>)`
-(`vm.rs:7–11`). Each `u64` slot is either a primitive value
-(int / float / bool / char) or a heap index pointing to a string
-or composite. Stack values for array-typed variables carry the
-heap index of the array object.
-
-This means:
-
-- Passing an array to a function passes the heap reference, not a
-  copy. Mutation through one binding is visible through the other.
-  (*Uncertain* — confirmed indirectly by the heap-index model;
-  to be cross-checked against `bytecode.rs` in commit 4.)
-- Two array literals always allocate distinct heap entries, so they
-  are never reference-equal.
-- The array's slot vector is heap-resident; iteration via `for-in`
-  reads slots in order.
+At runtime an array is `Value::Array(Vec<Value>)` (`sol/src/value.rs`).
+Each element is itself a full `Value`, so arrays can nest arrays,
+hold structs, hold enums, and so on. The `len` builtin reads the
+vector length; the `Index` instruction reads or bounds-checks a
+single slot; `for-in` walks the vector in order.
 
 ---
 
-## 11.9 Common diagnostics
+## 11.9 Error model for arrays
 
-| Diagnostic | Cause | Fixture |
-|---|---|---|
-| `only integers can be used to specify an array size` | `[N]T` with non-integer N | n/a |
-| `expected `]` after array size` | Missing `]` in array type | n/a |
-| `expected `]` to close an array initializer` | Missing `]` in array literal | n/a |
-| `array in which for loop is iterating over must have the known type `Array`` | Iterable isn't an array | n/a |
-| `Type Error: Array index must be an integer or float` | Bad index type | n/a |
-| `Type Error: Cannot index into a non-array type` | `[ ]` on a non-array | n/a |
+Array errors are runtime string errors, surfaced as a
+`Failed(string)` step result. There are no compile-time array
+diagnostics and no error codes. Representative runtime messages:
 
-Full entries in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
+| Cause | Runtime message |
+|---|---|
+| Index out of range | `index N out of bounds` |
+| Index on a non-array value | `cannot index <value> with <index>` |
+| Non-int index | `cannot index <value> with <index>` |
+
+The visual editor may flag some array-shape problems before runtime
+through its graph checks (`src/graph/validate.ts`), but those are
+editor-side hints, not compiler output.
 
 ---
 
 ## 11.10 Sources cited in this chapter
 
-- `parser.rs:210–225` — array type parser
-- `parser.rs:618–623` — index access (postfix)
-- `parser.rs:726–739` — array literal parser
-- `analyzer.rs:201–217` — `for-in` type rule
-- `analyzer.rs:455–466` — index access type rule
-- `analyzer.rs:500` — `ExprArrayInit` is `todo!()` fallthrough
-- `vm.rs:7–11` — heap object layout
-- Fixtures: `test_array.sol`, `test_control.sol` (empty / single /
-  nested for-in)
+- `sol/src/ast.rs`: `Type::Array`, `Expr::Array`, `Expr::Index`,
+  `Target::Index`, `Stmt::For`
+- `sol/src/parser.rs`: array type (`parse_type`), array literal,
+  index access, `for-in` header
+- `sol/src/vm.rs`: the `Index` instruction (bounds check), `for-in`
+  execution, the `len` builtin
+- `sol/src/value.rs`: `Value::Array(Vec<Value>)`

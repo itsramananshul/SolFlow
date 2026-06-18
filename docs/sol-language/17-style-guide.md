@@ -1,13 +1,12 @@
 # 17 — Style Guide
 
-> **Status:** Substantive (commit 4). Recommendations derived from
-> the positive-fixture corpus and adjusted for clarity. The rules
-> here are advisory; anything the compiler enforces lives in
-> chapters 02 – 14.
+> **Status:** Substantive. Recommendations based on the canonical
+> syntax of the `openprem-sol-v2` crate (`sol/src/*`). The rules here
+> are advisory; the hard syntactic rules live in chapter 03 and in
+> [`SPEC.md`](./SPEC.md).
 
-A SOL program reads best when it follows a small set of
-conventions. This chapter documents them as recommendations, then
-adds a short list of anti-patterns to avoid.
+A SOL program reads best when it follows a small set of conventions.
+This chapter documents them, then lists anti-patterns to avoid.
 
 ---
 
@@ -16,85 +15,83 @@ adds a short list of anti-patterns to avoid.
 | Kind | Convention | Example |
 |---|---|---|
 | Variable (`let`) | `snake_case` | `order_id`, `total_amount` |
-| Function | `snake_case` | `verify_capacity`, `print_person` |
+| Function | `snake_case` | `verify_capacity`, `describe` |
 | Function parameter | `snake_case` | `name`, `request_id` |
-| Struct *type* name | `PascalCase` | `Point`, `Person`, `ProcessNode` |
-| Struct *field* | `snake_case` | `service_name`, `is_active` |
-| Enum *type* name | `PascalCase` | `AppHealth`, `Status` |
-| Enum *variant* | `PascalCase` | `Stable`, `Overloaded`, `Active` |
-| Entry function | `start` | (fixed convention) |
+| Struct type name | `PascalCase` | `Point`, `Person`, `ProcessNode` |
+| Struct field | `snake_case` | `service_name`, `is_active` |
+| Enum type name | `PascalCase` | `AppHealth`, `Status` |
+| Enum variant | `PascalCase` | `Stable`, `Throttled`, `Active` |
+| Workflow name | `kebab-case` string | `"check-stock"`, `"emit-events"` |
 
-Justification: the corpus uses `snake_case` for values and
-`PascalCase` for types. Following the same convention everywhere
-keeps the visual distinction between *the data* and *the shape of
-the data*.
+Use `snake_case` for values and `PascalCase` for types. This keeps a
+visual distinction between the data and the shape of the data.
+Workflow names are string literals; a kebab-case string reads well as
+a workflow identifier.
 
-### Avoid leading underscore in identifiers
+### Make enum variant first characters distinct
 
-The lexer consumes `_` as trivia outside of identifier-continuation
-positions (chapter 03 §3.1). A leading underscore (`_x`) is
-*silently eaten* — the identifier becomes `x`. Don't write
-identifiers like `_internal`. Use `internal` instead.
-
-### Avoid first-character collisions in enum variants
-
-Until T9002 is fixed in the compiler (chapter 10 §10.5), two
-variants of the same enum that share a first character will
-collide at runtime. Pick first characters carefully:
+The canonical bytecode dispatches each enum variant by `(first_char
+as i128) % 10`. Two variants of the same enum whose first characters
+share a mod-10 residue compare equal at runtime, even though the
+by-name editor simulator runs them correctly. The editor flags this
+as the `enum-first-char-collision` warning (`src/graph/validate.ts`).
+Pick first characters that do not collide:
 
 ```sol
-enum Status { Active, Inactive }      # A and I — OK
-enum Status { Active, Aborted }       # both A — BAD (collides at runtime)
+enum Status { Active; Inactive; }     # A and I differ — OK
+enum Status { Active; Aborted; }      # both 'A' — collide at runtime
 ```
 
-If you must use multiple variants with the same first character,
-prefix them to disambiguate: `Active`, `Disabled` instead of
-`Active`, `Aborted`.
+If two states would naturally start with the same character, rename
+one so the first characters differ: `Active`, `Disabled` instead of
+`Active`, `Aborted`. As a quick check, distinct first letters whose
+character codes do not share a remainder mod 10 are safe.
 
 ---
 
 ## 17.2 File layout
 
-A `.sol` file reads cleanest with this top-to-bottom order:
+A `.sol` file reads cleanest in this top-to-bottom order:
 
-1. `import` statements (today they're inert — chapter 12 §12.3 —
-   but they advertise dependencies)
-2. `ext function` declarations — these are the file's contract
-   with the outside world
-3. `enum` declarations
-4. `struct` declarations (leaf types first, composites later)
-5. Helper functions — in dependency order or alphabetical
-6. `start` function at the bottom
+1. `import` statements (they advertise the modules a workflow calls
+   into; chapter 12)
+2. `enum` declarations
+3. `struct` declarations (leaf types first, composites later)
+4. Helper functions, in dependency order or alphabetical
+5. The `workflow "name" { ... }` block at the bottom
 
-Why this order: a reader's first questions are usually "what does
-this file *need*?" (imports + ext) and "what does it *produce*?"
-(start). Putting imports first and `start` last keeps the answer
-to both questions visible without scrolling.
+The workflow is the executable entry point, so keeping it last lets a
+reader scan the supporting types and helpers first, then read the
+orchestration that ties them together.
 
 ---
 
 ## 17.3 Indentation and braces
 
-- **Four-space indentation.** Used uniformly in the corpus.
-- **Opening brace on the same line** as the construct that opens
-  it:
+- **Four-space indentation.** This matches the canonical formatter
+  (`sol/src/format.rs`).
+- **Opening brace on the same line** as the construct that opens it:
   ```sol
-  fn start() -> int {
-      ...
+  fn double(x: int) <- int {
+      return x * 2;
   }
   ```
-- **Closing brace on its own line**, at the indentation level of
-  the construct that opened it.
+- **Closing brace on its own line**, at the indentation of the
+  construct that opened it.
 
-The compiler doesn't care about whitespace; pick a style and
-apply it consistently.
+The lexer treats whitespace as trivia, so the compiler does not care
+about layout; pick a style and apply it consistently. Running the
+formatter normalizes layout (and drops comments, since the AST does
+not carry them).
 
 ---
 
 ## 17.4 Statements
 
 - One statement per line.
-- One `;` per line; no `;;`.
+- Annotate every `let` with its type. An omitted annotation defaults
+  to `bool` in the AST (chapter 06), which misleads tools that read
+  the AST even though it does not change runtime behavior.
 - Each `let` introduces exactly one binding.
 - Prefer named intermediate `let`s over long inline expressions:
   ```sol
@@ -102,161 +99,189 @@ apply it consistently.
   let result: int = (compute(a, b) + compute(c, d)) * scale;
 
   # more readable
-  let left:   int = compute(a, b);
-  let right:  int = compute(c, d);
-  let total:  int = left + right;
+  let left: int   = compute(a, b);
+  let right: int  = compute(c, d);
+  let total: int  = left + right;
   let result: int = total * scale;
   ```
-- Chained assignment (`a = b = c = 42;`) is parser-accepted
-  (chapter 08 §8.2) but rarely the clearest way to write the
-  intent. Prefer three statements.
 
 ---
 
 ## 17.5 Control flow
 
-- Use early `return` to flatten nesting:
+- Parenthesize `if` and `while` conditions; this is required by the
+  grammar:
   ```sol
-  fn clamp(x: int) -> int {
-      if x < 0 { return 0; }
-      if x > 100 { return 100; }
+  fn clamp(x: int) <- int {
+      if (x < 0) { return 0; }
+      if (x > 100) { return 100; }
       return x;
   }
   ```
-- Wrap `if`/`while`/`for-in` body blocks in `{ … }` even when the
-  body is a single statement. The parser admits the braces only
-  via `block()`, so the braces are mandatory anyway (chapter 07).
-- When you must short-circuit (the language doesn't, chapter 08
-  §8.3), express it as nested `if`:
+- `for ... in ...` takes no parentheses:
   ```sol
-  if denominator != 0 {
-      if numerator / denominator > threshold { ... }
+  for item in items {
+      print(item);
   }
   ```
-- Don't rely on `for-in`'s iteration variable surviving the loop
-  (it does today — chapter 06 §6.5 — but readers won't expect it).
-  Wrap the loop in an extra block if you need the binding
-  tightly scoped.
+- Use early `return` to flatten nesting, as in `clamp` above.
+- Wrap every `if` / `while` / `for` body in `{ ... }`. The braces are
+  mandatory: the parser only admits a body through a block (chapter
+  07).
 
 ---
 
 ## 17.6 Structs and enums
 
+- Struct fields and enum variants are semicolon terminated:
+  ```sol
+  struct Order {
+      id: int;
+      amount: float;
+      status: OrderStatus;
+  }
+
+  enum OrderStatus {
+      New;
+      Approved;
+      Rejected;
+  }
+  ```
+- Struct-literal fields are comma separated and matched by name:
+  ```sol
+  let o: Order = Order { id: 42, amount: 0.0, status: OrderStatus::New };
+  ```
 - Keep field counts modest. Six fields or so is a soft limit; past
   that, split into nested types.
-- Provide every field in every struct literal. The compiler does
-  not currently warn about missing fields (chapter 09 §9.2), but
-  the omitted slots become zero at runtime, which is almost never
-  what you want.
-- Use enums for *tagged comparison*, not for arithmetic encoding.
-  Until T9002 is fixed, enum values at runtime are a hash of the
-  variant name, not the iota; programs that depend on enum
-  values being small consecutive integers will break.
+- Provide every field in every struct literal. There is no type
+  checker to warn about a missing field, and an unset slot is almost
+  never what you want.
+- Use enums for tagged comparison. Keep variant first characters
+  distinct (§17.1) so runtime comparisons behave as written.
 
 ---
 
-## 17.7 External functions
+## 17.7 Arrays
 
-Group every `ext function` at the top of the file, immediately
-after `import`s. Treat the block as the file's contract with the
-host runtime. A reader should be able to skim the top of the file
-and know exactly what external dependencies a session has.
-
-Use a clear convention for naming `ext function` parameters —
-they appear in the host's API documentation and in error messages
-for argument-count / argument-type mismatches. Vague names like
-`a`, `b` lose half their value here; prefer `query`, `user_id`,
-`payload`.
+- Array types use the prefix form `[]T`:
+  ```sol
+  let nums: []int = [3, 7, 11];
+  let grid: [][]float = [[1.0, 2.0], [3.0, 4.0]];
+  ```
+- There is no sized-array form. Do not write a postfix size.
 
 ---
 
-## 17.8 Comments
+## 17.8 External Actions
 
-The corpus uses comments sparingly. Write a comment only when the
-*why* is non-obvious:
-
-- A non-obvious business rule (e.g. "threshold is 1000 because
-  audit policy demands manual review above $1000").
-- A workaround for a known compiler quirk (e.g. "we use two
-  separate `print` calls because the bytecode only emits the
-  first arg — see T9003").
-- A reference to an external system or contract.
-
-Don't write comments that restate the code. `# add one to count`
-above `count = count + 1;` adds nothing.
-
----
-
-## 17.9 Anti-patterns to avoid
-
-| Anti-pattern | Why it's bad | Fix |
-|---|---|---|
-| `export fn foo() { … }` | `export` isn't a keyword — fails at parse (E0003) | Drop `export`; every top-level `fn` is host-visible |
-| Identifier starting with `_` | Lexer eats the leading `_` as trivia | Don't lead with `_` |
-| Numeric digit separator (`1_000`) | Lexer eats the `_` as trivia; you get two integers | Write integers without separators |
-| `if cond { let x: int = …; } print(x);` | `x` is out of scope here | Move the `let` up |
-| `print("count is", count)` | Only the first argument is emitted (T9003) | Use two `print` statements |
-| `1 / 0` | Integer division by zero panics at runtime (E2001) | Check the denominator |
-| Two enum variants starting with the same letter | Collide at runtime per T9002 | Make first characters distinct |
-| String concatenation with `+` | Rejected by the analyzer (E1006) | Use an `ext function` for now |
-| Using `let x: int;` with no initializer | Uninitialized; reads as `0` | Always initialize |
-| `=` inside a condition without parens (`if x = 5 { … }`) | Parses as assignment (right-recursive `=`), not comparison | Use `==` for comparison |
-| `for i = 0; i < 10; i = i + 1 { … }` | C-style `for` doesn't exist | Use `while i < 10 { … i = i + 1; }` |
-
----
-
-## 17.10 A short canonical example to model on
+Workflows reach the outside world through capability calls. Two forms
+exist:
 
 ```sol
-ext fn lookup_order(id: int) -> str;
+import inventory;
+
+workflow "reserve" {
+    # capability-string form
+    let level: int = call("warehouse.get_stock", { sku: "A-100" });
+
+    # imported-module form
+    let ok: bool = inventory.reserve({ sku: "A-100", qty: 2 });
+}
+```
+
+- Each form carries a single params value, commonly a struct literal.
+- Place `import` statements at the top of the file so a reader can
+  skim the workflow's external dependencies at a glance.
+- Name params clearly inside the struct (`sku`, `qty`, `user_id`)
+  rather than `a`, `b`; the host sees these names when resolving the
+  capability.
+
+---
+
+## 17.9 Comments
+
+Comments use `#` to end of line. There are no block comments. Write a
+comment only when the why is non-obvious:
+
+- A non-obvious business rule (for example, "threshold is 1000 because
+  audit policy demands manual review above $1000").
+- A reference to an external system or capability contract.
+
+Do not restate the code. `# add one to count` above `count = count +
+1;` adds nothing. Remember the formatter drops comments on a round
+trip, so keep load-bearing intent in code where possible.
+
+---
+
+## 17.10 Anti-patterns to avoid
+
+| Anti-pattern | Why it is wrong | Fix |
+|---|---|---|
+| `fn f(x: int) -> int { }` | `->` is not a token; it lexes as `Minus` then `Gt` and fails to parse | Use the return arrow `<-` |
+| `// a comment` | `//` is not a comment; it lexes as two `Slash` tokens | Use `#` for comments |
+| `int[] nums` or `[3]int` | No postfix or sized array form exists | Use the prefix form `[]int` |
+| `function f() { }` | `function` is not a keyword | Use `fn` |
+| `let x = 5;` with no type | Annotation defaults to `bool` in the AST | Annotate: `let x: int = 5;` |
+| Two enum variants with colliding first characters | Collide under `(first_char) % 10` at runtime | Make first characters distinct |
+| `if x > 0 { }` (no parens) | `if` and `while` require parenthesized conditions | `if (x > 0) { }` |
+| `for (x in xs) { }` | `for ... in` takes no parentheses | `for x in xs { }` |
+| `1 / 0` | Division by zero is a runtime error | Check the denominator |
+| Struct fields separated by commas | Struct fields are semicolon terminated | `id: int; amount: float;` |
+| Relying on a static type checker | There is none; mismatches fail at runtime as strings | Validate values explicitly |
+
+---
+
+## 17.11 A short canonical example to model on
+
+```sol
+import inventory;
 
 enum OrderStatus {
-    New,
-    Approved,
-    Rejected,
+    New;
+    Approved;
+    Rejected;
 }
 
 struct Order {
-    id: int,
-    amount: float,
-    status: OrderStatus,
+    id: int;
+    amount: float;
+    status: OrderStatus;
 }
 
-fn process_order(id: int) -> int {
-    let raw: str = lookup_order(id);
+fn classify(amount: float) <- OrderStatus {
+    if (amount > 1000.0) {
+        return OrderStatus::Rejected;
+    }
+    return OrderStatus::Approved;
+}
+
+workflow "process-order" {
+    let raw: int = call("orders.lookup", { id: 42 });
     print("processing:");
     print(raw);
 
     let order: Order = Order {
-        id: id,
-        amount: 0.0,
+        id: 42,
+        amount: 250.0,
         status: OrderStatus::New,
     };
 
-    if order.amount > 1000.0 {
-        order.status = OrderStatus::Rejected;
-        return 0;
-    }
-    order.status = OrderStatus::Approved;
-    return 1;
-}
-
-fn start() -> int {
-    return process_order(42);
+    order.status = classify(order.amount);
+    print(order.status);
 }
 ```
 
-This file follows every recommendation above: imports first, `ext`
-second, types before functions, helper before `start`, four-space
-indent, one statement per line, one `print` argument at a time,
-named intermediate `let`s, early return.
+This file follows every recommendation: imports first, types before
+functions, a helper before the workflow, the workflow last,
+four-space indent, the `<-` return arrow, `#` comments where needed,
+prefix array types, distinct enum variant first characters, annotated
+`let`s, and a capability call for the external lookup.
 
 ---
 
-## 17.11 Sources
+## 17.12 Sources
 
-- The full positive-fixture corpus, especially `s1.sol`, `s2.sol`,
-  `jjsi.sol`, `test_*.sol`.
-- The known-bug entries T9002, T9003, T9005 in
-  [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
-- The lexical and grammar rules in chapters 03 and `GRAMMAR.md`.
+- The canonical crate: `sol/src/lexer.rs`, `sol/src/parser.rs`,
+  `sol/src/ast.rs`, `sol/src/vm.rs`, `sol/src/format.rs`.
+- The editor structural validator: `src/graph/validate.ts`.
+- The lexical and grammar rules in chapter 03 and [`SPEC.md`](./SPEC.md).

@@ -1,48 +1,52 @@
 # 05 — Functions
 
-> **Status:** Substantive (commit 2). Cross-checked against
-> `parser.rs:289–325`, `parser.rs:250–287`, `analyzer.rs:66–137`,
-> and `vm.rs:56–86`.
+> **Status:** Rewritten against the canonical `openprem-sol-v2` crate.
+> Cross-checked against `sol/src/parser.rs` (`parse_function`,
+> `parse_params`, `parse_type`), `sol/src/ast.rs` (`FunctionDecl`,
+> `Param`), `sol/src/compiler.rs` (`compile`, `compile_expr`), and
+> `sol/src/vm.rs` (`exec_builtin`, `Call`/`Return` handling).
 
-SOL has a single function kind, declared with the `fn`
-keyword. Functions are not first-class values; there is no closure
-form, no anonymous-function literal, and no method syntax. A
-program is a flat collection of declared functions plus an
-optional set of `ext fn` declarations that the host runtime
-will supply.
+SOL has a single function kind, declared with the `fn` keyword.
+Functions are not first-class values. There is no closure form, no
+anonymous function literal, no method syntax, no overloading, and no
+default parameter values. A program is a flat collection of top-level
+items: functions, structs, enums, imports, and exactly one workflow.
 
-This chapter covers declaration form, parameter and return
-semantics, the rules for calling, the forward-declaration model, the
-recursion model, and the conventional `start` entry function.
+This chapter covers the declaration form, parameter and return
+semantics, and an important compilation fact: only the workflow body is
+compiled to bytecode today. Read it carefully before relying on a
+top-level `fn`.
 
 ---
 
 ## 5.1 Declaration
 
-The full surface form is:
+The surface form is:
 
 ```sol
-fn name(p1: T1, p2: T2, …) -> R {
+fn name(p1: T1, p2: T2) <- RetType {
     # body statements
 }
 ```
 
-Parsed at `parser.rs:289–325`. Components:
+Parsed by `parse_function` in `sol/src/parser.rs`. Components:
 
-- **`fn`** keyword (`Token::Func`).
-- **`name`** — an identifier. The parser rejects anything else with:
-  > name expected after function keyword
-- **Parameter list** in `(` `)`. Zero or more `name: type` pairs,
-  comma-separated. The parser breaks on the first token after a
-  parameter that isn't a comma — a trailing comma is not supported.
-- **Optional return arrow** `-> T`. Omission means `Void`
-  (`parser.rs:315–320`).
-- **Body** — a brace-delimited block. The braces are not optional
-  for functions (`block()` insists on `{` at the top of the body
-  call; see `parser.rs:347–360`).
+- **`fn`** keyword (`Token::Fn`). The keyword is `fn`; there is no
+  `function` keyword.
+- **`name`** is an identifier. Anything else fails with a parse error
+  such as `expected identifier, got ...`.
+- **Parameter list** in `(` `)`. Zero or more `name: Type` pairs,
+  comma separated. Every parameter requires a type annotation; the
+  parser expects `name`, then `:`, then a type. A trailing comma after
+  the last parameter is tolerated by the loop but is not idiomatic.
+- **Optional return arrow** `<- RetType`. The arrow token is `<-`
+  (`Token::Arrow`). There is no `->`; writing `->` lexes as two tokens
+  (`-` then `>`) and fails to parse. The whole `<- RetType` clause is
+  optional. Omit it when the function has no declared return type.
+- **Body** is a brace delimited block. The braces are required.
 
 ```sol
-fn add(a: int, b: int) -> int {
+fn add(a: int, b: int) <- int {
     return a + b;
 }
 
@@ -53,250 +57,188 @@ fn announce() {
 fn noop() {}
 ```
 
-All three above are valid; `noop` returns `Void` and has an empty
-body block.
+All three are valid. `announce` and `noop` omit the `<- RetType` clause,
+so they have no declared return type. `noop` has an empty body.
 
-### Parameter rules
+### Types in signatures
 
-- Every parameter requires a type annotation (`parser.rs:300–308`).
-- The analyzer adds each parameter to the function's *outer body
-  scope* before walking the body (`analyzer.rs:114–116`). Parameters
-  therefore behave exactly like local `let`s in the body's
-  outermost block.
-- Duplicate parameter names within the same function trip the
-  `add_entry` duplicate check (`analyzer.rs:50–53`):
-  ```
-  error: redefinition of `<name>`
-  ```
+The valid type forms (from `parse_type`) are:
 
-### Return-type rules
+- The built in scalar types `bool`, `int`, `float`, `char`, `str`.
+- Arrays, written PREFIX as `[]T`, for example `[]int` or `[][]float`.
+- Any other identifier, treated as a named type (a struct or enum name).
 
-- `-> R` is parsed verbatim into `Ast::DeclFunc.ret`.
-- **The analyzer does not currently verify that the function's
-  body returns a value of type `R`.** The relevant check is
-  commented out at `analyzer.rs:120–132`. A function declared
-  `-> int` whose body never returns, or returns a `str`, will
-  compile and run.
-- **The runtime always pushes *something* for the caller, even
-  for a "missing" return.** The emitter appends `Inst::Ret` at
-  the end of every function body (`bytecode.rs:414`), and `Ret`
-  unconditionally pushes `0` onto the caller's stack
-  (`vm.rs:283–293` — see also T9011). So a function declared
-  `-> int` whose body has no `return` returns `0` to the caller,
-  not a runtime panic and not a type error.
-- This is *deceptively reassuring*. The program "works"; the
-  declared return type is irrelevant; the caller sees `0`. If the
-  declared type were `str` instead of `int`, the caller would
-  still see `0` — but interpret the `0` as a heap index into an
-  invalid heap slot. The accidental safety of the int case does
-  not extend to other types.
-- Plan accordingly: treat return-type validation as the author's
-  responsibility today. The audit doc records this as a high-impact
-  IDE-UX gap (`SOL_CRATE_IDE_READINESS_PLAN.md` §1, blocker #18).
-
-### Empty function body
-
-```sol
-fn noop() {}
-fn placeholder_a(name: str) {}     # gemini_long.sol pattern
-fn placeholder_b(name: str) -> int { }
-```
-
-All three forms are parser-accepted. The first two are `Void`-
-returning by omission of `-> T`. The third declares `-> int` but
-returns `0` to the caller (see "Return-type rules" above — `Ret`
-push-`0` makes this look like the program "returns 0").
-
-The analyzer's `Ast::Block` handler short-circuits on an empty
-body (`analyzer.rs:150–151`): it returns `Type::Void` without
-opening a new scope. The bytecode emitter walks zero statements
-and appends the standard `Inst::Ret`. Calling the function pushes
-the frame, immediately pops it, and pushes `0`.
-
-Useful as a stub. Don't rely on the declared return type if the
-body doesn't actually return.
+There is no compile time validation that a named type actually exists,
+and no validation that parameters or returns are used consistently. The
+return type is recorded on the AST and is otherwise inert: nothing
+checks that the body returns a value of that type.
 
 ### What you cannot put in a function declaration
 
 | Construct | Reason |
 |---|---|
-| `function` (instead of `fn`) | The keyword is `fn` only |
-| Generic parameters (`fn f<T>(…)`) | The lexer has no `<` token in declarator position; `<` is the binary less-than operator |
-| Default parameter values | The grammar requires `name: type`, with no `=` permitted |
-| `export fn` | No `export` keyword exists; treat any source that uses it as broken |
-| `pub` / visibility modifiers | None exist; all top-level functions are visible to the analyzer's global table |
+| `function name(...)` | The keyword is `fn` only |
+| `fn name(...) -> T` | The return arrow is `<-`, not `->` |
+| Generic parameters (`fn f[T](...)`) | The grammar has no type parameter form |
+| Default parameter values (`fn f(x: int = 1)`) | A parameter is exactly `name: Type` |
+| `pub` / `export` / visibility modifiers | No such keywords exist |
 
 ---
 
-## 5.2 Calling
+## 5.2 How functions are compiled today
 
-A call is parsed in primary expression position
-(`parser.rs:668–681`):
+This is the single most important fact in this chapter.
+
+The compiler (`sol/src/compiler.rs`, `Compiler::compile`) walks the
+top-level items, but it only **records** function names in a set. It
+then finds the one `workflow` item and compiles ONLY the workflow
+body into a bytecode `Chunk`. The bodies of top-level `fn`
+declarations are never emitted.
 
 ```sol
-add(1, 2)
-announce()
-do_thing(some_var, helper(x))
+# This `fn` parses, and its NAME is registered, but its body is
+# never compiled into the chunk.
+fn helper(x: int) <- int {
+    return x + 1;
+}
+
+workflow "demo" {
+    print("hello");
+}
 ```
 
-The arguments are comma-separated expressions. Empty argument
-lists are fine. A trailing comma is not supported.
+### Calling a function by name
 
-### Argument evaluation order
-
-The bytecode emits each argument expression in source order, then
-emits the call instruction. The VM `Call` op pops the arguments off
-the stack into the new call frame (`vm.rs:56–67`). In practice this
-means **left-to-right evaluation** — but the language spec does
-**not** today guarantee evaluation order; treat it as
-implementation-defined unless a fixture asserts otherwise.
-
-### Argument count and type checking
-
-`analyzer.rs:391–404`:
-
-- The number of arguments must equal the number of declared
-  parameters. Otherwise:
-  > function `<name>` expects N arguments but received M
-- Each argument's type must match the corresponding parameter's
-  type per `type_eq` (chapter 04 §4.6). Otherwise:
-  > function `<name>` expected `<T>` in position `<i>` but was passed `<S>`
-
-There is **no overloading**. There is **no implicit conversion**.
-
-### Calling unknown functions
-
-If the name does not resolve to a function symbol the analyzer
-prints:
+A call expression `name(args)` compiles to a `Call` instruction. At
+runtime (`sol/src/vm.rs`), a `Call` first looks the name up in the
+host registered native functions; if none matches, it falls through to
+`exec_builtin`. The only names `exec_builtin` recognises are the VM
+builtins `print`, `len`, `to_str`, and `type_name`. Any other name
+produces a runtime string error:
 
 ```
-attempting to make a function call on an undefined name `<name>`
+function 'helper' not found
 ```
 
-If the name resolves but isn't a function symbol:
+So in the canonical crate, a plain top-level `fn` is effectively
+non-callable from a workflow unless the host has registered a native
+function under the same name with `register_native`. Treat top-level
+`fn` declarations as signatures that the host runtime may bind, not as
+locally executable code.
 
-```
-attempting to make a function call on a non-function type: `<name>`
-```
+### The callable surface that actually works
 
-(`analyzer.rs:376–388`).
+From inside a workflow body you can call:
+
+- **VM builtins**: `print(...)`, `len(...)`, `to_str(...)`,
+  `type_name(...)` (see chapter 13).
+- **Host native functions** the embedding registered via
+  `register_native`.
+- **External Actions** through the capability forms in §5.4, which
+  suspend the VM as a `RemoteCall` rather than running inline.
 
 ---
 
 ## 5.3 Returning
 
-Two forms (`parser.rs:475–486`):
+Two forms (`parse_stmt` in `sol/src/parser.rs`):
 
 ```sol
 return;
-return expr;
+return value;
 ```
 
-A bare `return;` produces `Type::Void` at the analyzer level. A
-`return expr;` walks `expr` to determine its type, but — per §5.1 —
-the analyzer does not compare that against the declared return type
-today.
+`return;` parses as `Stmt::Return(None)`. `return value;` parses as
+`Stmt::Return(Some(value))`. The trailing `;` is consumed when present.
 
-Returns are only legal inside function bodies. The analyzer tracks a
-`can_return` flag, set to `true` on entry into `DeclFunc.body` and
-restored on exit (`analyzer.rs:118–133`). A `return` outside any
-function body (e.g. at the top level) trips:
+At the bytecode level (`compile_stmt`):
 
-```
-illegal return statement
-```
+- `return value;` compiles the value expression, then a `Return`
+  instruction.
+- `return;` pushes `Unit`, then a `Return` instruction.
 
-Returns are legal inside `if` / `while` / `for-in` bodies; they
-exit the surrounding function immediately. Code after a `return` in
-the same block is unreachable; the analyzer does not warn about
-unreachable code today.
+In the VM, `Return` pops the top of the stack (or `Unit` if the stack
+is empty) and reports it as `Completed(value)`. There is no compile
+time check that a function returns a value of any declared type, and no
+unreachable code analysis. A `return` simply ends execution of the
+running chunk with that value.
+
+### Falling off the end
+
+A workflow (the only compiled body) that runs off the end without a
+`return` does not error. When the program counter passes the final
+instruction, the VM marks itself completed and reports
+`Completed(top_of_stack)`, or `Completed(Unit)` if the stack is empty.
+The compiler appends a `Halt` instruction at the end of the workflow
+body, and `Halt` likewise completes with the top of stack or `Unit`.
+
+So the practical rule is: the result of a run is whatever value happens
+to be on top of the stack when execution ends, or `Unit`. To make the
+result explicit, end with `return value;`.
 
 ---
 
-## 5.4 External functions (`ext fn`)
+## 5.4 Calling external Actions (capabilities)
+
+A workflow reaches the outside world by issuing a capability call. Each
+of these compiles to a VM `RemoteCall`: the VM suspends and hands the
+host a capability string plus one params value, and the host resumes it
+with `resolve_remote_call`.
+
+There are three surface forms (see `compile_expr` in
+`sol/src/compiler.rs`):
 
 ```sol
-ext fn fetch_orders(query: str) -> str;
+# 1. The `call` builtin: a capability string plus one params value.
+call("discord.send", { channel: "ops", text: "hi" });
+
+# 2. An imported module action: `module.func(args)`.
+#    Requires `import module;` at the top level.
+discord.send({ channel: "ops", text: "hi" });
+
+# 3. A namespace / RPC call: `module::rpc(args)`.
+discord::send({ channel: "ops", text: "hi" });
 ```
 
-Parsed at `parser.rs:250–287`. Differences from a normal `fn`:
+- The `call("cap", params)` form carries the capability string `cap`
+  and a single params value (commonly a struct literal `{ ... }`).
+- The `module.func(args)` form only becomes a remote call when
+  `module` was imported; the capability string is `"module.func"`.
+- The `module::rpc(args)` form produces the capability string
+  `"module::rpc"` and passes a single params value.
 
-- The keyword `ext` precedes `fn`.
-- **No body**; the declaration ends with `;`.
-- Otherwise the parameter and return-type syntax is identical.
-
-At the analyzer level (`analyzer.rs:84–89`), `ext fn`
-declarations are registered exactly like regular ones: a function
-symbol is added to the global scope with the declared signature.
-The call-site type rules (§5.2) are identical for both kinds. A
-caller cannot — and does not need to — distinguish whether the
-target is local or external.
-
-The host-runtime wiring that maps an `ext fn` name to a real
-implementation is documented in
-[chapter 12](./12-imports-and-controllers.md).
+Capability analysis (`sol/src/analysis.rs`) collects exactly these
+strings; see chapter 12 for how a host resolves them.
 
 ---
 
-## 5.5 Forward declarations and recursion
+## 5.5 Recursion and ordering
 
-The analyzer runs in two passes (`analyzer.rs:80–98`):
-
-1. **Pass 1.** Walks every top-level `DeclFunc` and `DeclExtFunc`
-   and registers its signature in the global type table.
-2. **Pass 2.** Walks each declaration's body and type-checks it.
-
-Because every signature is registered before any body is checked,
-**every order of declarations works**:
-
-- Forward declaration: function `a` defined before function `b` can
-  call `b`. Demonstrated by `fwdecl.sol`.
-- Self-recursion: a function may call itself directly. Demonstrated
-  by `test_func.sol`.
-- Mutual recursion: two functions may call each other in either
-  order. Verified by reading the analyzer's two-pass design; no
-  fixture exercises this pattern, so it is *Confirmed* by source
-  but lacks a dedicated test case.
-
-### Duplicate function names
-
-`analyzer.rs:50–53` rejects a duplicate insert into the current
-scope. Two functions sharing a name at the top level produce:
-
-```
-error: redefinition of `<name>`
-```
-
-Demonstrated by `error_semantic3.sol`.
+Because only the workflow body is compiled and top-level `fn` bodies
+are not emitted, there is no in language recursion to describe in the
+canonical crate. Declaration order among top-level items does not affect
+compilation: the compiler scans all items first to record imports and
+function names, then compiles the single workflow. A workflow can be
+declared before or after the functions and imports it references.
 
 ---
 
-## 5.6 The conventional entry function: `start`
+## 5.6 The workflow entry point
 
-A SOL session is loaded by the host runtime, compiled to bytecode,
-and then a single function is invoked to begin execution. By
-convention that function is named `start` and is the only function
-whose return value the host typically inspects.
-
-There is no parser-level rule that mandates `start` (`parser.rs`
-does not special-case the name), but the host runtime that loads
-the session selects an entry function by name; the conventional
-name observed in every positive fixture is `start`. Treat `start`
-as a strong convention.
-
-A typical entry function shape:
+A SOL program has exactly one `workflow`, and it is the unit that runs.
+Its name is a string literal:
 
 ```sol
-fn start() -> int {
-    # body
+workflow "process_order" {
+    # body statements run top to bottom
     return 0;
 }
 ```
 
-A few fixtures (`retest.sol`, `s1.sol`) declare `start` without a
-trailing `return`; this compiles today because the analyzer doesn't
-enforce a return path, but the resulting top-of-stack value is
-undefined. Idiomatic SOL ends `start` with an explicit `return 0;`.
+If a program contains no `workflow`, compilation fails with the string
+error `no workflow found in program` (surfaced through the editor bridge
+as `E_NO_WORKFLOW`). The workflow body, not a function named `start`, is
+the entry point.
 
 ---
 
@@ -304,28 +246,22 @@ undefined. Idiomatic SOL ends `start` with an explicit `return 0;`.
 
 | Pattern | What happens |
 |---|---|
-| `fn start { … }` | Parse error: parser expects `(` after the function name |
-| `fn start() -> { … }` | Parse error: `parse_type` cannot parse `{`; the message is "`LCurly` is not valid in a type specifier" |
-| Calling `print` with the wrong type | None; `print` accepts any arg types (chapter 13) |
-| Recursive function with no base case | Type-checks fine; stack-overflows at runtime (uncaught) |
-| `ext fn f();` without `-> T` | Returns `Void`; calls of `f()` in an expression position will compile but their value is unusable |
-| Calling a struct as a function (`Point(1, 2)`) | The name resolves to a struct symbol, not a function. The analyzer prints:<br>`attempting to make a function call on a non-function type: 'Point'` |
+| `fn add(a: int, b: int) -> int { ... }` | Parse error: the arrow is `<-`, not `->` |
+| `function add(...) { ... }` | Parse error: the keyword is `fn` |
+| `fn start { ... }` | Parse error: `(` is required after the name |
+| Calling a top-level `fn` from a workflow | Runtime error `function '<name>' not found`, unless the host registered a native of that name |
+| Relying on a declared return type | Inert: no compile time return checking exists |
+| Expecting overloading or default params | Not supported by the grammar |
 
 ---
 
 ## 5.8 Sources cited in this chapter
 
-- `parser.rs:289–325` — function declaration
-- `parser.rs:250–287` — `ext function` declaration
-- `parser.rs:475–486` — return statement
-- `parser.rs:668–681` — function call expression
-- `parser.rs:347–360` — function body block
-- `analyzer.rs:50–53` — duplicate-name diagnostic
-- `analyzer.rs:80–98` — two-pass forward-declaration design
-- `analyzer.rs:113–137` — function body analysis
-- `analyzer.rs:120–132` — *commented-out* return-type check
-- `analyzer.rs:340–408` — call type-checking
-- `analyzer.rs:468–476` — return analysis
-- `vm.rs:56–67` — call entry and frame setup
-- Fixtures: `fwdecl.sol`, `test_func.sol`, `error_semantic3.sol`,
-  `retest.sol`, `s1.sol`, `jjsi.sol`
+- `sol/src/parser.rs` — `parse_function`, `parse_params`, `parse_type`,
+  `parse_stmt` (`return`)
+- `sol/src/ast.rs` — `FunctionDecl`, `Param`, `Type`, `Stmt::Return`
+- `sol/src/compiler.rs` — `compile` (workflow only), `compile_stmt`
+  (`Return`), `compile_expr` (`Call`, `WorkflowCall`, `NamespaceCall`)
+- `sol/src/vm.rs` — `Call` handling, `exec_builtin`, `Return`/`Halt`
+- `sol/src/analysis.rs` — capability extraction
+- `compiler-wasm/src/lib.rs` — `E_NO_WORKFLOW` for a missing workflow

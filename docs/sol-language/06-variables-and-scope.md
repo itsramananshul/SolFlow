@@ -1,426 +1,204 @@
 # 06 — Variables and Scope
 
-> **Status:** Substantive (commit 2). Cross-checked against
-> `parser.rs:326–345` (`let`), `parser.rs:584–585` (assignment
-> precedence), `analyzer.rs:37–60, 138–171, 219–240` (scope and
-> assignment handling).
+> **Status:** Rewritten against the canonical `openprem-sol-v2` crate.
+> Cross-checked against `sol/src/parser.rs` (`parse_stmt` for `let` and
+> assignment, `expr_to_target`), `sol/src/ast.rs` (`Stmt::Let`,
+> `Stmt::Assign`, `Target`), `sol/src/compiler.rs` (`get_or_add_local`,
+> `find_local`, target handling), and `sol/src/vm.rs`
+> (`LoadLocal`/`StoreLocal`/`LoadName`).
 
-SOL has one kind of variable: a typed binding introduced by `let`,
-written to by assignment, and resolved by name from the enclosing
-lexical scope. There is no `const` keyword; there is no
-distinction between mutable and immutable bindings; every `let` is
-freely assignable.
+SOL has one kind of variable: a binding introduced by `let`, written by
+assignment, and resolved by name. There is no `const` keyword and no
+mutable/immutable distinction; every `let` is freely reassignable.
 
-This chapter covers how bindings are introduced, how they are
-written to, what is visible where, what happens when a name is
-re-used in the same scope, and what happens when a name is
-referenced that doesn't exist.
+There is no type checker. A `let` records a declared type on the AST,
+but nothing validates it against the initializer. Mismatches, when they
+matter at all, surface at runtime as plain string errors.
 
 ---
 
 ## 6.1 Declaration
 
 ```sol
-let name: T;          # declaration only (parser accepts; rare in practice)
-let name: T = expr;   # declaration plus initializer
+let name: Type = value;     # declaration with type and initializer
+let name = value;           # type omitted (see the bool default below)
 ```
 
-Parsed at `parser.rs:326–345`. The initializer is **optional at the
-parser level** — the `=` token starts the initializer, and the
-parser only requires an expression if `=` is present.
+Parsed by `parse_stmt` in `sol/src/parser.rs`. An initializer is
+**required**: the parser reads `let`, then the name, then an optional
+`: Type`, then expects `=` and an expression. The trailing `;` is
+consumed when present.
 
-**Significant subtlety:** the analyzer does not walk the
-initializer expression (`analyzer.rs:138–141`):
+### The type annotation defaults to bool
 
-```rust
-Ast::DeclVar { name, kind, .. } => {
-    self.add_entry(name.to_owned(), Symbol::Variable { kind: Box::new(kind.clone()) });
-    Some(kind.clone())
-}
+If you omit `: Type`, the parser does not infer the type. It records
+`Type::Bool` on the `Stmt::Let` node by default:
+
+```sol
+let x = 42;     # the AST type is `bool`, even though the value is an int
 ```
 
-The `..` ignores the AST node's `value` field. Two consequences:
+The declared type is otherwise inert (no type checking happens), so this
+quirk does not change runtime behavior. But it is misleading to read.
+**Annotate the type whenever the value is not a bool** so the source
+reflects intent:
 
-1. **The declared type and the initializer's type are not checked
-   against each other.**
-   ```sol
-   let x: int = "this is a string";   # analyzer accepts
-   ```
-   The bytecode emitter is what ultimately decides whether the
-   program compiles; the analyzer does not catch the mismatch.
-2. **An undefined name *inside* an initializer is not caught at
-   the `let`.**
-   ```sol
-   let x: int = undefined_var;        # analyzer accepts the let
-   print(x);                          # x reads as 0 / garbage
-   ```
-   The bad name only surfaces if a later expression reads `x` in a
-   walked context, or if the bytecode emitter walks initializers
-   (it does, but its diagnostics are less structured).
-
-Treat both above as known holes in the analyzer; they are queued
-for fix in `SOL_CRATE_IDE_READINESS_PLAN.md` §1, blocker #18.
+```sol
+let x: int = 42;
+```
 
 ### Examples
-
-*Valid:*
 
 ```sol
 let amount: int = 100;
 let label: str = "ready";
 let p: Point = Point { x: 1, y: 2 };
+let flag = true;            # bool, annotation legitimately omitted
 ```
 
-*Parser-accepted, semantically uninitialized:*
+### What is not allowed
 
 ```sol
-let flag: bool;       # legal to parse; flag has whatever 0-bits mean as bool
+let x: int;          # parse error: `=` and an initializer are required
+let x: int = ;       # parse error: an expression must follow `=`
 ```
 
-Avoid the uninitialized form in production code.
-
-### Top-level `let` is severely broken — don't use it
-
-A `let` declaration at file scope (outside any function body) is
-parser-accepted, analyzer-accepted, and emits code that runs at
-startup before `start` is called. The codegen and runtime *do
-not* propagate the bound value into function bodies in any
-correct way.
-
-The mechanics are documented in detail in [chapter 20 §20.2](./20-implementation-notes.md)
-and tracked as `T9014` in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md#t9014--top-level-let-is-broken-reading-from-a-function-panics-at-runtime).
-The short version: each `fn` decl resets the codegen's
-local-slot counter, and the function's runtime frame pointer
-sits *above* the top-level slot, so a function-body read of the
-top-level name either panics on out-of-bounds stack access or
-silently returns whatever happens to be in the function's frame
-at that offset.
-
-**Don't write top-level `let`s** until the compiler is fixed.
-Move every binding into a function body — typically `start` or a
-helper called by `start`.
-
-```sol
-# BAD — runtime panic when start tries to return g
-let g: int = 42;
-fn start() -> int { return g; }
-
-# GOOD
-fn start() -> int {
-    let g: int = 42;
-    return g;
-}
-```
-
-No fixture in the corpus exercises the broken pattern. This
-warning exists to prevent the obvious port from another language
-that says "just declare a constant at the top".
-
-*Parse error — empty initializer:*
-
-```sol
-let x: int = ;
-```
-
-The parser sees `=`, advances, calls `expression()`, hits `;`, and
-prints:
-
-```
-not an expressionable token: Semi
-could not parse expression!
-```
-
-Fixture: `error_parse1.sol`.
-
-*Parse error — missing semicolon:*
-
-```sol
-let x: int = 5
-return x;
-```
-
-The parser parses the expression `5`, then expects `;`:
-
-```
-expected semicolon at the end of a variable declaration
-```
-
-Fixture: `error_parse2.sol`.
+There is no top-level `let`. A `let` is a statement and is only valid
+inside a workflow body (or a block within it). Top-level items are
+limited to imports, functions, structs, enums, and the workflow.
 
 ---
 
 ## 6.2 Assignment
 
 ```sol
-name = expr;
-s.field = expr;
-a[i] = expr;
+name = value;
+obj.field = value;
+arr[i] = value;       # parses, but see the codegen note below
 ```
 
-Assignment is parsed at the top of the expression precedence chain
-(`parser.rs:584–585`) using `right_rec`, which makes `=` *right
-associative* — so `a = b = 5;` parses as `a = (b = 5);`. In
-practice the analyzer doesn't allow `b = 5` to be the right-hand
-side of another assignment, because assignment returns the
-right-hand side's type, but reading off the resulting value isn't
-useful in SOL. Treat chained assignment as a parser quirk; prefer
-two separate statements.
+Parsed in `parse_stmt`: an expression is parsed, and if `=` follows, the
+parsed expression is converted to an assignment target via
+`expr_to_target`. A valid target is one of three shapes
+(`Target` in `sol/src/ast.rs`):
+
+- an identifier, `Target::Ident`
+- a member access, `Target::MemberAccess` (`obj.field`)
+- an index, `Target::Index` (`arr[i]`)
+
+Any other left hand side fails with `invalid assignment target: ...`.
+
+Assignment is a statement, not an expression. There is no chained
+`a = b = c` form: the right hand side is parsed as an expression, and
+`=` is not part of the expression grammar.
 
 ### Plain assignment to a variable
-
-The analyzer's `ExprBinary { op: Token::Eq, … }` branch
-(`analyzer.rs:291–297`) requires the LHS and RHS to have matching
-types:
 
 ```sol
 let count: int = 0;
 count = count + 1;       # OK
-count = "string";        # analyzer: cannot assign mismatched types
 ```
 
-If the LHS is an identifier that isn't in scope:
-
-```sol
-foo = 5;                 # analyzer: cannot assign mismatched types: ...
-                         # because the type-check of the LHS fails first
-                         # with "variable `foo` could not be found in the current scope"
-```
+The compiler resolves the target name to a local slot with
+`find_local`. Assigning to a name that was never introduced by a `let`
+fails at compile time with `variable '<name>' not found for assignment`.
 
 ### Assignment to a struct field
 
 ```sol
-s.field = expr;
+obj.field = value;
 ```
 
-The LHS parses as `ExprMemAcc`; the analyzer's existing path
-type-checks the access and then the assignment binary-op rule
-applies. Demonstrated by `test_struct.sol`.
+Single level member assignment is supported by the compiler: it loads
+the root local, stores the new value into the field with `StoreField`,
+and writes the modified struct back to the root local. The root of the
+member chain must be a local variable.
 
 ### Assignment to an array element
 
 ```sol
-a[i] = expr;
+arr[i] = value;
 ```
 
-The LHS parses as `ExprArrAcc`; the same applies. Demonstrated by
-`test_array.sol`.
-
-### What is not assignable
-
-| LHS | Reason it doesn't work |
-|---|---|
-| A function name | The analyzer registers functions as `Symbol::Variable { kind: Function {…} }`; assigning to one trips type-mismatch |
-| A literal (`5 = x;`) | Parser-accepted but produces an invalid AST shape that the analyzer rejects |
-| An `enum` variant | Variant references are `ExprEnumVar`, which has no assignment path |
+This parses into a `Target::Index`, but the compiler does NOT emit code
+for it. Index assignment compiles to the error
+`index assignment not supported`. Avoid `arr[i] = value;` in canonical
+SOL; rebuild the array or model the data with a struct instead.
 
 ---
 
-## 6.3 Lexical scope
+## 6.3 Scope and the locals model
 
-SOL's scope is lexical and block-structured. The unit of scope is
-the block (`Ast::Block`), which the analyzer creates a new
-`TypeTable` for on entry and pops on exit (`analyzer.rs:150–165`).
+The VM does not use lexical block scopes with push/pop frames. Instead,
+the compiler maintains a flat list of named local slots for the whole
+workflow body (`get_or_add_local` / `find_local` in
+`sol/src/compiler.rs`). Each distinct name gets one slot index; the VM
+holds a `locals` vector of values and reads/writes those slots with
+`LoadLocal` and `StoreLocal`.
 
-### What introduces a new scope
+Consequences worth knowing:
 
-| Construct | New scope? |
-|---|---|
-| Function body | Yes (the function's outer scope; parameters are added here before the body is walked) |
-| Top-level program | One global scope holds every top-level decl |
-| `{ … }` block | Yes — each braced block creates a fresh `TypeTable` **unless the block is empty** (the analyzer's `Ast::Block` handler short-circuits for `stmts.len() == 0` and returns `Type::Void` without opening a scope) |
-| `if` body, `else` body | Yes — each is a block |
-| `while` body | Yes |
-| `for-in` body | Yes for the body; **the iteration variable is *not* in the body's scope** — see §6.5 |
-| `import` statement (top-level or inside function) | No new scope, but **the alias is added to the current scope as a `Void`-typed local** — see chapter 12 §12.3 |
-| Inline expression | No |
+- **Names are workflow wide.** A `let` for a name reuses the same slot
+  everywhere that name appears, including inside `if`, `while`, and
+  `for` bodies. There is no block local shadowing; re-using a name in a
+  nested block writes the same slot.
+- **A `let` after an `if`/`while`/`for` is in the same flat namespace.**
+  Bodies of control-flow statements do not open a new slot namespace.
+- **`for item in ...` introduces `item` as a local slot** plus two
+  internal helper slots for the iterator and index (see chapter 07).
+  The `item` slot persists after the loop, since slots are not popped.
 
-A consequence of the empty-block case: `fn noop() {}` and
-`{ { { { } } } }` cost nothing at the analyzer level — no scope
-is opened, no `TypeTable` is allocated. The bytecode emitter
-still emits an `Inst::Ret` (for the empty function body) or
-nothing (for the empty `{}` blocks), and runtime behavior is
-identical to a no-op.
+### Reading a name
 
-### What is visible
-
-A name binding is visible from the point of its declaration
-forward, in the block it was declared in and in every nested block
-within that block, until the block ends. After the block ends, the
-binding goes out of scope.
+When the compiler encounters an identifier, it first tries to resolve it
+to a local slot (`LoadLocal`). If the name is not a known local, it
+emits `LoadName`, which the VM resolves by searching the recorded local
+names at runtime. If the name is not found there either, the VM raises
+the runtime string error `variable '<name>' not found`.
 
 ```sol
-fn start() -> int {
-    let a: int = 1;
-    if (a == 1) {
-        let b: int = 2;
-        print(a);      # OK — a is in scope
-        print(b);      # OK — b is in this block
-    }
-    print(b);          # analyzer: variable `b` could not be found
-    return a;
-}
-```
-
-`test_scope.sol` is the canonical fixture for this rule.
-
-### Use before declaration
-
-```sol
-fn start() -> int {
-    print(x);           # analyzer: variable `x` could not be found in the current scope
+workflow "demo" {
+    print(x);            # x was never declared; runtime error at this read
     let x: int = 5;
-    return x;
 }
 ```
 
-The analyzer resolves `print`'s argument expression in the scope as
-it was *at that point* in the walk. Forward references work only at
-the **top level** (for functions, structs, enums — pre-registered
-in pass 1; see chapter 05); they do not work for local `let`s.
-
-Fixture: `error_semantic1.sol` (which uses `undefined_var` in a
-`return`).
+There is no compile time use before declaration diagnostic for a read.
+The error appears at runtime when the unknown name is loaded.
 
 ---
 
-## 6.4 Shadowing — forbidden in the same scope
+## 6.4 Mutability
 
-SOL **does not allow** re-declaring a name in the *same* scope:
-
-```sol
-fn start() -> int {
-    let x: int = 5;
-    let x: int = 10;     # analyzer: redefinition of `x`
-    return x;
-}
-```
-
-The `add_entry` helper rejects duplicates at the current top of the
-scope stack (`analyzer.rs:50–53`). Fixture: `error_semantic2.sol`.
-
-Shadowing across nested scopes is **allowed** — an inner block may
-declare a name that already exists in an outer scope, and the inner
-name takes precedence inside the inner block:
-
-```sol
-let n: int = 1;
-{
-    let n: int = 2;
-    print(n);           # 2
-}
-print(n);               # 1
-```
-
-The analyzer's name lookup (`get_entry`, `analyzer.rs:57–60`)
-walks the scope stack from innermost outward and returns the first
-match.
+There is no immutability marker. Every `let` is reassignable with `=`,
+and no type rule restricts the new value. If you want a constant, the
+only convention available is naming (for example SCREAMING_SNAKE_CASE)
+and discipline. Nothing in the language enforces it.
 
 ---
 
-## 6.5 The `for-in` iteration variable
+## 6.5 Common runtime and compile errors
 
-```sol
-for x in array {
-    print(x);
-}
-```
+These are plain string messages. The editor bridge classifies them
+(see chapter 8 and chapter 12): codegen failures surface as
+`E_CODEGEN`, runtime failures as `E_RUNTIME`. There are no `E00xx` or
+`T90xx` codes.
 
-The iteration variable `x` is added to the **for-statement's
-enclosing scope** (`analyzer.rs:211`), not to the loop body's
-scope. The body block then opens its own nested scope on top.
-
-The practical consequence: **`x` is still in scope after the loop
-ends.**
-
-```sol
-fn start() -> int {
-    let xs: []int = [1, 2, 3];
-    for x in xs {
-        print(x);
-    }
-    return x;            # analyzer accepts — `x` is still in scope here
-}
-```
-
-This is a known quirk. Two reasonable defenses:
-
-1. Wrap the loop in an extra block so the iteration variable is
-   scoped tightly:
-   ```sol
-   {
-       for x in xs { print(x); }
-   }
-   # x is out of scope here
-   ```
-2. Choose iteration-variable names that don't collide with later
-   logic.
+| Message | When |
+|---|---|
+| `variable '<name>' not found` | Runtime: a read of a name with no local slot |
+| `variable '<name>' not found for assignment` | Compile time: assigning to an undeclared name |
+| `index assignment not supported` | Compile time: `arr[i] = value;` |
+| `invalid assignment target: ...` | Compile time: `=` after a non assignable expression |
+| `cannot access field '<f>' on <value>` | Runtime: member access on a non struct |
 
 ---
 
-## 6.6 Function parameters
+## 6.6 Sources cited in this chapter
 
-Parameters are bound in the function body's outermost scope before
-the body is walked (`analyzer.rs:113–116`):
-
-```sol
-fn greet(name: str) -> int {
-    print(name);
-    return 0;
-}
-```
-
-Re-`let`ting a parameter name in the function's top-level body
-trips the duplicate-name rule, same as any other shadowing in the
-same scope:
-
-```sol
-fn greet(name: str) -> int {
-    let name: str = "anon";        # redefinition of `name`
-    return 0;
-}
-```
-
-Re-`let`ting inside a nested block is fine; that's just regular
-shadowing across scopes.
-
----
-
-## 6.7 Mutability
-
-There is **no immutability marker**. Every `let` is mutable. Every
-`let` may be reassigned to with `=` provided the new value has a
-matching type. If you want a constant, the convention is naming —
-SCREAMING_SNAKE_CASE — and not reassigning it. The compiler does
-not enforce this.
-
----
-
-## 6.8 Common diagnostics
-
-| Diagnostic | Cause | Fixture |
-|---|---|---|
-| `variable `<name>` could not be found in the current scope` | Read of a name not in scope | `error_semantic1.sol` (via `return undefined_var;`) |
-| `error: redefinition of `<name>`` | Re-`let` in the same scope, or parameter shadowed by a top-level body `let` | `error_semantic2.sol` |
-| `cannot assign mismatched types: …` | `name = expr;` where types don't match | n/a |
-| `expected semicolon at the end of a variable declaration` | Missing `;` on a `let` | `error_parse2.sol` |
-| `not an expressionable token: Semi` (then `could not parse expression!`) | Empty initializer (`let x: int = ;`) | `error_parse1.sol` |
-
-Every entry is repeated with bad / fixed examples in
-[`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
-
----
-
-## 6.9 Sources cited in this chapter
-
-- `parser.rs:326–345` — `let` declaration
-- `parser.rs:584–585` — assignment precedence
-- `analyzer.rs:37–60` — TypeTable management and duplicate-name rule
-- `analyzer.rs:138–141` — `let` analyzer entry (notably skips `value`)
-- `analyzer.rs:150–165` — block scope entry/exit
-- `analyzer.rs:201–217` — `for-in` iteration variable binding
-- `analyzer.rs:219–240` — assignment / `Eq` op type-check
-- `analyzer.rs:291–297` — assignment binary-op rule
-- `analyzer.rs:483–498` — variable reference resolution
-- Fixtures: `test_scope.sol`, `error_semantic1.sol`,
-  `error_semantic2.sol`, `error_parse1.sol`, `error_parse2.sol`,
-  `test_array.sol`, `test_struct.sol`
+- `sol/src/parser.rs` — `parse_stmt` (`let`, assignment), `expr_to_target`
+- `sol/src/ast.rs` — `Stmt::Let`, `Stmt::Assign`, `Target`
+- `sol/src/compiler.rs` — `get_or_add_local`, `find_local`,
+  `compile_stmt` (`Let`, `Assign`), member/index target handling
+- `sol/src/vm.rs` — `LoadLocal`, `StoreLocal`, `LoadName`, `StoreField`
+- `compiler-wasm/src/lib.rs` — `E_CODEGEN` / `E_RUNTIME` classification

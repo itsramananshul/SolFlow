@@ -1,51 +1,61 @@
-# 04 — Types
+# 04. Types
 
-> **Status:** Substantive (commit 2). Cross-checked against
-> `parser.rs` (`Type` enum + `parse_type`), `analyzer.rs` (every
-> per-construct type check), and `vm.rs` arithmetic ops.
+> **Status:** Rewritten against the canonical `openprem-sol-v2`
+> crate (`sol/`). Cross-checked against `sol/src/ast.rs` (`Type`
+> enum), `sol/src/parser.rs` (`parse_type`), `sol/src/vm.rs`
+> (arithmetic and value ops), and `sol/src/value.rs` (runtime
+> `Value`).
 
-SOL has a small, static, nominal type system. There is no
-inference at use sites and no implicit coercion between types.
-Every `let`, every parameter, and every return type carries an
-explicit annotation; every binary operator requires its operands to
-have already-matching types. A type mismatch is a compile-time
-error that the analyzer prints to stderr.
+SOL has a small set of types. Type annotations are written on
+`let` bindings, on function parameters, and on the optional return
+type of a function. There is **no type-checker and no analyzer
+phase** in the canonical crate. The pipeline is
+
+```
+source -> Lexer -> Parser (AST) -> Compiler (bytecode) -> Vm
+```
+
+and every fallible step returns a plain `Result<_, String>`. Type
+mismatches are **not** caught at compile time. They surface at
+runtime as a `Failed(string)` step result. There are no `E0xxx` or
+`T90xx` error codes in the language pipeline.
 
 This chapter enumerates every type the language admits, the
-operations that are valid on each, and the rules the analyzer
-enforces between them.
+runtime values they map to, and the runtime operations defined on
+them.
 
 ---
 
 ## 4.1 Type universe
 
-The parser's `Type` enum (`parser.rs:5–24`) lists every type
-form. Removing the parser-internal variants that the surface syntax
-cannot construct, the user-visible set is:
+The AST `Type` enum (`sol/src/ast.rs`) lists every type form:
 
 | Form | Spelling | Notes |
 |---|---|---|
-| `int` | `int` | 128-bit at parse, 64-bit at runtime (§4.2.1) |
-| `float` | `float` | IEEE-754 binary64 (§4.2.2) |
 | `bool` | `bool` | `true` / `false` |
-| `str` | `str` | UTF-8 string, heap-allocated (§4.2.4) |
-| `char` | `char` | Single Unicode scalar (§4.2.5) |
-| array | `[N]T` or `[]T` | Fixed or unsized; element type required (§4.3) |
-| tuple type | `(T1, T2, …)` | Accepted in type position, **no value form** (§4.4) |
-| struct ref | `IdentName` | Nominal type; declared via `struct` (chapter 09) |
-| enum ref | `IdentName` | Nominal type; declared via `enum` (chapter 10) |
-| void | (omitted return) | The absence of a value (§4.5) |
+| `int` | `int` | signed 64-bit, `Value::Int(i64)` (§4.2.1) |
+| `float` | `float` | IEEE-754 binary64, `Value::Float(f64)` (§4.2.2) |
+| `char` | `char` | single Unicode scalar, `Value::Char(char)` (§4.2.5) |
+| `str` | `str` | UTF-8 string, `Value::Str(String)` (§4.2.4) |
+| array | `[]T` | prefix bracket, element type required (§4.3) |
+| named | `IdentName` | a struct or enum name (§4.5) |
+
+The five primitive keywords are `bool int float char str`. Arrays
+are written with a **prefix** bracket: `[]int`, `[][]float`. A
+named type is any identifier, which the runtime resolves to a
+struct or enum.
 
 There is **no `any` type** in SOL. The visual editor uses an "any"
 marker in its graph schema, but the language itself does not. There
-is also **no nullable / optional type** today; `Type::Ident` is
-nominal-only.
+is **no nullable / optional type**, **no tuple type**, and **no
+first-class function type**. The runtime `Value::Unit` represents
+the absence of a value (§4.6); it has no source-level spelling.
 
-The parser also has a `Type::Function { params, ret }` variant that
-the surface syntax cannot produce — it appears only in the
-analyzer's symbol table to record function signatures
-(`analyzer.rs:85–89`). There is no first-class function type at the
-language level.
+The default-type quirk to know: if a `let` omits its type
+annotation, the parser records `Type::Bool` as a placeholder
+(`sol/src/parser.rs`, `parse_stmt`). Since nothing type-checks the
+annotation against the initializer, this placeholder is harmless at
+runtime, but you should always annotate `let` bindings for clarity.
 
 ---
 
@@ -53,128 +63,87 @@ language level.
 
 ### 4.2.1 `int`
 
-Source-level integer literals are parsed as `i128`
-(`lexer.rs:383`). The runtime stores values as `u64` slots on the
-stack and interprets them as `i64` when performing arithmetic
-(`vm.rs:143–146`):
+Integers are `Value::Int(i64)` at runtime (`sol/src/value.rs`).
+Integer literals lex as `i64` (`sol/src/lexer.rs`).
 
-```rust
-let b = self.pop() as i64; let a = self.pop() as i64;
-self.push((a + b) as u64);
-```
+**Runtime operations** (`sol/src/vm.rs`):
 
-Two consequences:
+- `+`, `-`, `*`, `/`: arithmetic. Two ints produce an int.
+  Mixing an int and a float coerces the result to float.
+- `==`, `!=`, `<`, `<=`, `>`, `>=`: comparisons producing `bool`.
+- `-x`: unary negation.
 
-1. **Integers compile to 64-bit signed at runtime.** Literals that
-   exceed `i64::MAX` parse cleanly but produce truncated values when
-   they reach arithmetic instructions.
-2. **No `Integer` overflow check.** Rust release-mode arithmetic
-   wraps on overflow; the VM uses these ops directly. Debug builds
-   of the compiler may panic on overflow.
+**Division by zero** is a runtime error (a string message), for
+both int and float division. It is not a compile-time diagnostic.
 
-**Allowed operations** (`analyzer.rs:247–289`):
-
-- `+`, `-`, `*`, `/` — arithmetic; operands must both be `int`
-- `==`, `!=`, `<`, `<=`, `>`, `>=` — comparisons → `bool`
-- `&`, `|`, `^`, `<<`, `>>` — bitwise; operands must both be `int`
-- `-x` — unary negation
-- `~x` — bitwise complement
-- `!x` — accepted by the analyzer (treats `int` as truthy/falsy);
-  prefer `bool` for boolean negation
-
-**Division by zero** is a **runtime** error, not a compile-time one
-(see [chapter 14](./14-runtime-semantics.md) and `error_runtime.sol`).
-Float division is documented in §4.2.2.
+There are no bitwise operators in the canonical language. The
+operator set is `+ - * /`, `== != < > <= >=`, `&& || !`.
 
 ### 4.2.2 `float`
 
-Stored as `f64`. Literal form requires a digit on each side of the
-decimal point — `1.0`, not `1.` (§3.2).
+Floats are `Value::Float(f64)`. A float literal needs a digit on
+each side of the decimal point: `1.0`, not `1.` and not `.5`
+(`sol/src/lexer.rs`).
 
-**Allowed operations:**
+**Runtime operations:**
 
-- `+`, `-`, `*`, `/` — arithmetic; operands must both be `float`
-- `==`, `!=`, `<`, `<=`, `>`, `>=` — IEEE-754 ordering
-- `-x` — unary negation
-- `!x` — accepted by the analyzer; same caveat as for `int`
+- `+`, `-`, `*`, `/`: arithmetic.
+- `==`, `!=`, `<`, `<=`, `>`, `>=`: IEEE-754 ordering.
+- `-x`: unary negation.
 
-**Float division by zero** does **not** trap in the VM; it produces
-IEEE `inf` / `-inf` / `NaN` per the standard (`vm.rs:159`).
-
-There is **no mixed-precision arithmetic**: `int + float` is a
-compile-time error because the analyzer requires both sides to
-have the same type (`analyzer.rs:248–251`). There is also **no
-conversion operator** — the language ships no built-in to cast
-between `int` and `float`. If you need a value in the other type,
-you must add an `ext function` that performs the conversion in the
-host.
+Mixed arithmetic is allowed at runtime: `int op float` coerces the
+int to float and produces a float (`sol/src/vm.rs`). There is no
+explicit cast operator in the language; if you need an explicit
+conversion, a host can register a native function for it.
 
 ### 4.2.3 `bool`
 
-Stored as `0` (false) or `1` (true). Produced by every comparison
-operator and by the `true` / `false` literals.
+Booleans are `Value::Bool(bool)`, produced by the `true` / `false`
+literals and by every comparison operator.
 
-**Allowed operations** (`analyzer.rs:273–280`):
+**Runtime operations:**
 
-- `&&` — logical and; both operands must be `bool`
-- `||` — logical or; both operands must be `bool`
-- `!x` — logical not; operand must be `bool` (the analyzer also
-  accepts `int` / `float`; prefer `bool`)
-- `==`, `!=` — equality
+- `&&`: logical and.
+- `||`: logical or.
+- `!x`: logical not.
+- `==`, `!=`: equality.
 
-**`&&` and `||` are not short-circuiting at the bytecode level.**
-Both operands are evaluated before the `LogAnd` / `LogOr` op runs
-(`vm.rs:177–178`). If either operand has a side effect or could
-itself fail at runtime, that effect happens regardless of whether
-the other operand would have made the result deterministic. This is
-a footgun; document the desired ordering explicitly with nested
-`if` statements when it matters.
+Truthiness for `if` / `while` conditions accepts `Bool`, or `Int`
+where nonzero is true (`sol/src/vm.rs`). Using any other type as a
+condition is a runtime error.
 
 ### 4.2.4 `str`
 
-The lexer's `Token::String` carries a raw `String` (`lexer.rs:25`);
-the VM stores string values as `HeapObject::String` indices
-(`vm.rs:7–11, 109–112`). String values are heap-allocated and
-referenced by index.
+Strings are `Value::Str(String)` (`sol/src/value.rs`), an owned
+UTF-8 string.
 
-**Allowed operations:**
+**Runtime operations:**
 
-- `==` / `!=` — **Confirmed** to do content equality at runtime
-  via `Inst::EqStr` (`bytecode.rs:683`, `vm.rs:255–261`). The
-  fixture `largemini.sol::eqString` asserts `print("abc" == "abc")`
-  returns `1` and `print("abc" != "xyz")` returns `1`, which only
-  works if the underlying op compares heap-stored string content
-  rather than heap-index identity. Inequality uses `EqStr` followed
-  by `LogNot` (`bytecode.rs:684–687`).
+- `+` on two strings concatenates them (`sol/src/vm.rs`).
+- `==` / `!=` compare string content.
 
-There is **no string concatenation operator**. There is **no string
-indexing**. There are **no length / slice / find / split builtins**.
-The only thing the language guarantees you can do with a `str` is
-print it.
+Length is available through the `len` builtin (§4.7), which accepts
+a string or an array and returns an int. There is no string
+indexing operator and no slice / find / split builtin in the
+language; a host can register natives for richer string work.
 
 ### 4.2.5 `char`
 
-A single Unicode scalar (`lexer.rs:24`). Stored as `u32` at runtime
-(`vm.rs:321`).
+A single Unicode scalar, `Value::Char(char)`. A char literal is
+exactly one character between single quotes, with no escape
+processing in the lexer (`sol/src/lexer.rs`).
 
-**Allowed operations:**
+**Runtime operations:**
 
-- `==`, `!=`, `<`, `<=`, `>`, `>=` — char-level comparison, ordered
-  by code point
+- `==`, `!=`, `<`, `<=`, `>`, `>=`: comparison by code point.
 
-### 4.2.6 Voids and absences
+### 4.2.6 The unit value
 
-The `Void` type appears in three places:
-
-1. As the return type of any function declared without `-> T`.
-2. As the result type of statements (`if`, `while`, `for-in`,
-   assignment, `print`).
-3. As the type the analyzer registers for `import` aliases
-   (`analyzer.rs:166–171`).
-
-`Void` is **not** something you can write at the source level — it
-has no spelling. It only exists implicitly when a return type is
-omitted.
+`Value::Unit` is the runtime "no value". It is produced by
+statements and by builtins that return nothing (such as `print`),
+and it is the implicit result of a function declared without a
+return type. There is no source-level spelling for unit; you cannot
+write it directly.
 
 ---
 
@@ -183,273 +152,140 @@ omitted.
 ### Type syntax
 
 ```
-[N]T     # fixed-size array of N elements of type T
-[]T      # dynamic / unsized array of T
+[]T
 ```
 
-The size `N` must be an integer literal (`parser.rs:213–219`); the
-parser rejects any non-`Token::Integer` with:
+The bracket is a **prefix**: `[]int` is an array of int, `[][]float`
+is an array of arrays of float (`sol/src/parser.rs`, `parse_type`,
+which reads `[`, then `]`, then the inner type). There is no sized
+array form; the element count is never part of the type.
 
-```
-only integers can be used to specify an array size
-```
-
-The element type `T` is any type, including another array type, a
-struct, an enum, or a primitive.
+The element type `T` may be any type, including another array, a
+struct, or an enum.
 
 ### Operations
 
-- Index read: `a[i]` — required `i` is an integer or *float* per
-  the analyzer (`analyzer.rs:459`); the float-index case is almost
-  certainly a bug in the analyzer (it should be `int`-only). The
-  VM treats the index value as a `u64`.
-- Index write: `a[i] = expr;` — only valid as a statement (the
-  parser admits assignment as an expression but the only
-  meaningful use is in statement position).
-- Iteration: `for x in a { … }` — chapter 11.
+- Index read: `a[i]`. The index must evaluate to an int; the `Index`
+  instruction does a runtime bounds check and errors as a string
+  (`index N out of bounds`) when out of range (`sol/src/vm.rs`).
+- Index write: `a[i] = expr;` as a statement.
+- Iteration: `for x in a { … }` (chapter 11).
+- Length: `len(a)` returns the element count as an int (§4.7).
 
-Arrays do not have a `.length` field (the analyzer's `ExprMemAcc`
-requires the LHS to be a struct, `analyzer.rs:409–414`). If you need
-a length, your host must supply an `ext function` that returns it.
+There is no `.length` field on arrays; use the `len` builtin.
 
 ### Construction
 
 ```sol
-let xs: [3]int = [1, 2, 3];
+let xs: []int = [1, 2, 3];
 ```
 
-The array literal expression is documented in chapter 11. Element
-types should match; the analyzer does not validate this for literal
-shapes today (`ExprArrayInit` falls through `todo!()` at
-`analyzer.rs:500`), but the bytecode expects homogeneous arrays at
-load time.
+Array literals are detailed in chapter 11. At runtime an array is
+`Value::Array(Vec<Value>)`, which is heterogeneous in principle;
+keep your arrays homogeneous so that index reads and `for-in`
+bodies see a consistent element type.
 
 ---
 
-## 4.4 Tuples (type-only)
+## 4.4 No tuples
 
-The parser admits tuple *types* — `(T1, T2)` — at every type
-position (`parser.rs:227–242`). There is, however, **no tuple value
-literal** in the expression grammar. You can declare a parameter or
-return type as a tuple, but you cannot construct one. Treat tuple
-types as a parser feature with no current use, and avoid them in
-hand-written SOL until a value form is added.
+The canonical language has no tuple type and no tuple value form.
+If you see `(T1, T2)` in older docs, it does not exist in the
+`openprem-sol-v2` crate. Use a struct (chapter 09) to group
+heterogeneous values.
 
 ---
 
-## 4.5 Structs and enums (nominal types)
+## 4.5 Structs and enums (named types)
 
-A `struct Foo { … }` or `enum Bar { … }` declaration registers a
-named type in the global scope. Subsequent uses of `Foo` / `Bar` in
-type positions resolve to the declared shape. Nominal equality
-applies — two structs with identical fields but different names are
-*not* the same type.
+A `struct Foo { … }` or `enum Bar { … }` declaration introduces a
+named type. Subsequent uses of `Foo` or `Bar` in a type position
+parse as `Type::Named("Foo")` / `Type::Named("Bar")`. Because there
+is no type-checker, a name in a type position is not validated
+against the declared structs and enums at compile time; mismatches
+surface only when the runtime tries to use the value.
 
 Detail lives in chapter 09 (structs) and chapter 10 (enums).
 
 ---
 
-## 4.6 Type equality
+## 4.6 No coercion at the type level
 
-The analyzer uses a single `type_eq` helper (`util.rs:1–42`) to
-decide whether two `Type` values are compatible. The full source
-is small enough to reproduce, and several of its rules are
-non-obvious or buggy in ways that matter to anyone writing
-production SOL.
-
-### The actual rules
-
-The helper returns `Result<(), TypeMismatch>` where
-`TypeMismatch` has two variants — `Inequal` (the generic
-mismatch) and `ArraySize` (specifically a size disagreement on
-otherwise-matching array types). At every analyzer call site
-today both variants collapse into the same "cannot ... mismatched
-types" diagnostic (the call sites use `.is_err()`), but the
-underlying distinction is real and a future analyzer could lift
-it into a more precise message.
-
-| `lhs` | `rhs` | Result |
-|---|---|---|
-| Same primitive (`Integer/Float/String/Char/Bool/Void`) | Same | `Ok(())` |
-| `Ident(a)` | `Ident(b)` | `Ok(())` iff `a == b` |
-| `Array { size: s1, inner: i1 }` | `Array { size: s2, inner: i2 }` | `Ok(())` iff `type_eq(i1, i2)` *and* `s1 == s2`; if inner matches but sizes differ, `Err(ArraySize)` |
-| `Tuple(ts1)` | `Tuple(ts2)` | `Ok(())` iff every zipped pair is `Ok` (see "tuple bug" below) |
-| `Function { params: p1, ret: r1 }` | `Function { params: p2, ret: r2 }` | see "function bug" below |
-| Anything else | — | `Err(Inequal)` |
-
-### Confirmed — arrays DO compare sizes
-
-```sol
-let a: [3]int = [1, 2, 3];
-let b: [5]int = a;            # analyzer: cannot assign mismatched types
-```
-
-This is **opposite** of what an earlier draft of this manual
-claimed. The size comparison happens at `util.rs:12`. If you
-want a function that accepts arrays of any length, declare its
-parameter as `[]T` (unsized) — `Array { size: None, inner: T }`
-treats `None == None` as equal, and the call site can pass any
-sized or unsized array provided the inner type matches.
-
-Sized-to-unsized matching is **also size-sensitive** because the
-sizes (`Some(N)` vs. `None`) are not equal. A `[3]int`-typed
-literal cannot be passed where `[]int` is declared, and vice
-versa. To be safely portable, pick `[]T` everywhere unless the
-size is part of the contract.
-
-### Buggy — tuple equality truncates to the shorter length
-
-```rust
-// util.rs:17–23
-Type::Tuple(types_lhs) => {
-    if let Type::Tuple(types_rhs) = rhs {
-        if types_lhs.iter().zip(types_rhs).any(|(l, r)| type_eq(l.to_owned(), r).is_err()) {
-            Err(TypeMismatch::Inequal)
-        } else { Ok(()) }
-    } else { Err(TypeMismatch::Inequal) }
-}
-```
-
-`iter().zip()` truncates to the shorter operand. So
-`(int, int)` and `(int, int, int)` are **considered equal** —
-the third element is silently ignored. There is no
-length-comparison guard.
-
-Since the surface syntax has no tuple value form (chapter 04
-§4.4), this bug is currently latent — it can only fire if you
-declare differently-arity tuple types in function signatures, and
-the call-site rule then doesn't catch the arity mismatch. Logged
-as T9007.
-
-### Buggy — function equality ignores return types
-
-```rust
-// util.rs:24–32
-Type::Function { params: params_lhs, ret: ret_lhs } => {
-    if let Type::Function { params: params_rhs, ret: ret_rhs } = rhs {
-        match (type_eq(*ret_lhs, Type::Void).is_ok(),
-               type_eq(*ret_rhs, Type::Void).is_ok()) {
-            (true, false) | (false, true) => Err(TypeMismatch::Inequal),
-            _ => if params_lhs.iter().zip(params_rhs)
-                    .any(|(l, r)| type_eq(l.to_owned(), r).is_err()) {
-                Err(TypeMismatch::Inequal)
-            } else { Ok(()) }
-        }
-    } else { Err(TypeMismatch::Inequal) }
-}
-```
-
-Reading the match: the return-type comparison checks only
-"is one void and the other non-void?". If both are void or both
-are non-void, **the actual return types are not compared.** So
-`function() -> int` and `function() -> str` are considered
-equal — both have void-ness `false`, both have zero params.
-
-Combined with the tuple zip-truncation, this means: two
-function types with different return types and different param
-counts can compare equal as long as the **non-void-ness flags
-match** and the **prefix params match**.
-
-Since function types have no surface spelling in SOL, this bug
-is also currently latent — function symbols are introduced via
-the analyzer's pass-1 registration (`analyzer.rs:84–89`) and
-compared only when a name is resolved, not when function values
-are exchanged. Logged as T9008.
-
-### Practical takeaway
-
-For day-to-day SOL programming, type equality behaves as you
-expect for primitives and named types. The hazards above only
-appear in:
-
-- Array types — sizes are compared; pick `[]T` when you mean
-  "any length".
-- Tuple and function types — which today have no source-level
-  user-facing role; the bugs are real but latent.
+There is no implicit coercion **between distinct types** at the
+language level, and there is no cast operator. The one place values
+change representation is numeric arithmetic: when one operand is an
+`int` and the other a `float`, the int is promoted to float for that
+operation (`sol/src/vm.rs`). Beyond that, if you need to convert a
+value, register a native function on the host or use the `to_str`
+builtin (§4.7) for stringification.
 
 ---
 
-## 4.7 No coercion
+## 4.7 Builtins that touch types
 
-Coercion is documented exhaustively because the language has *none*:
+The complete set of VM builtins (`sol/src/vm.rs`):
 
-| From → To | Allowed? |
-|---|---|
-| `int` → `float` | No |
-| `float` → `int` | No |
-| `int` → `bool` | No (only via `== 0` etc., and the comparison's RHS must already be `int`) |
-| `bool` → `int` | No |
-| `char` → `int` | No |
-| Any → `str` | No |
+| Builtin | Signature | Behavior |
+|---|---|---|
+| `print(...)` | variadic `<- unit` | space-joins its arguments, appends a newline, writes to the output buffer |
+| `len(x)` | `str` or array `<- int` | element count of an array, or character count of a string |
+| `to_str(x)` | any `<- str` | string form of any value |
+| `type_name(x)` | any `<- str` | one of `"bool" "int" "float" "char" "str" "array" "struct" "enum" "unit" "module" "remote_ref"` |
 
-Every conversion has to be done by the host via an `ext function`.
-A common pattern is to declare:
-
-```sol
-ext fn to_str(n: int) -> str;
-```
-
-and call it explicitly.
+`type_name` is the closest thing the language has to runtime type
+introspection. It returns the value's runtime category as a string.
 
 ---
 
 ## 4.8 Where types appear
 
-Every site that requires a type annotation:
-
 | Site | Required | Form |
 |---|---|---|
-| `let` declaration | yes | `let name: T;` or `let name: T = expr;` |
+| `let` declaration | optional (defaults to `bool` placeholder) | `let name: T = expr;` or `let name = expr;` |
 | function parameter | yes | `name: T` |
-| function return | optional | `-> T` (omit ⇒ `Void`) |
-| `ext function` parameter | yes | `name: T` |
-| `ext function` return | optional | `-> T` (omit ⇒ `Void`) |
-| `struct` field | yes | `name: T,` |
-| array size | yes | integer literal between `[ ]` |
+| function return | optional | `<- T` (omit for no declared return type) |
+| `struct` field | yes | `name: T;` |
 
-Type inference is **never** performed at the use site. There is no
-`let x = 5;` form; the colon-T is mandatory.
+The function return arrow is `<-`, written before the return type:
+
+```sol
+fn square(n: int) <- int {
+    return n * n;
+}
+```
+
+There is no `->` token in SOL. Writing `->` lexes as two separate
+tokens and fails to parse.
 
 ---
 
-## 4.9 Diagnostics related to types
+## 4.9 The error model for types
 
-| Code | Source | When |
-|---|---|---|
-| (parse) only integers can be used to specify an array size | `parser.rs:215` | Non-integer in `[N]T` |
-| (parse) `<TOKEN>` is not valid in a type specifier | `parser.rs:245` | Type position has a token that isn't an identifier, `[`, or `(` |
-| (semantic) mismatched types in arithmetic: ... | `analyzer.rs:249` | `+`/`-`/`*`/`/` with mismatched operands |
-| (semantic) arithmetic operation ... not supported for type ... | `analyzer.rs:256` | Arithmetic on a non-numeric type |
-| (semantic) cannot compare mismatched types | `analyzer.rs:267` | `==`/`!=`/`<`/`<=`/`>`/`>=` with mismatched operands |
-| (semantic) logical operation ... requires boolean operands | `analyzer.rs:276` | `&&` / `\|\|` on non-bool |
-| (semantic) bitwise operation ... requires integer operands | `analyzer.rs:285` | `&` / `\|` / `^` / `<<` / `>>` on non-int |
-| (semantic) cannot negate a non number type | `analyzer.rs:311` | `-x` where `x` is not `int` / `float` |
-| (semantic) can't not this type | `analyzer.rs:319` | `!x` where `x` is not `int` / `float` / `bool` |
-| (semantic) cannot bitwise invert a non integer type | `analyzer.rs:327` | `~x` where `x` is not `int` |
-| (semantic) cannot assign mismatched types | `analyzer.rs:293` | `=` between mismatched types |
-| (semantic) Array index must be an integer or float | `analyzer.rs:460` | Index expression of the wrong type |
-| (semantic) Cannot index into a non-array type | `analyzer.rs:465` | `e[i]` where `e` is not an array |
+There are no compile-time type errors and no error codes in the
+language pipeline. A type mismatch (for example adding an int to a
+struct, indexing a non-array, or dividing by zero) produces a
+runtime `Failed(string)` step result with a plain message. The
+editor bridge (`compiler-wasm/src/lib.rs`) wraps these into a JSON
+envelope whose diagnostic vocabulary is limited to five codes
+(`E_PARSE`, `E_CODEGEN`, `E_NO_WORKFLOW`, `E_RUNTIME`, `ICE0001`);
+none of them is a per-type error code.
 
-Each of these gets a full entry — bad example, fixed example, fix —
-in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
+Separately, the visual editor runs structural checks on the graph
+before it ever reaches the runtime (`src/graph/validate.ts`), using
+kebab-case codes such as `type-mismatch`. Those are editor-side
+hints, not compiler diagnostics.
 
 ---
 
 ## 4.10 Sources cited in this chapter
 
-- `parser.rs:5–24` — `Type` enum
-- `parser.rs:196–248` — type parser
-- `analyzer.rs:241–303` — binary operator type rules
-- `analyzer.rs:305–337` — unary operator type rules
-- `analyzer.rs:455–466` — array index type rule
-- `analyzer.rs:409–435` — field access type rule
-- `util.rs:1–42` — `type_eq` helper (full source — including
-  the tuple/function bugs documented in §4.6)
-- `vm.rs:143–146` — integer arithmetic (i64)
-- `vm.rs:156–166` — float arithmetic
-- `vm.rs:177–178` — non-short-circuiting logical ops
-- `vm.rs:7–11, 50–54, 109–112` — heap-stored strings
-- `lexer.rs:21–25` — primitive literal token shapes
-- Fixtures: `test_arith.sol`, `test_edge.sol`, `test_array.sol`,
-  `test_struct.sol`, `error_runtime.sol`, `largemini.sol`
-  (uses `string` as a type name — see chapter 20 §20.5)
+- `sol/src/ast.rs`: the `Type` enum (`Bool Int Float Char Str
+  Array Named`) and `Expr`
+- `sol/src/parser.rs`: `parse_type` (prefix `[]T`, named types),
+  `parse_stmt` (`let` default type)
+- `sol/src/value.rs`: the runtime `Value` enum
+- `sol/src/vm.rs`: arithmetic, comparison, truthiness, `Index`
+  bounds check, the builtins (`print`, `len`, `to_str`, `type_name`)
+- `sol/src/lexer.rs`: literal forms, the `<-` arrow token
+- `compiler-wasm/src/lib.rs`: the editor bridge and its five
+  diagnostic codes
