@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use crate::ast::*;
-use crate::instruction::{Chunk, Instruction};
+use crate::instruction::{Chunk, FuncInfo, Instruction};
 use crate::value::Value;
 
 pub struct Compiler {
@@ -35,15 +35,46 @@ impl Compiler {
         }).ok_or_else(|| "no workflow found in program".to_string())?;
 
         let mut chunk = Chunk::new();
-        let mut locals: Vec<String> = Vec::new();
 
+        // The workflow body is the entry frame, compiled first at pc 0 and
+        // terminated with Halt so execution never falls through into the
+        // function bodies that follow.
+        let mut wf_locals: Vec<String> = Vec::new();
         for stmt in &workflow.body.stmts {
-            self.compile_stmt(stmt, &mut chunk, &mut locals)?;
+            self.compile_stmt(stmt, &mut chunk, &mut wf_locals)?;
+        }
+        chunk.instructions.push(Instruction::Halt);
+        chunk.locals_count = wf_locals.len() as u16;
+        chunk.locals_names = wf_locals;
+
+        // Compile every top-level `fn` into the same instruction stream,
+        // each at its own entry_pc with its own local namespace (params
+        // first, then `let` bindings). A `Call` to one of these names is a
+        // real call resolved by the VM via this table. Functions are
+        // reached only through Call, so order does not matter and forward
+        // references / mutual recursion work.
+        for item in &program.items {
+            if let TopLevel::Function(f) = item {
+                let entry_pc = chunk.instructions.len();
+                let mut fn_locals: Vec<String> =
+                    f.params.iter().map(|p| p.name.clone()).collect();
+                let param_count = fn_locals.len() as u16;
+                for stmt in &f.body.stmts {
+                    self.compile_stmt(stmt, &mut chunk, &mut fn_locals)?;
+                }
+                // Implicit `return ()` so a function that falls off the end
+                // returns Unit and never runs into the next function.
+                chunk.instructions.push(Instruction::PushUnit);
+                chunk.instructions.push(Instruction::Return);
+                chunk.functions.push(FuncInfo {
+                    name: f.name.clone(),
+                    entry_pc,
+                    param_count,
+                    locals_count: fn_locals.len() as u16,
+                });
+            }
         }
 
-        chunk.instructions.push(Instruction::Halt);
-        chunk.locals_count = locals.len() as u16;
-        chunk.locals_names = locals;
         Ok(chunk)
     }
 

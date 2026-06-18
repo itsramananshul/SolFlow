@@ -11,12 +11,26 @@ thread_local! { static SOL_OUTPUT: RefCell<String> = RefCell::new(String::new())
 pub fn push_output(s: &str) { SOL_OUTPUT.with(|o| o.borrow_mut().push_str(s)); }
 pub fn take_output() -> String { SOL_OUTPUT.with(|o| std::mem::take(&mut *o.borrow_mut())) }
 
+/// One activation record on the call stack. Created when a user-defined
+/// function is called; `locals` holds the CALLER's locals to restore on
+/// return, and `return_pc` is where the caller resumes.
+#[derive(Debug, Clone)]
+pub struct Frame {
+    pub return_pc: usize,
+    pub locals: Vec<Value>,
+}
+
+/// Maximum call-stack depth. A program that recurses past this fails with
+/// a clear "call stack overflow" rather than blowing the host stack.
+const MAX_CALL_DEPTH: usize = 256;
+
 #[derive(Debug, Clone)]
 pub struct VmSnapshot {
     pub pc: usize,
     pub stack: Vec<Value>,
     pub locals: Vec<Value>,
     pub pending_result: Option<Value>,
+    pub frames: Vec<Frame>,
 }
 
 pub struct Vm {
@@ -24,6 +38,9 @@ pub struct Vm {
     pub pc: usize,
     pub stack: Vec<Value>,
     pub locals: Vec<Value>,
+    /// Call stack of caller frames. Empty while executing the workflow
+    /// (entry) frame; one entry per active user-function call.
+    pub frames: Vec<Frame>,
     pub native_funcs: HashMap<String, NativeFunc>,
     pub pending_call: Option<(String, Value)>,
     pub pending_result: Option<Value>,
@@ -40,6 +57,7 @@ impl Vm {
             pc: 0,
             stack: Vec::new(),
             locals: vec![Value::Unit; locals_count],
+            frames: Vec::new(),
             native_funcs: HashMap::new(),
             pending_call: None,
             pending_result: None,
@@ -59,6 +77,7 @@ impl Vm {
             stack: self.stack.clone(),
             locals: self.locals.clone(),
             pending_result: self.pending_result.clone(),
+            frames: self.frames.clone(),
         }
     }
 
@@ -67,12 +86,14 @@ impl Vm {
         self.stack = snap.stack.clone();
         self.locals = snap.locals.clone();
         self.pending_result = snap.pending_result.clone();
+        self.frames = snap.frames.clone();
     }
 
     pub fn reset(&mut self) {
         self.pc = 0;
         self.stack.clear();
         self.locals = vec![Value::Unit; self.chunk.locals_count as usize];
+        self.frames.clear();
         self.pending_call = None;
         self.pending_result = None;
         self.completed = false;
@@ -116,22 +137,61 @@ impl Vm {
                 }
                 InsResult::ContinueNoAdvance => {}
                 InsResult::Returned(val) => {
-                    self.completed = true;
-                    return Ok(StepResult::Completed(val));
+                    match self.frames.pop() {
+                        // Returning from a user-function call: restore the
+                        // caller's locals + pc and hand the return value
+                        // back on the shared operand stack.
+                        Some(frame) => {
+                            self.locals = frame.locals;
+                            self.pc = frame.return_pc;
+                            self.stack.push(val);
+                        }
+                        // No caller frame: the workflow itself returned.
+                        None => {
+                            self.completed = true;
+                            return Ok(StepResult::Completed(val));
+                        }
+                    }
                 }
                 InsResult::RemoteCall(cap, params) => {
                     self.step_count += 1;
                     return Ok(StepResult::RemoteCall { capability: cap, params });
                 }
                 InsResult::CallFunc(name, args) => {
-                    if let Some(func) = self.native_funcs.get(&name) {
+                    if let Some(func) = self.chunk.function(&name).cloned() {
+                        // Real user-defined function call.
+                        if args.len() != func.param_count as usize {
+                            return Ok(StepResult::Failed(format!(
+                                "function '{}' expects {} argument(s), got {}",
+                                name, func.param_count, args.len()
+                            )));
+                        }
+                        if self.frames.len() >= MAX_CALL_DEPTH {
+                            return Ok(StepResult::Failed(format!(
+                                "call stack overflow calling '{}' (recursion too deep)",
+                                name
+                            )));
+                        }
+                        // Bind args to the callee's local slots 0..param_count.
+                        let mut callee_locals = vec![Value::Unit; func.locals_count as usize];
+                        for (i, a) in args.into_iter().enumerate() {
+                            callee_locals[i] = a;
+                        }
+                        let caller_locals = std::mem::replace(&mut self.locals, callee_locals);
+                        self.frames.push(Frame {
+                            return_pc: self.pc + 1,
+                            locals: caller_locals,
+                        });
+                        self.pc = func.entry_pc;
+                    } else if let Some(func) = self.native_funcs.get(&name) {
                         let result = (func)(&args)?;
                         self.stack.push(result);
+                        self.pc += 1;
                     } else {
                         let result = self.exec_builtin(&name, &args)?;
                         self.stack.push(result);
+                        self.pc += 1;
                     }
-                    self.pc += 1;
                 }
             }
         }
@@ -343,8 +403,8 @@ impl Vm {
                 self.stack.push(result);
                 Ok(InsResult::Continue)
             }
-            Instruction::Eq => self.cmp_op(|a, b| a == b, |a, b| a == b),
-            Instruction::Ne => self.cmp_op(|a, b| a != b, |a, b| a != b),
+            Instruction::Eq => self.eq_op(false),
+            Instruction::Ne => self.eq_op(true),
             Instruction::Lt => self.cmp_op(|a, b| a < b, |a, b| a < b),
             Instruction::Gt => self.cmp_op(|a, b| a > b, |a, b| a > b),
             Instruction::Le => self.cmp_op(|a, b| a <= b, |a, b| a <= b),
@@ -524,6 +584,24 @@ impl Vm {
         Ok(InsResult::Continue)
     }
 
+    /// `==` / `!=`. Numeric operands compare by value (with int/float
+    /// coercion); every other value type (bool, char, str, enum, struct,
+    /// array, unit) compares structurally. This is what lets a workflow
+    /// branch on an enum returned by a helper, e.g. `status == Paid`.
+    fn eq_op(&mut self, negate: bool) -> Result<InsResult, String> {
+        let r = self.stack.pop().ok_or_else(|| "stack empty for equality".to_string())?;
+        let l = self.stack.pop().ok_or_else(|| "stack empty for equality".to_string())?;
+        let eq = match (&l, &r) {
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
+            (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
+            _ => l == r,
+        };
+        self.stack.push(Value::Bool(if negate { !eq } else { eq }));
+        Ok(InsResult::Continue)
+    }
+
     fn cmp_op(
         &mut self,
         int_op: fn(i64, i64) -> bool,
@@ -557,4 +635,165 @@ enum InsResult {
     Returned(Value),
     RemoteCall(String, Value),
     CallFunc(String, Vec<Value>),
+}
+
+#[cfg(test)]
+mod function_call_tests {
+    use super::*;
+    use crate::compiler::Compiler;
+    use crate::parser::Parser;
+
+    /// Run a whole program to completion and return (output lines, result).
+    fn run(src: &str) -> (Vec<String>, Result<Value, String>) {
+        let prog = Parser::new(src).parse().expect("parse");
+        let chunk = Compiler::new().compile(&prog).expect("compile");
+        let mut vm = Vm::new(chunk);
+        let _ = take_output(); // clear any residue on this thread
+        let result = loop {
+            match vm.step(1_000_000) {
+                Ok(StepResult::Completed(v)) => break Ok(v),
+                Ok(StepResult::Yielded(_)) => continue,
+                Ok(StepResult::Failed(e)) => break Err(e),
+                Ok(StepResult::RemoteCall { capability, .. }) => {
+                    break Err(format!("unexpected remote call: {capability}"))
+                }
+                Err(e) => break Err(e),
+            }
+        };
+        let out = take_output();
+        let lines = if out.is_empty() {
+            vec![]
+        } else {
+            out.trim_end_matches('\n').split('\n').map(|s| s.to_string()).collect()
+        };
+        (lines, result)
+    }
+
+    #[test]
+    fn single_helper_call_returns_value() {
+        let (_out, r) = run(r#"
+            fn dbl(x: int) <- int { return x * 2; }
+            workflow "w" { return dbl(21); }
+        "#);
+        assert_eq!(r, Ok(Value::Int(42)));
+    }
+
+    #[test]
+    fn helper_prints_run_in_order() {
+        let (out, r) = run(r#"
+            fn greet(n: str) { print(n); }
+            workflow "w" { greet("hello"); greet("world"); return 0; }
+        "#);
+        assert_eq!(out, vec!["hello", "world"]);
+        assert_eq!(r, Ok(Value::Int(0)));
+    }
+
+    #[test]
+    fn nested_calls_thread_values() {
+        let (_o, r) = run(r#"
+            fn add(a: int, b: int) <- int { return a + b; }
+            fn calc(x: int) <- int { return add(x, 10); }
+            workflow "w" { return calc(5); }
+        "#);
+        assert_eq!(r, Ok(Value::Int(15)));
+    }
+
+    #[test]
+    fn structs_flow_across_calls() {
+        let (_o, r) = run(r#"
+            struct P { x: int; y: int; }
+            fn total(p: P) <- int { return p.x + p.y; }
+            workflow "w" { let p: P = P { x: 3, y: 4 }; return total(p); }
+        "#);
+        assert_eq!(r, Ok(Value::Int(7)));
+    }
+
+    #[test]
+    fn enums_flow_across_calls() {
+        let (out, r) = run(r#"
+            enum Color { Red; Green; }
+            fn pick() <- Color { return Color::Green; }
+            workflow "w" {
+                let c: Color = pick();
+                if (c == Color::Green) { print("green"); }
+                return 0;
+            }
+        "#);
+        assert_eq!(out, vec!["green"]);
+        assert_eq!(r, Ok(Value::Int(0)));
+    }
+
+    #[test]
+    fn recursion_works_to_a_bound() {
+        let (_o, r) = run(r#"
+            fn fact(n: int) <- int {
+                if (n < 2) { return 1; }
+                return n * fact(n - 1);
+            }
+            workflow "w" { return fact(5); }
+        "#);
+        assert_eq!(r, Ok(Value::Int(120)));
+    }
+
+    #[test]
+    fn unbounded_recursion_fails_with_stack_overflow() {
+        let (_o, r) = run(r#"
+            fn loop_forever(x: int) <- int { return loop_forever(x); }
+            workflow "w" { return loop_forever(1); }
+        "#);
+        match r {
+            Err(e) => assert!(e.contains("call stack overflow"), "got: {e}"),
+            Ok(v) => panic!("expected failure, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn arg_count_mismatch_fails_clearly() {
+        let (_o, r) = run(r#"
+            fn f(a: int) <- int { return a; }
+            workflow "w" { return f(1, 2); }
+        "#);
+        match r {
+            Err(e) => assert!(e.contains("expects 1 argument"), "got: {e}"),
+            Ok(v) => panic!("expected failure, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn callee_runtime_error_propagates() {
+        let (_o, r) = run(r#"
+            fn risky(n: int) <- int { return n / 0; }
+            workflow "w" { return risky(10); }
+        "#);
+        match r {
+            Err(e) => assert!(e.contains("division by zero"), "got: {e}"),
+            Ok(v) => panic!("expected failure, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn function_falling_off_end_returns_unit() {
+        let (out, r) = run(r#"
+            fn noop() { print("ran"); }
+            workflow "w" { noop(); return 0; }
+        "#);
+        assert_eq!(out, vec!["ran"]);
+        assert_eq!(r, Ok(Value::Int(0)));
+    }
+
+    #[test]
+    fn caller_locals_survive_a_call() {
+        // A local in the workflow must be intact after a helper that uses
+        // its own (separate) locals runs.
+        let (_o, r) = run(r#"
+            fn bump(n: int) <- int { let tmp: int = n + 100; return tmp; }
+            workflow "w" {
+                let base: int = 7;
+                let other: int = bump(base);
+                return base + other;
+            }
+        "#);
+        // base (7) preserved + bump(7)=107 => 114
+        assert_eq!(r, Ok(Value::Int(114)));
+    }
 }
