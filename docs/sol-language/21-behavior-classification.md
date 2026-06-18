@@ -1,284 +1,346 @@
 # 21 — Behavior Classification
 
-> **Status:** Substantive (commit 9). A normative reference that
-> tags every notable SOL behavior with a stability badge. The
-> taxonomy here exists so future implementers, future SolFlow
-> contributors, and future LLM tooling have a single place to look
-> when asking "can I rely on this?"
+> **Status:** Rewritten against the canonical `openprem-sol-v2` crate
+> (the `sol/` directory) and the `compiler-wasm` bridge. This chapter no
+> longer uses the deleted compiler's `T9xxx` / `E0xxx` badge scheme. It is
+> an honest catalogue of the canonical language's real, observable
+> behaviors and quirks, each grounded in `sol/src/*`,
+> `compiler-wasm/src/lib.rs`, or the editor `src/*`.
 
-The earlier chapters describe **what** the language does. This
-chapter classifies **how dependable** each behavior is.
+The earlier chapters describe **what** the language does. This chapter
+catalogues the **quirks** — the behaviors that surprise people, with the
+exact reason each one happens and how to write around it.
+
+The single thing to keep in mind throughout: the canonical pipeline is
+`Lexer -> Parser -> Compiler -> Vm` with **no type-checking phase**.
+Every error is a plain `String`. Anything a static type-checker would
+normally reject either fails at runtime or does not fail at all.
 
 ---
 
-## 21.1 The taxonomy
+## 21.1 No compile-time type checking
 
-Six badges. Apply exactly one per behavior.
+There is no analyzer or type-checker. The compiler lowers the workflow
+body to bytecode without validating value types, and the VM discovers
+mismatches only when an instruction actually runs.
 
-| Badge | Meaning | Guarantee |
+```sol
+workflow "type_mismatch" {
+    let n = 1 + "two";   # parses, compiles, fails at RUNTIME
+    print(n);
+}
+```
+
+`Compiler::compile` emits `PushInt(1)`, `PushStr`, `Add` and is happy.
+At runtime `bin_op` (`sol/src/vm.rs:507`) sees `Int` and `Str`, matches
+no arithmetic rule, and returns `StepResult::Failed("cannot add 1 and
+two")`. The bridge surfaces that string as a `Warning / Runtime /
+E_RUNTIME` diagnostic (`compiler-wasm/src/lib.rs:162`). There is no code,
+no span, no "expected int, found str" — just the message.
+
+**Write around it:** keep operand types consistent; do not rely on a
+type-checker to catch mistakes before a run.
+
+---
+
+## 21.2 `let` without a type annotation records `bool`
+
+The parser's `let` rule (`sol/src/parser.rs:241`) only reads a type when
+a `:` follows the name. With no annotation it records `Type::Bool` by
+default:
+
+```rust
+let type_ = if matches!(self.peek(), Some(Token::Colon)) {
+    self.next_token();
+    self.parse_type()?
+} else {
+    Type::Bool                       // default
+};
+```
+
+Because nothing type-checks the initializer (§21.1), this default is
+mostly cosmetic at runtime — `let n = 5;` still stores an `Int`, since the
+VM stores whatever the initializer evaluates to. But the AST node
+(visible to the editor and to anything that reads `Stmt::Let.type_`)
+claims `bool`. **Annotate every `let`** (`let n: int = 5;`) so the
+recorded type matches reality.
+
+---
+
+## 21.3 The enum-variant first-character collision hazard
+
+The canonical bytecode dispatches each enum variant by
+`(first_char as i128) % 10`. Two variants whose first characters share a
+mod-10 residue compare equal at runtime even though a by-name simulator
+runs them correctly. `Status::Active` and `Status::Aborted` both hash to
+`'A' % 10`.
+
+The editor surfaces this as a **warning**, code
+`enum-first-char-collision`, in `src/graph/validate.ts:99`. It buckets
+each enum's variants by `name.charCodeAt(0) % 10` and warns when any
+bucket holds more than one variant:
+
+```ts
+const code = v.name.charCodeAt(0) % 10;   // src/graph/validate.ts:86
+```
+
+Because the in-browser simulator implements the intended by-name
+semantics, the collision is invisible during editor testing and only
+bites in production. **Write around it:** give every variant of an enum a
+distinct first character (the orchestration and payments samples in
+`src/samples/*` do exactly this on purpose).
+
+---
+
+## 21.4 Truthiness is `Bool` or nonzero `Int` only
+
+`JumpIfFalse` (`sol/src/vm.rs:374`) accepts only two value kinds as a
+condition:
+
+```rust
+let truthy = match &cond {
+    Value::Bool(b) => *b,
+    Value::Int(n)  => *n != 0,
+    _ => return Err(format!("cannot use {} as condition", cond)),
+};
+```
+
+So `if (3)` runs the `then` branch (3 is nonzero), `if (0)` does not, and
+`if ("")` / `if (some_struct)` is a runtime error, not a falsy value.
+Conditions feed `if`, `while`, and the synthetic comparison the `for`
+desugar emits. **Write around it:** use real boolean expressions in
+conditions.
+
+---
+
+## 21.5 int / float coercion in arithmetic
+
+`bin_op` (`sol/src/vm.rs:507`) and `cmp_op` (`:527`) coerce a mixed int /
+float pair to float:
+
+```sol
+workflow "coerce" {
+    let x: float = 1 + 2.5;    # Int + Float coerces to Float(3.5)
+    print(x);
+}
+```
+
+int with int yields int; float with float yields float; either mixed pair
+promotes the int operand to float and yields a float. The same rule
+applies to comparisons. There is no implicit string-to-number coercion
+and no number-to-string coercion (except via the `+` rule below and the
+`to_str` builtin).
+
+---
+
+## 21.6 `+` concatenates two strings
+
+`Add` is the only operator with a string case (`sol/src/vm.rs:520`):
+
+```rust
+(Value::Str(a), Value::Str(b)) if label == "add" => Value::Str(format!("{}{}", a, b)),
+```
+
+So `"foo" + "bar"` is `"foobar"`. There is no `Str + Int` rule —
+`"n=" + 5` is a runtime error (`cannot add n= and 5`). Convert first:
+`"n=" + to_str(5)`.
+
+```sol
+workflow "concat" {
+    let greeting: str = "hello, " + "world";
+    print(greeting);
+}
+```
+
+---
+
+## 21.7 Division by zero is a runtime error
+
+`Div` (`sol/src/vm.rs:321`) checks the divisor for every numeric
+combination and returns `"division by zero"` rather than producing `inf`
+or panicking — for ints and floats alike:
+
+```sol
+workflow "divzero" {
+    let bad: int = 1 / 0;   # StepResult::Failed("division by zero")
+    print(bad);
+}
+```
+
+The bridge reports it as `Warning / Runtime / E_RUNTIME`. The run stops at
+that statement.
+
+---
+
+## 21.8 Indexed assignment `a[i] = x` is rejected by codegen
+
+You can read `a[i]` (the `Index` instruction), but you cannot assign
+through it. `compile_stmt`'s assignment arm (`sol/src/compiler.rs:81`)
+rejects an index target outright:
+
+```rust
+Target::Index(_, _) => {
+    return Err("index assignment not supported".into());
+}
+```
+
+So `a[0] = 5;` fails to compile and surfaces as `Error / Codegen /
+E_CODEGEN`. Field assignment (`obj.field = x`) *is* supported
+(`sol/src/compiler.rs:69`, via `StoreField` then a store back to the root
+local). **Write around it:** rebuild the array or assign to a struct
+field instead.
+
+---
+
+## 21.9 Top-level statements other than declarations do not parse
+
+`parse_top_level` (`sol/src/parser.rs:84`) accepts only `fn`, `struct`,
+`enum`, `workflow`, and `import`:
+
+```rust
+match self.peek() {
+    Some(Token::Fn)       => …,
+    Some(Token::Struct)   => …,
+    Some(Token::Enum)     => …,
+    Some(Token::Workflow) => …,
+    Some(Token::Import)   => …,
+    Some(t) => Err(format!("unexpected top-level token {:?}", t)),
+    None => Err("unexpected EOF".into()),
+}
+```
+
+A bare `let x = 1;` or `print("hi");` at file scope is a parse error
+(`E_PARSE`). Statements live only inside a `workflow`, `fn`, or block
+body. Every runnable program needs a `workflow "name" { … }`.
+
+---
+
+## 21.10 The formatter drops comments
+
+The AST has no comment nodes — the lexer discards `#` comments while
+tokenizing (`sol/src/lexer.rs:260`). `format_source` reparses and
+pretty-prints the AST, so a format round-trip **loses every comment**.
+This is expected, not a bug; the formatter is AST-faithful, not
+source-faithful.
+
+---
+
+## 21.11 Only the workflow body is compiled; plain `fn` calls fail at runtime
+
+The compiler emits **only the body of the workflow**
+(`sol/src/compiler.rs:40`). Top-level `fn` declarations are recorded by
+name but their bodies are never lowered into bytecode. A call to a plain
+`fn` from the workflow body becomes `Instruction::Call(name_idx, argc)`,
+which the VM dispatches against the native table first and the builtin
+table second (`sol/src/vm.rs:126`). A user `fn` is in neither, so it falls
+through `exec_builtin`'s catch-all:
+
+```rust
+_ => Err(format!("function '{}' not found", name)),   // sol/src/vm.rs:503
+```
+
+```sol
+fn helper() <- int { return 7; }      # body never compiled
+
+workflow "calls_helper" {
+    let v = helper();                 # runtime: "function 'helper' not found"
+    print(v);
+}
+```
+
+The only names that resolve from a workflow body are the builtins
+(`print`, `len`, `to_str`, `type_name`), host-registered natives
+(`WorkflowExecutor::register_native`, `sol/src/workflow.rs:155`), and
+external capabilities (`call("…")`, imported `module.func(...)`, or
+`module::rpc(...)`, which are not function calls at all but `WorkflowCall`
+/ `ModuleCall` parked for the host). **Write around it:** inline logic
+into the workflow body, or register a host native, instead of relying on
+top-level user functions.
+
+---
+
+## 21.12 Builtins, and what they accept
+
+`exec_builtin` (`sol/src/vm.rs:455`) defines the entire builtin surface:
+
+| Builtin | Signature | Behavior |
 |---|---|---|
-| **Specified** | Documented in `SPEC.md` or in the relevant chapter as a normative rule. A conformant implementation must honor it. | Strong. Will not change between minor versions. |
-| **Current-impl** | Documented behavior of the current compiler, not formally specified. A second implementation might choose differently. | Stable across patches; may change between compiler revisions. Document the choice when it changes. |
-| **Accidental** | Behavior that emerges from the implementation but is not designed; it works because two unrelated mechanisms happen to align. Programs can rely on it today but probably shouldn't. | Likely to break the moment either underlying mechanism is refactored. |
-| **Emergent** | Composite behavior that arises from the interaction of multiple specified or current-impl behaviors. Predictable from the components but not separately documented. | As stable as its weakest component. |
-| **Undefined** | The implementation makes no promise. The result is whatever the underlying machinery happens to produce — may panic, may corrupt, may silently produce garbage. | None. Do not rely on. |
-| **Unstable** | Behavior the maintainers explicitly mark as subject to change in the next compiler revision. | Will change; build defensively. |
+| `print(...)` | variadic `<- unit` | space-joins all args, appends a newline, writes to the capture buffer |
+| `len(x)` | `str \| array <- int` | element/byte count; errors on other types |
+| `to_str(x)` | `any <- str` | the value's `Display` form |
+| `type_name(x)` | `any <- str` | one of `bool`, `int`, `float`, `char`, `str`, `array`, `struct`, `enum`, `unit`, `module`, `remote_ref` |
 
-A behavior that has different badges in different conditions
-(e.g. specified for ints, undefined for arrays) is listed
-separately for each case.
+`crypto` (ed25519 / sha512, `sol/src/crypto.rs`) is exported by the crate
+but is **not** a builtin; a host must expose it through `register_native`
+before SOL code can use it.
 
 ---
 
-## 21.2 Lexical behavior
+## 21.13 The five bridge diagnostics and the editor checks
 
-| Behavior | Badge | Notes |
-|---|---|---|
-| The fifteen keywords (`ext`, `for`, `in`, `as`, `function`, `if`, `else`, `import`, `while`, `struct`, `enum`, `let`, `return`, `true`, `false`) | **Specified** | `lexer.rs:341–356` |
-| `//` line comments | **Specified** | `lexer.rs:311–317` |
-| `/* … */` block comments, non-nestable | **Specified** | `lexer.rs:319–328` |
-| Identifier rule: `IDENT_START IDENT_CONT*` with `IDENT_START` = Unicode `is_alphabetic()`, `IDENT_CONT` = alphanumeric or `_` | **Specified** | `lexer.rs:215, 336` |
-| `_` treated as trivia outside identifiers | **Current-impl** | Drives the `1_000` and `_x` footguns (§3.1). Unstable: a future lexer revision may stop treating `_` as trivia |
-| Integer literals parsed as `i128` then truncated to `i64` at runtime | **Current-impl** | `lexer.rs:383` parses `i128`; `vm.rs:143–146` operates on `i64`. The truncation point is implementation-specific |
-| Integer literal overflow at runtime: wraps in release, panics in debug | **Undefined** at the language level; **Current-impl** behavior is "whatever Rust `i64` arithmetic does" | The SPEC explicitly leaves this unspecified (§7.4 of SPEC) |
-| String literals carry no escape sequences | **Specified** | `lexer.rs:224–233`. A future revision could add escapes; current behavior is normative |
-| Char literal reads exactly one source character then skips two | **Current-impl** | `lexer.rs:218–223`. Doesn't validate the closing quote; behavior on `'AB'` is undefined |
-| Maximal-munch for two-character operators | **Specified** | `lexer.rs:238–296` |
-| Lexer panics on unrecognized character via `process::exit(1)` | **Current-impl** | Compile-time error; will become a structured diagnostic when the audit's blocker #2 lands |
+The only diagnostics that exist are the five the `compiler-wasm` bridge
+emits and the kebab-case structural checks the editor runs on the graph.
+There is no `E0xxx` / `T90xx` scheme.
 
----
+Bridge codes (`compiler-wasm/src/lib.rs`):
 
-## 21.3 Parsing behavior
+| Severity | Phase | Code | When |
+|---|---|---|---|
+| Error | Parser | `E_PARSE` | parse failure |
+| Error | Codegen | `E_CODEGEN` | compile failure (includes "no workflow", "index assignment not supported") |
+| Error | Analyzer | `E_NO_WORKFLOW` | run requested with no workflow |
+| Warning | Runtime | `E_RUNTIME` | a statement failed at runtime |
+| Error | Internal | `ICE0001` | a caught panic |
 
-| Behavior | Badge | Notes |
-|---|---|---|
-| Top-level dispatcher accepts `ext`, `function`, `let`, `struct`, `enum`, `import`; everything else panics | **Specified** | `parser.rs:177–194` |
-| Tuple types are parser-accepted with no value form | **Current-impl** | `parser.rs:227–242`. A future revision may add a tuple value literal |
-| Struct literals are disabled inside `if`/`while`/`for-in` conditions, re-enabled inside `()` | **Specified** | `parser.rs:131, 394–397, 408–411, 428–431, 714–716`. This is necessary to disambiguate; cannot change without a grammar shift |
-| Trailing comma in struct/enum/parameter lists is *not* accepted, but a single trailing item without a comma *is* | **Current-impl** | The parser breaks the loop on any non-comma; doesn't actively reject a trailing comma either. Behavior is "what the recursive descent does" |
-| Forward references work between top-level functions (declaration order doesn't matter) | **Specified** | `analyzer.rs:80–98`, two-pass design. Necessary for any non-trivial program |
-| `import` is a top-level declaration; alias becomes a global Void-typed name | **Current-impl** | `parser.rs:440–474`, `analyzer.rs:166–171`. Essentially inert today |
-| `import` is also accepted in statement position (inside a function body) | **Current-impl** | `parser.rs:365`. Adds a local Void-typed slot that is never initialized at runtime. Don't use |
-| `let x: int;` (no initializer) is parser-accepted | **Specified** | `parser.rs:326–345`. Semantically uninitialized; reads as `0` if it ever runs |
-| `let x: int = ;` (empty initializer) is a parse error | **Specified** | `parser.rs:339, 749`. Diagnostic `E0001` |
-| Missing semicolon on a statement is a parse error | **Specified** | Multiple sites; diagnostic `E0002` |
-| Parser exits on first error via `process::exit(1)` | **Current-impl** | Will become "continue past recoverable errors" when blocker #2 lands |
-| Type position recognizes only `int, float, str, char, bool` as primitives; anything else becomes a nominal `Ident` type | **Current-impl** | `parser.rs:198–209`. The lack of a "did you mean `str`?" check for `string` is the substance of T9009 |
+Editor structural checks (`src/graph/validate.ts`): `no-entry`,
+`unnamed-function`, `enum-first-char-collision`, `missing-input`,
+`bad-inline-expression`, `unset-struct`, `unknown-struct`, `unset-field`,
+`unset-enum`, `unknown-enum`, `unset-variant`, `unset-call`,
+`unknown-call`, `unset-var`, `unresolved-var`, `type-mismatch`. These run
+on the graph before SOL is emitted; they are not produced by the
+compiler.
 
 ---
 
-## 21.4 Analyzer behavior
+## 21.14 Quick reference: what to rely on, what to avoid
 
-| Behavior | Badge | Notes |
-|---|---|---|
-| Two-pass analysis: pass 1 registers function signatures; pass 2 checks bodies | **Specified** | `analyzer.rs:80–98`. Necessary for forward references |
-| Duplicate names in the same scope are rejected | **Specified** | `analyzer.rs:50–53`, diagnostic `E1002`. Applies to functions, structs, enums, top-level lets, parameters, and same-scope `let`s |
-| Shadowing across nested scopes is permitted | **Specified** | `analyzer.rs:57–60`. Inner scope's binding takes precedence |
-| `if` / `while` conditions must be `bool` | **Specified** | `analyzer.rs:174, 190`. Diagnostic `E1003` (using "if statement" wording for both — known quality issue) |
-| `for-in`'s iterable must be an array type | **Specified** | `analyzer.rs:202–209`. Diagnostic `E1004` |
-| `for-in` iteration variable lives in the *enclosing* scope, not the body block | **Current-impl** | `analyzer.rs:201–217`. Leaks the binding after the loop ends. May be tightened in a future revision (already documented as a quirk in chapter 06 §6.5) |
-| Function return-type is *not* checked against the body | **Current-impl** | `analyzer.rs:120–132` (commented out). Marked as blocker #18 in the audit. Specifically: a function declared `-> int` whose body returns `str` (or nothing) compiles |
-| `let` initializer is *not* type-checked against the declared type | **Current-impl** | `analyzer.rs:138–141` (the `..` in the match pattern skips the value). Marked as blocker #18 |
-| Struct literal field validity is *not* checked | **Current-impl** | `analyzer.rs:499` (`todo!`). Missing fields, wrong-typed values, extra fields — all parser-accepted, all silently passed to bytecode |
-| Array literal type uniformity is *not* checked | **Current-impl** | Same `todo!` fallthrough at `analyzer.rs:500` |
-| Analyzer panics scope-leak on early-return error paths | **Current-impl** | Practically irrelevant because `process::exit(1)` happens immediately; would matter if errors became recoverable values |
-| `print` accepts any number of arguments of any types and returns `Void` | **Current-impl** | `analyzer.rs:340–345`. The bytecode then drops everything after the first arg — see T9003 |
-| `rpc_request`'s second arg must be an array; `rpc_response` takes one arg of any type | **Specified** | `analyzer.rs:346–372` |
-| `&&`, `\|\|` require both operands to be `bool` | **Specified** | `analyzer.rs:273–280` |
-| Bitwise ops require both operands to be `int` | **Specified** | `analyzer.rs:283–289` |
-| Unary `!` is accepted on `int`/`float`/`bool` (not just `bool`) | **Current-impl** | `analyzer.rs:317–323`. Probably an oversight; idiomatic SOL uses `!` on `bool` only |
-| Array index type may be `int` or `float` | **Current-impl** | `analyzer.rs:459`. The float case is almost certainly a typo |
-| `type_eq` array comparison checks sizes | **Specified** | `util.rs:10–16`; `[3]int` ≠ `[5]int` |
-| `type_eq` tuple comparison zip-truncates (T9007) | **Current-impl**, bug | Latent because tuples have no value form |
-| `type_eq` function comparison ignores actual return types (T9008) | **Current-impl**, bug | Latent because function types aren't first-class values |
-| `error: redefinition of <name>` text for every duplicate symbol | **Current-impl** | Stable diagnostic wording; programmatic consumers can match on it |
+**Rely on:**
 
----
+- The pipeline shape (`Lexer -> Parser -> Compiler -> Vm`) and the
+  statement-budget step model (yield/resume across remote calls).
+- `int`/`float` coercion in arithmetic and comparison.
+- `+` concatenating two strings.
+- `len`, `to_str`, `type_name`, `print` as the builtin surface.
+- Division by zero, indexed assignment, and missing-workflow all failing
+  with a clear (if codeless) error.
 
-## 21.5 Bytecode emitter behavior
+**Avoid relying on:**
 
-| Behavior | Badge | Notes |
-|---|---|---|
-| Struct fields are recorded in alphabetical order in the layout, used positionally for `NewStruct`/`GetField`/`SetField` | **Current-impl** | `bytecode.rs:126–131, 494–520`. Stable within one compilation; not stable across implementations |
-| Missing fields in a struct literal emit `PushConst(ExprUndefined)` and materialize as `0` at runtime | **Current-impl** | `bytecode.rs:500`. Not warned about |
-| Enum variant values are `(first_char as i128) % 10` (T9002) | **Current-impl**, bug | `bytecode.rs:538–541`. Same-first-character variants collide; explicit `= N` annotations are silently ignored |
-| `print` only emits the first argument (T9003) | **Current-impl**, bug | `bytecode.rs:425`. Subsequent args are dropped |
-| `print` dispatch picks the `Print*` op by the argument's inferred type; falls back to `PrintInt` for `Void` and unknowns | **Current-impl** | `bytecode.rs:423–432, 634–654` |
-| Comparisons inside `print` are rendered as `Integer` (so `print(5==5)` prints `1`) | **Current-impl** | `display_type` at `bytecode.rs:634–645` |
-| `for-in` is desugared into a `while` over `Inst::ArrayLen`-driven synthetic locals | **Current-impl** | `bytecode.rs:272–328`. Only path that emits `ArrayLen` |
-| Function declarations are emitted inline with a `Jump`-over | **Current-impl** | `bytecode.rs:393–422`. A relocatable-function-table approach could replace this |
-| Each function decl resets `self.locals.clear()` and `self.next_slot = 0` | **Current-impl** | `bytecode.rs:401–402`. Drives the top-level-let bug (T9014) |
-| `find_local_offset` auto-creates a fresh local for unknown names, defaulting to `Type::Integer` | **Current-impl** | `bytecode.rs:559–578`. Defensive but masks programmer errors that the analyzer should have caught |
-| Forward calls patched via `pending_calls` after full program emission | **Current-impl** | `bytecode.rs:151–157, 478–481` |
-| Built-in name dispatch happens *before* `ext_functions` and local-function checks (T9016) | **Current-impl** | `bytecode.rs:423–481`. User-declared `ext fn rpc_request(...)` is shadowed |
-| `infer_type` falls back to `Integer` for unknown nodes (T9015) | **Current-impl** | `bytecode.rs:627–629`. Affects `print` of forward-call results and ext-call arg type inference |
-| Bare expression statements emit `<expr>; Pop` (T9013) | **Current-impl** | `bytecode.rs:218–223`. Useful pattern for `f();`-style discards |
-| `active_scopes: Vec<Scope>` is maintained but never read | **Current-impl** | Dead infrastructure; future cleanup |
-| Missing `ext function` endpoint exits at compile time (T9004) | **Current-impl** | `bytecode.rs:457–460`. Fail-fast intentional |
+- Any type error being caught before a run (none are).
+- An un-annotated `let` recording the initializer's real type (it records
+  `bool`).
+- Enum variants that share a first character being distinguishable at
+  runtime (they collide under the mod-10 dispatch; heed the editor
+  warning).
+- A plain top-level `fn` call resolving (it does not, unless a host
+  native shadows the name).
+- Comments surviving a format round-trip (they do not).
+- Top-level statements other than declarations parsing (they do not).
 
 ---
 
-## 21.6 Runtime / VM behavior
+## 21.15 Sources cited in this chapter
 
-| Behavior | Badge | Notes |
-|---|---|---|
-| Stack-based interpreter | **Current-impl** | `vm.rs`. SPEC §7.1 permits a different model with the same observable behavior |
-| Heap is monotonic — no garbage collection | **Current-impl** | Sustainable only because SOL programs are short-lived per session |
-| Structs and arrays have reference semantics | **Current-impl** | SPEC §7.2 permits copy-on-pass with documented choice |
-| Strings are heap-resident; `==` compares content via `Inst::EqStr`; `+` is unreachable from source (T9005) | **Specified** for ==/!=; **Current-impl** for the unreachable `+` | `vm.rs:255–261`, `bytecode.rs:683–687` |
-| Integer arithmetic operates on `i64` | **Current-impl** | `vm.rs:143–146`. Underlying width is a compiler choice |
-| Integer division by zero panics | **Specified** for "terminates"; **Current-impl** for "panic via Rust `i64`" | SPEC §7.4 |
-| Float division by zero produces IEEE `inf`/`NaN` | **Specified** | SPEC §7.4 |
-| `&&`/`\|\|` are NOT short-circuiting at the bytecode level | **Current-impl** | SPEC §6.2 permits either choice but requires it to be documented |
-| `Ret` always pushes `0` onto the caller's stack (T9011) | **Current-impl** | `vm.rs:283–293`. Makes "missing return" cases look successful — see chapter 5 §5.1 |
-| `RetVal` pops the return value, then truncates the stack to fp, then pushes the value | **Specified** | `vm.rs:295–306`. Necessary for correct returns |
-| `LoadLocal` does an unchecked stack index (panics on out-of-bounds) | **Current-impl** | `vm.rs:118–122`. The panic is the only safety net |
-| `StoreLocal` `0`-fills the stack up to the target offset | **Current-impl** | `vm.rs:124–131`. Silently grows the stack; can hide programmer errors |
-| Struct/array/string heap-op silent no-ops on type mismatch (T9010) | **Current-impl**, bug | Future refactor should panic |
-| `print` of a heap-string-index treats the index as an integer (when emitted with `PrintInt` due to fallback) | **Emergent** | Composition of the `infer_type` fallback + `PrintInt`'s integer-formatting. Produces garbage output. See T9015 |
-| `ExtCall` is HTTP/1.1 only with no HTTPS, no timeout, no status check (T9012) | **Current-impl** | `vm.rs:469–579`. Will likely change; treat as unstable for production use |
-| `ExtCall` silent defaults on missing/wrong-shape response fields | **Current-impl** | Programs should defensively validate ext-call results |
-| Top-level `let` reads from inside a function panic on out-of-bounds or read garbage (T9014) | **Undefined** at the language level; **Current-impl** behavior is "either panic or read garbage" | The most severe latent bug documented |
-| Program "ends" when `inst_ptr` runs off the end OR a top-level `Ret` with no frame is hit | **Specified** | `vm.rs:88–96, 290–292` |
-
----
-
-## 21.7 SolFlow editor behavior
-
-| Behavior | Badge | Notes |
-|---|---|---|
-| Graph → SOL emission walks the graph and produces text matching the per-node table in chapter 18 | **Specified** | `src/emit/emit.ts` |
-| SOL → Graph (parse-and-import) is **not** implemented | **Current-impl** | A future addition; today the editor is producer-only |
-| `// @trigger …` annotations emitted by the editor are parser-tolerated as comments (T9001) | **Current-impl** | Not part of canonical SOL |
-| The editor's "any" type marker has no SOL equivalent | **Current-impl** | Editor-only |
-| Inline expression takes precedence over wired data edge at emission time | **Specified** | `src/emit/emit.ts:emitDataInput`. Both the emitter and the validator (since commit `3aab8e0`) honor this |
-| The validator gates broken graphs from silently reaching the canvas | **Specified** | `src/stores/sol-man.store.ts`. Documented as the hard rules in chapter 19 |
-| The Sol Man repair pass rewrites unresolved `call` nodes into `print` placeholders | **Specified** | `src/sol-man/applyGraph.ts`. Logged in chapter 19 §19.3 |
-
----
-
-## 21.8 What is guaranteed vs. NOT guaranteed
-
-### What is guaranteed
-
-A short list of behaviors callers can rely on through any future
-revision short of an explicit major-version language change:
-
-- The fifteen keywords and their semantics.
-- The operator-precedence chain (chapter 08 §8.1).
-- The operator type rules (chapter 08 §8.13).
-- The two-pass forward-declaration model (chapter 05 §5.5).
-- The block-scoping rule and shadowing-across-scopes rule.
-- The `for-in` form being the only loop with collection
-  iteration (no C-style `for`).
-- The `print` semantic of "side effect that outputs followed by
-  newline" — the single-argument restriction is current-impl,
-  but the *output happens in source order* property is
-  guaranteed.
-- The contract that an `ext function` declared in source resolves
-  to a host-provided endpoint, with compile-time failure when
-  unresolved.
-- Integer division by zero terminates the session (the *form* of
-  termination is current-impl).
-
-### What is NOT guaranteed
-
-A short list of behaviors that callers **should not** rely on,
-even when the current compiler appears to support them:
-
-- Top-level `let` propagating its value into function bodies
-  (T9014).
-- Multiple `print` arguments printing more than the first
-  (T9003).
-- Enum variants with the same first character being distinguishable
-  at runtime (T9002).
-- `= N` annotations on enum variants influencing runtime values
-  (T9002).
-- Forward-called functions' return types being inferred at the
-  call site (T9015).
-- Calls to `print`, `rpc_*` being routable to user-declared `ext
-  function` of the same name (T9016).
-- `str + str` working (T9005 — bytecode op exists, analyzer
-  rejects).
-- `string` (or any other misspelling) being treated as `str`
-  (T9009).
-- VM ops failing loudly on type mismatch — most silently no-op
-  (T9010).
-- ExtCall over HTTPS, with timeouts, or with HTTP error
-  reporting (T9012).
-- Tuple value forms existing (parser accepts the type form;
-  no value form).
-- `break` / `continue` ever working (no keywords).
-- Pattern matching (`match`) ever working in current compiler.
-- Source spans appearing in diagnostics (planned, not yet
-  implemented).
-- Multiple errors per compile (planned, not yet implemented).
-
-### What is implementation-defined
-
-A short list of behaviors that the SPEC explicitly permits a
-conformant implementation to choose differently:
-
-- Whether `&&`/`\|\|` short-circuit (SPEC §6.2).
-- Whether structs/arrays are passed by reference or by copy
-  (SPEC §7.2 requires a consistent choice, not a particular
-  one).
-- Integer-overflow behavior (wrap, panic, saturate — SPEC §7.4).
-- The exact runtime container for `int` (current is `i64`; spec
-  says "at least 64-bit signed").
-- The exact runtime container for strings, structs, arrays
-  (current is heap-resident with reference semantics).
-- Whether tail-call optimization happens.
-- Whether the compiler emits structured `Diagnostic` values or
-  unstructured `eprintln!` text.
-
-### What may change
-
-A short list of behaviors maintainers have flagged as planned
-changes (per `SOL_CRATE_IDE_READINESS_PLAN.md` §1):
-
-- Errors will become `Result`-style return values instead of
-  `process::exit(1)` (blocker #2).
-- `Token` and `Ast` nodes will carry source spans (blocker #3).
-- `Token` / `Ast` / `Type` / `Symbol` / `Inst` will gain serde
-  derives for WASM bridging (blocker #4).
-- Struct field and enum variant storage will move from `HashMap`
-  to an order-preserving container (blocker #5).
-- The lexer will accept in-memory source bytes, not just file
-  paths (blocker #6).
-- Several analyzer holes (let-initializer type check,
-  return-type check, struct-init check) will be filled (blocker
-  #18).
-
-### What currently works "by accident"
-
-A short list of behaviors that produce correct-looking output
-through a coincidence of two unrelated mechanisms — and would
-break under refactoring:
-
-- A function declared `-> int` whose body never returns appears
-  to return `0`. This is the composition of: (a) the analyzer
-  not checking return paths, and (b) `Ret` unconditionally
-  pushing `0`. If either changes, the apparent success goes
-  away.
-- `Person { name: "evan" }` typing as a struct field of type
-  `Type::Ident("string")` and being printable. This is the
-  composition of: (a) the analyzer not checking field-value
-  types, (b) the bytecode emitter not checking either, and (c)
-  the `print` fallback to `PrintInt` for unknown types. Output
-  is garbage but the program runs.
-- Enum variants whose first characters happen to be unique
-  producing the apparent integer-tag behavior of an iota
-  algorithm. This is the composition of: (a) the bytecode hash,
-  (b) the specific variant names a programmer happened to
-  choose. The moment a variant is renamed, the runtime value
-  changes.
-
----
-
-## 21.9 Sources cited in this chapter
-
-This chapter is a synthesis of the eight prior commit's findings.
-Specific source citations live in chapters 02 – 20 and
-[`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md); refer there when a
-badge needs verification.
+- `sol/src/parser.rs` — `let` bool default, top-level dispatch
+- `sol/src/compiler.rs` — workflow-body-only codegen, index-assignment
+  rejection, field assignment, capability lowering
+- `sol/src/vm.rs` — truthiness, arithmetic/coercion, string `+`,
+  division by zero, builtins, plain-call dispatch
+- `sol/src/lexer.rs` — `#` comments discarded
+- `sol/src/format.rs` — comment-dropping round-trip
+- `sol/src/crypto.rs` — host-only `Keypair`
+- `sol/src/workflow.rs` — `register_native`
+- `compiler-wasm/src/lib.rs` — the five bridge diagnostic codes and the
+  `RtErr` runtime shapes
+- `src/graph/validate.ts` — `enum-first-char-collision` and the other
+  editor structural checks

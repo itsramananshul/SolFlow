@@ -1,5 +1,13 @@
 # Internal Notes — Maintainers Only
 
+> **Historical document.** These maintainer notes predate the removal of the
+> standalone SOL compiler (the `compiler/` and `runtime/` crates). The
+> canonical language now lives in the `sol/` crate (`openprem-sol-v2`); it has
+> no type checker and no `E0xxx` or `T90xx` error codes. For the current,
+> accurate reference see the rewritten chapters 01 through 23, plus `SPEC.md`,
+> `GRAMMAR.md`, and `ERROR_REFERENCE.md`. The text below is kept as a
+> historical record.
+
 > **Do not publish this file.** It is excluded by intent from the
 > public-facing reading path. The public docs (`README.md` and
 > chapters 00 – 19, plus `SPEC.md` / `GRAMMAR.md` /

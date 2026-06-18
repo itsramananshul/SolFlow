@@ -1,5 +1,13 @@
 # 00 — Source Audit
 
+> **Historical document.** This audit lists files of the previous standalone
+> SOL compiler (the removed `compiler/` and `runtime/` crates) that were read
+> to write the original manual. Those files no longer exist; the canonical
+> language now lives in the `sol/` crate (`openprem-sol-v2`). For the current,
+> accurate reference see the rewritten chapters 01 through 23, plus `SPEC.md`,
+> `GRAMMAR.md`, and `ERROR_REFERENCE.md`. The text below is kept as a
+> historical record and does not describe the current source tree.
+
 > **Status:** Complete for the initial documentation pass (2026-05-26).
 > Re-run whenever the canonical SOL compiler changes shape or new
 > language features land.

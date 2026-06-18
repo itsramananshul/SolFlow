@@ -1,5 +1,14 @@
 # Phase B — Release Notes
 
+> **Historical document.** These notes record the Phase B release built on the
+> previous standalone SOL compiler (the removed `compiler/` and `runtime/`
+> crates). The canonical language now lives in the `sol/` crate
+> (`openprem-sol-v2`); it has no type checker and no `E0xxx` or `T90xx` error
+> codes. For the current, accurate reference see the rewritten chapters 01
+> through 23, plus `SPEC.md`, `GRAMMAR.md`, and `ERROR_REFERENCE.md`. The text
+> below is kept as a historical record and does not describe the current
+> system.
+
 > Scope: SolFlow Phase B (canonical compiler + IDE). Shipped over
 > commits c1 → c34 on branch `feat/solflow-phase-a` (the branch
 > was named before Phase B was carved out; Phase B work landed
