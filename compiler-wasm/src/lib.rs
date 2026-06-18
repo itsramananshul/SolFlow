@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 
 use openprem_sol_v2::ast::{Program, TopLevel};
 use openprem_sol_v2::analysis::analyze_workflow;
-use openprem_sol_v2::vm::take_output;
+use openprem_sol_v2::vm::{take_output, TraceEvent, TraceKind};
 use openprem_sol_v2::{Compiler, Parser, StepResult, Value, WorkflowExecutor};
 
 static PANIC_HOOK_INIT: Once = Once::new();
@@ -133,6 +133,53 @@ enum RtErr {
     StepLimit { limit: u64 },
 }
 
+/// One execution-trace step in the run envelope. `kind` is one of
+/// `"stmt" | "call" | "return" | "error"`; `line` is the 1-based source line
+/// the `span` starts on, for click-to-highlight in the UI.
+#[derive(Serialize)]
+struct TraceStep {
+    step: u64,
+    kind: &'static str,
+    function: String,
+    span: Option<Span>,
+    line: Option<usize>,
+    depth: usize,
+    detail: Option<String>,
+}
+
+fn trace_kind_str(k: &TraceKind) -> &'static str {
+    match k {
+        TraceKind::Stmt => "stmt",
+        TraceKind::Call => "call",
+        TraceKind::Return => "return",
+        TraceKind::Error => "error",
+    }
+}
+
+/// 1-based line number that byte offset `off` falls on within `src`.
+fn line_of(src: &str, off: usize) -> usize {
+    1 + src.as_bytes().iter().take(off.min(src.len())).filter(|&&b| b == b'\n').count()
+}
+
+fn to_trace_steps(src: &str, events: &[TraceEvent]) -> Vec<TraceStep> {
+    events
+        .iter()
+        .map(|e| {
+            let span = e.span.map(|(start, end)| Span { start, end });
+            let line = e.span.map(|(start, _)| line_of(src, start));
+            TraceStep {
+                step: e.step,
+                kind: trace_kind_str(&e.kind),
+                function: e.function.clone(),
+                span,
+                line,
+                depth: e.depth,
+                detail: e.detail.clone(),
+            }
+        })
+        .collect()
+}
+
 #[wasm_bindgen]
 pub fn run_source_json(source: &str) -> String {
     let src = source.to_string();
@@ -142,6 +189,7 @@ pub fn run_source_json(source: &str) -> String {
         let instruction_count = match Compiler::new().compile(&prog) { Ok(c) => c.instructions.len(), Err(e) => return run_fail(err("Codegen", "E_CODEGEN", e)) };
         let name = match workflow_names(&prog).into_iter().next() { Some(n) => n, None => return run_fail(err("Analyzer", "E_NO_WORKFLOW", "no workflow declaration found".into())) };
         let mut exec = match WorkflowExecutor::new(&src, &name) { Ok(e) => e, Err(e) => return run_fail(err("Codegen", "E_CODEGEN", e)) };
+        exec.enable_trace();
 
         let _ = take_output();
         let mut diagnostics: Vec<Diag> = vec![];
@@ -167,14 +215,27 @@ pub fn run_source_json(source: &str) -> String {
         let output: Vec<String> = if raw.is_empty() { vec![] } else { raw.trim_end_matches('\n').split('\n').map(|s| s.to_string()).collect() };
         let steps = exec.save().step_count;
 
+        // Real execution trace recorded by the VM as it ran.
+        let trace = to_trace_steps(&src, exec.trace());
+        let trace_truncated = exec.trace_truncated();
+        // Point the run at the exact statement that failed, when one did:
+        // the last Error event carries the failing statement's source span.
+        let runtime_error_source_span = exec
+            .trace()
+            .iter()
+            .rev()
+            .find(|e| matches!(e.kind, TraceKind::Error))
+            .and_then(|e| e.span)
+            .map(|(start, end)| Span { start, end });
+
         #[derive(Serialize)]
-        struct RunResult { return_value: serde_json::Value, output: Vec<String>, steps: u64, runtime_error: Option<RtErr>, runtime_error_source_span: Option<Span>, trace: Vec<Span>, trace_truncated: bool }
+        struct RunResult { return_value: serde_json::Value, output: Vec<String>, steps: u64, runtime_error: Option<RtErr>, runtime_error_source_span: Option<Span>, trace: Vec<TraceStep>, trace_truncated: bool }
         #[derive(Serialize)]
         struct RunEnvelope { ok: bool, value: Option<Ic>, diagnostics: Vec<Diag>, run: Option<RunResult> }
         #[derive(Serialize)]
         struct Ic { instruction_count: usize }
 
-        let run = RunResult { return_value, output, steps, runtime_error, runtime_error_source_span: None, trace: vec![], trace_truncated: false };
+        let run = RunResult { return_value, output, steps, runtime_error, runtime_error_source_span, trace, trace_truncated };
         serde_json::to_string(&RunEnvelope { ok: true, value: Some(Ic { instruction_count }), diagnostics, run: Some(run) }).unwrap_or_else(|e| ice(&e.to_string()))
     })
 }
