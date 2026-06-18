@@ -144,6 +144,15 @@ impl RunEventCtx {
         self
     }
 
+    /// Seed the sequence counter so emitted events continue after
+    /// any events already written for this run (e.g. the `Queued`
+    /// event the RunManager emits before dispatch). Prevents a
+    /// `UNIQUE(run_id, seq)` collision between the two emitters.
+    pub fn with_start_seq(self, seq: u64) -> Self {
+        self.next_seq.store(seq, Ordering::Relaxed);
+        self
+    }
+
     /// Allocate the next sequence number. Lock-free; monotonic
     /// within a single run.
     pub fn next_seq(&self) -> u64 {

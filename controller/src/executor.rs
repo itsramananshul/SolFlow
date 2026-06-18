@@ -93,15 +93,33 @@ pub async fn execute_run(
     // same monotonic seq counter). c94 — install the per-run
     // event-log cap so a runaway workflow can't spam the SSE
     // stream or grow the run_events table without bound.
+    // Seed the per-run event seq counter so execute_run's events
+    // continue *after* the `Queued` event the RunManager already
+    // wrote (it emits Queued at seq 0 on enqueue). Without this the
+    // two emitters both start at 0 and collide on UNIQUE(run_id,
+    // seq). `start_seq == 0` means no prior events (e.g. execute_run
+    // driven directly in a unit test), so we still emit our own
+    // Queued; otherwise the RunManager owns it and we skip it.
+    let start_seq = if event_sink.is_some() {
+        persistence
+            .next_event_seq(&record.id)
+            .await
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let ctx = event_sink.as_ref().map(|s| {
         Arc::new(
             RunEventCtx::new(record.id.clone(), s.clone())
+                .with_start_seq(start_seq)
                 .with_max_events(Some(policy.max_events_per_run)),
         )
     });
 
-    if let Some(c) = &ctx {
-        c.emit(queued_event(c)).await;
+    if start_seq == 0 {
+        if let Some(c) = &ctx {
+            c.emit(queued_event(c)).await;
+        }
     }
 
     // Mark Running + persist before the VM starts so callers
