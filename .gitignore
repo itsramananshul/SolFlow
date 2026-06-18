@@ -43,6 +43,3 @@ pkg-node/
 
 .vercel
 *.db
-_solcheck/
-.sol-ground-truth.md
-sol/examples/parse_check.rs
