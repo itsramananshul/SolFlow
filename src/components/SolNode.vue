@@ -8,7 +8,7 @@
  * a "wired" pill instead. Click-stop prevents Vue Flow from dragging the
  * node when the user clicks into an input.
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { Handle, Position, useVueFlow } from '@vue-flow/core';
 
 import type { GraphNode, NodeData, Port } from '@/graph/schema';
@@ -52,7 +52,21 @@ const CATEGORY_ICONS: Record<string, string> = {
 const categoryIcon = computed(() => CATEGORY_ICONS[category.value] || CATEGORY_ICONS.flow);
 
 // Collapsed by default; expand to the full edit form only when selected.
-const expanded = computed(() => props.selected === true);
+const editing = ref(false);
+const expanded = computed(() => editing.value);
+function toggleEdit() { editing.value = !editing.value; }
+// Single click only selects; collapse the form again when deselected so the
+// canvas stays clean.
+watch(() => props.selected, (sel) => { if (!sel) editing.value = false; });
+
+// Mixed surfaces like the reference: main nodes light glass, data plumbing dark
+// glass, small utilities compact white pills.
+const surfaceClass = computed(() => {
+  const c = category.value;
+  if (c === 'call' || c === 'entry' || c === 'trigger') return 'surf-light';
+  if (c === 'variable' || c === 'literal' || c === 'operator' || c === 'access') return 'surf-dark';
+  return 'surf-pill';
+});
 
 // Turn raw cron into a human phrase so the card never shows */5 * * * *.
 function humanizeCron(cron?: string): string {
@@ -550,6 +564,7 @@ function formatLiteralPreview(t: string, v: string): string {
     :class="[
       'sf-node',
       `cat-${category}`,
+      surfaceClass,
       { selected, expanded, 'is-running': simStatus === 'running', 'is-visited': simStatus === 'visited', 'is-failed': simStatus === 'failed' },
     ]"
     @mouseenter="ui.setHovered(node.id)"
@@ -559,6 +574,7 @@ function formatLiteralPreview(t: string, v: string): string {
       class="header"
       @mouseenter="showTooltip"
       @mouseleave="hideTooltip"
+      @dblclick.stop="toggleEdit"
     >
       <span class="node-icon" :style="{ color: categoryDot }" v-html="categoryIcon" />
       <div class="sf-meta">
@@ -599,6 +615,18 @@ function formatLiteralPreview(t: string, v: string): string {
         <span class="runtime-text">{{ simValueSummary }}</span>
       </div>
       <div class="quick-actions nodrag">
+        <button
+          class="qa-btn"
+          :title="expanded ? 'Close settings' : 'Edit settings'"
+          aria-label="Edit node settings"
+          @click.stop="toggleEdit"
+          @mousedown.stop
+        >
+          <svg viewBox="0 0 12 12" width="10" height="10" fill="none" aria-hidden="true">
+            <circle cx="6" cy="6" r="1.7" stroke="currentColor" stroke-width="1.1" />
+            <path d="M6 1.4v1.3M6 9.3v1.3M1.4 6h1.3M9.3 6h1.3M2.7 2.7l.9.9M8.4 8.4l.9.9M2.7 9.3l.9-.9M8.4 3.6l.9-.9" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" />
+          </svg>
+        </button>
         <button
           v-if="canDuplicate"
           class="qa-btn"
