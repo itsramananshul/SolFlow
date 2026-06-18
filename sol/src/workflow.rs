@@ -172,6 +172,18 @@ impl WorkflowExecutor {
         self.vm.trace_truncated()
     }
 
+    /// Record a trace error at the VM's current call site. Used when an
+    /// external call is blocked or fails so the trace points at the
+    /// `call(...)` statement that triggered it.
+    pub fn trace_ext_error(&mut self, message: String) {
+        self.vm.trace_ext_error(message);
+    }
+
+    /// Source span of the instruction the VM is currently at, if mapped.
+    pub fn current_span(&self) -> Option<(usize, usize)> {
+        self.vm.current_span()
+    }
+
     pub fn name(&self) -> &str {
         &self.workflow.name
     }
