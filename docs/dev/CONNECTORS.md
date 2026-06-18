@@ -6,6 +6,52 @@ into real external I/O. Browser-sim still blocks ExtCall (no
 network in the browser by design); the controller dispatches it
 through this framework instead.
 
+## Providers: the live path (Phase 3)
+
+The canonical run path (`controller/src/canonical_exec.rs`) resolves a
+SOL `call("module.function", payload)` through a **provider registry**: a
+map from module name to a connector base URL, read from the
+`SOLFLOW_CONNECTORS` environment variable (a JSON object). A module of
+`"*"` is a wildcard that catches every Action. This is the registry the
+controller actually uses, and `GET /providers` lists it (the editor's
+Controller Settings shows it as "Registered providers").
+
+For each external Action the controller POSTs
+`{ "module": <str>, "function": <str>, "params": <json> }` to the
+module's URL and feeds the JSON response back into the workflow. A module
+with no registered provider (and no `"*"` fallback) is **blocked** with a
+clear, source mapped error naming the module and function; the failure
+ties to the exact `call(...)` line via the execution trace. The per call
+HTTP timeout is `SOLFLOW_CONNECTOR_TIMEOUT_MS` (default 30000).
+
+### Run a capability workflow end to end (demo connector)
+
+```sh
+# 1. Start the bundled demo connector (functions: echo, add, greeting).
+cargo run -p solflow_controller --bin demo-connector            # :8099
+
+# 2. Start the controller with the demo module registered.
+SOLFLOW_CONNECTORS='{"demo":"http://127.0.0.1:8099"}' \
+  cargo run -p solflow_controller --bin solflow-controller      # :3939
+
+# 3. Run a workflow that makes a real external call:
+#      workflow "start" {
+#        let sum: int = call("demo.add", { a: 20, b: 22 });
+#        print(sum);   # prints 42
+#        return sum;
+#      }
+#    Select Local Controller in the editor's Run modal, or POST it to
+#    /workflows + /runs. The Trace tab shows extcall + extresult steps.
+```
+
+In Browser Simulation the same workflow blocks the call (no providers in
+the browser) and the Trace tab shows the blocking error at the call site.
+
+The rest of this document describes the richer `Connector` trait
+framework (`controller/src/connector/`), which is available for typed,
+policy aware connectors and is the path the `ext function` /
+`connector://` model uses.
+
 ## Architecture
 
 ```
