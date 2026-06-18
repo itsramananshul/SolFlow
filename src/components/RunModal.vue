@@ -1263,16 +1263,20 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
             </template>
             <template v-else-if="mode === 'controller-local'">
               <div class="empty">
-                The step trace is available in Browser Simulation. For
-                controller runs, open the Live tab to follow streamed
-                run events.
+                Open the <strong>Output</strong> tab for the program's
+                printed lines, or <strong>Live</strong> to follow the
+                controller's run events.
               </div>
             </template>
             <template v-else-if="!hasResult || compileFailed">
-              <div class="empty">No execution trace — run a clean program to see one.</div>
+              <div class="empty">Run a program to see its result.</div>
             </template>
             <template v-else-if="traceRows.length === 0">
-              <div class="empty">Execution produced no source-mapped steps.</div>
+              <div class="empty">
+                The runtime does not emit a source-mapped step trace.
+                The <strong>Output</strong> tab shows the program's
+                printed lines in order, and it scrolls for long output.
+              </div>
             </template>
             <template v-else>
               <div class="output-toolbar">
