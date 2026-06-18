@@ -4,11 +4,11 @@
 > `parser.rs:289–325`, `parser.rs:250–287`, `analyzer.rs:66–137`,
 > and `vm.rs:56–86`.
 
-SOL has a single function kind, declared with the `function`
+SOL has a single function kind, declared with the `fn`
 keyword. Functions are not first-class values; there is no closure
 form, no anonymous-function literal, and no method syntax. A
 program is a flat collection of declared functions plus an
-optional set of `ext function` declarations that the host runtime
+optional set of `ext fn` declarations that the host runtime
 will supply.
 
 This chapter covers declaration form, parameter and return
@@ -22,14 +22,14 @@ recursion model, and the conventional `start` entry function.
 The full surface form is:
 
 ```sol
-function name(p1: T1, p2: T2, …) -> R {
-    // body statements
+fn name(p1: T1, p2: T2, …) -> R {
+    # body statements
 }
 ```
 
 Parsed at `parser.rs:289–325`. Components:
 
-- **`function`** keyword (`Token::Func`).
+- **`fn`** keyword (`Token::Func`).
 - **`name`** — an identifier. The parser rejects anything else with:
   > name expected after function keyword
 - **Parameter list** in `(` `)`. Zero or more `name: type` pairs,
@@ -42,15 +42,15 @@ Parsed at `parser.rs:289–325`. Components:
   call; see `parser.rs:347–360`).
 
 ```sol
-function add(a: int, b: int) -> int {
+fn add(a: int, b: int) -> int {
     return a + b;
 }
 
-function announce() {
+fn announce() {
     print("ready");
 }
 
-function noop() {}
+fn noop() {}
 ```
 
 All three above are valid; `noop` returns `Void` and has an empty
@@ -97,9 +97,9 @@ body block.
 ### Empty function body
 
 ```sol
-function noop() {}
-function placeholder_a(name: str) {}     // gemini_long.sol pattern
-function placeholder_b(name: str) -> int { }
+fn noop() {}
+fn placeholder_a(name: str) {}     # gemini_long.sol pattern
+fn placeholder_b(name: str) -> int { }
 ```
 
 All three forms are parser-accepted. The first two are `Void`-
@@ -120,10 +120,10 @@ body doesn't actually return.
 
 | Construct | Reason |
 |---|---|
-| `fn` (instead of `function`) | The keyword is `function` only |
-| Generic parameters (`function f<T>(…)`) | The lexer has no `<` token in declarator position; `<` is the binary less-than operator |
+| `function` (instead of `fn`) | The keyword is `fn` only |
+| Generic parameters (`fn f<T>(…)`) | The lexer has no `<` token in declarator position; `<` is the binary less-than operator |
 | Default parameter values | The grammar requires `name: type`, with no `=` permitted |
-| `export function` | No `export` keyword exists; treat any source that uses it as broken |
+| `export fn` | No `export` keyword exists; treat any source that uses it as broken |
 | `pub` / visibility modifiers | None exist; all top-level functions are visible to the analyzer's global table |
 
 ---
@@ -213,26 +213,26 @@ unreachable code today.
 
 ---
 
-## 5.4 External functions (`ext function`)
+## 5.4 External functions (`ext fn`)
 
 ```sol
-ext function fetch_orders(query: str) -> str;
+ext fn fetch_orders(query: str) -> str;
 ```
 
-Parsed at `parser.rs:250–287`. Differences from a normal `function`:
+Parsed at `parser.rs:250–287`. Differences from a normal `fn`:
 
-- The keyword `ext` precedes `function`.
+- The keyword `ext` precedes `fn`.
 - **No body**; the declaration ends with `;`.
 - Otherwise the parameter and return-type syntax is identical.
 
-At the analyzer level (`analyzer.rs:84–89`), `ext function`
+At the analyzer level (`analyzer.rs:84–89`), `ext fn`
 declarations are registered exactly like regular ones: a function
 symbol is added to the global scope with the declared signature.
 The call-site type rules (§5.2) are identical for both kinds. A
 caller cannot — and does not need to — distinguish whether the
 target is local or external.
 
-The host-runtime wiring that maps an `ext function` name to a real
+The host-runtime wiring that maps an `ext fn` name to a real
 implementation is documented in
 [chapter 12](./12-imports-and-controllers.md).
 
@@ -287,8 +287,8 @@ as a strong convention.
 A typical entry function shape:
 
 ```sol
-function start() -> int {
-    // body
+fn start() -> int {
+    # body
     return 0;
 }
 ```
@@ -304,11 +304,11 @@ undefined. Idiomatic SOL ends `start` with an explicit `return 0;`.
 
 | Pattern | What happens |
 |---|---|
-| `function start { … }` | Parse error: parser expects `(` after the function name |
-| `function start() -> { … }` | Parse error: `parse_type` cannot parse `{`; the message is "`LCurly` is not valid in a type specifier" |
+| `fn start { … }` | Parse error: parser expects `(` after the function name |
+| `fn start() -> { … }` | Parse error: `parse_type` cannot parse `{`; the message is "`LCurly` is not valid in a type specifier" |
 | Calling `print` with the wrong type | None; `print` accepts any arg types (chapter 13) |
 | Recursive function with no base case | Type-checks fine; stack-overflows at runtime (uncaught) |
-| `ext function f();` without `-> T` | Returns `Void`; calls of `f()` in an expression position will compile but their value is unusable |
+| `ext fn f();` without `-> T` | Returns `Void`; calls of `f()` in an expression position will compile but their value is unusable |
 | Calling a struct as a function (`Point(1, 2)`) | The name resolves to a struct symbol, not a function. The analyzer prints:<br>`attempting to make a function call on a non-function type: 'Point'` |
 
 ---

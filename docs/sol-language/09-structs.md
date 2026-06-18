@@ -79,7 +79,7 @@ not match the order in the declaration:
 struct Point { x: int, y: int }
 
 let a: Point = Point { x: 10, y: 20 };
-let b: Point = Point { y: 99, x: 11 };   // also fine
+let b: Point = Point { y: 99, x: 11 };   # also fine
 ```
 
 Demonstrated by `test_struct.sol::test_field_order`.
@@ -104,7 +104,7 @@ conditions because of an unavoidable ambiguity with the body block.
 Wrap in parentheses to use:
 
 ```sol
-if (Point { x: 0, y: 0 }) { … }    // explicit grouping
+if (Point { x: 0, y: 0 }) { … }    # explicit grouping
 ```
 
 See [chapter 03 §3.5](./03-syntax.md) and [chapter 07 §7.1](./07-control-flow.md).
@@ -194,7 +194,7 @@ Demonstrated by `test_array.sol::test_array_of_struct`.
 ## 9.7 Structs as parameters and returns
 
 ```sol
-function offset(p: Point, dx: int, dy: int) -> Point {
+fn offset(p: Point, dx: int, dy: int) -> Point {
     p.x = p.x + dx;
     p.y = p.y + dy;
     return p;

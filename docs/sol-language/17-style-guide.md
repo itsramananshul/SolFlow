@@ -43,8 +43,8 @@ variants of the same enum that share a first character will
 collide at runtime. Pick first characters carefully:
 
 ```sol
-enum Status { Active, Inactive }      // A and I — OK
-enum Status { Active, Aborted }       // both A — BAD (collides at runtime)
+enum Status { Active, Inactive }      # A and I — OK
+enum Status { Active, Aborted }       # both A — BAD (collides at runtime)
 ```
 
 If you must use multiple variants with the same first character,
@@ -79,7 +79,7 @@ to both questions visible without scrolling.
 - **Opening brace on the same line** as the construct that opens
   it:
   ```sol
-  function start() -> int {
+  fn start() -> int {
       ...
   }
   ```
@@ -98,10 +98,10 @@ apply it consistently.
 - Each `let` introduces exactly one binding.
 - Prefer named intermediate `let`s over long inline expressions:
   ```sol
-  // less readable
+  # less readable
   let result: int = (compute(a, b) + compute(c, d)) * scale;
 
-  // more readable
+  # more readable
   let left:   int = compute(a, b);
   let right:  int = compute(c, d);
   let total:  int = left + right;
@@ -117,7 +117,7 @@ apply it consistently.
 
 - Use early `return` to flatten nesting:
   ```sol
-  function clamp(x: int) -> int {
+  fn clamp(x: int) -> int {
       if x < 0 { return 0; }
       if x > 100 { return 100; }
       return x;
@@ -182,7 +182,7 @@ The corpus uses comments sparingly. Write a comment only when the
   first arg — see T9003").
 - A reference to an external system or contract.
 
-Don't write comments that restate the code. `// add one to count`
+Don't write comments that restate the code. `# add one to count`
 above `count = count + 1;` adds nothing.
 
 ---
@@ -191,7 +191,7 @@ above `count = count + 1;` adds nothing.
 
 | Anti-pattern | Why it's bad | Fix |
 |---|---|---|
-| `export function foo() { … }` | `export` isn't a keyword — fails at parse (E0003) | Drop `export`; every top-level `function` is host-visible |
+| `export fn foo() { … }` | `export` isn't a keyword — fails at parse (E0003) | Drop `export`; every top-level `fn` is host-visible |
 | Identifier starting with `_` | Lexer eats the leading `_` as trivia | Don't lead with `_` |
 | Numeric digit separator (`1_000`) | Lexer eats the `_` as trivia; you get two integers | Write integers without separators |
 | `if cond { let x: int = …; } print(x);` | `x` is out of scope here | Move the `let` up |
@@ -208,7 +208,7 @@ above `count = count + 1;` adds nothing.
 ## 17.10 A short canonical example to model on
 
 ```sol
-ext function lookup_order(id: int) -> str;
+ext fn lookup_order(id: int) -> str;
 
 enum OrderStatus {
     New,
@@ -222,7 +222,7 @@ struct Order {
     status: OrderStatus,
 }
 
-function process_order(id: int) -> int {
+fn process_order(id: int) -> int {
     let raw: str = lookup_order(id);
     print("processing:");
     print(raw);
@@ -241,7 +241,7 @@ function process_order(id: int) -> int {
     return 1;
 }
 
-function start() -> int {
+fn start() -> int {
     return process_order(42);
 }
 ```

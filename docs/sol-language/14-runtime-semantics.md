@@ -163,8 +163,8 @@ semantics apply: `inf`, `-inf`, `NaN` are valid result values;
 division by zero yields one of them and does **not** trap.
 
 ```sol
-let x: float = 1.0 / 0.0;        // x is inf
-let y: float = 0.0 / 0.0;        // y is NaN
+let x: float = 1.0 / 0.0;        # x is inf
+let y: float = 0.0 / 0.0;        # y is NaN
 ```
 
 `NaN` is unequal to itself; `x == x` is false if `x` is `NaN`.
@@ -183,7 +183,7 @@ literals always allocate two distinct heap entries:
 ```sol
 let a: str = "hello";
 let b: str = "hello";
-// a and b refer to different heap entries; they are NOT pointer-equal
+# a and b refer to different heap entries; they are NOT pointer-equal
 ```
 
 String **equality** is content-based (`bytecode.rs:683`, runtime

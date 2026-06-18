@@ -183,8 +183,8 @@ omitted.
 ### Type syntax
 
 ```
-[N]T     // fixed-size array of N elements of type T
-[]T      // dynamic / unsized array of T
+[N]T     # fixed-size array of N elements of type T
+[]T      # dynamic / unsized array of T
 ```
 
 The size `N` must be an integer literal (`parser.rs:213–219`); the
@@ -281,7 +281,7 @@ it into a more precise message.
 
 ```sol
 let a: [3]int = [1, 2, 3];
-let b: [5]int = a;            // analyzer: cannot assign mismatched types
+let b: [5]int = a;            # analyzer: cannot assign mismatched types
 ```
 
 This is **opposite** of what an earlier draft of this manual
@@ -386,7 +386,7 @@ Every conversion has to be done by the host via an `ext function`.
 A common pattern is to declare:
 
 ```sol
-ext function to_str(n: int) -> str;
+ext fn to_str(n: int) -> str;
 ```
 
 and call it explicitly.

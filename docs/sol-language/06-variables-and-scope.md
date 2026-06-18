@@ -21,8 +21,8 @@ referenced that doesn't exist.
 ## 6.1 Declaration
 
 ```sol
-let name: T;          // declaration only (parser accepts; rare in practice)
-let name: T = expr;   // declaration plus initializer
+let name: T;          # declaration only (parser accepts; rare in practice)
+let name: T = expr;   # declaration plus initializer
 ```
 
 Parsed at `parser.rs:326–345`. The initializer is **optional at the
@@ -44,15 +44,15 @@ The `..` ignores the AST node's `value` field. Two consequences:
 1. **The declared type and the initializer's type are not checked
    against each other.**
    ```sol
-   let x: int = "this is a string";   // analyzer accepts
+   let x: int = "this is a string";   # analyzer accepts
    ```
    The bytecode emitter is what ultimately decides whether the
    program compiles; the analyzer does not catch the mismatch.
 2. **An undefined name *inside* an initializer is not caught at
    the `let`.**
    ```sol
-   let x: int = undefined_var;        // analyzer accepts the let
-   print(x);                          // x reads as 0 / garbage
+   let x: int = undefined_var;        # analyzer accepts the let
+   print(x);                          # x reads as 0 / garbage
    ```
    The bad name only surfaces if a later expression reads `x` in a
    walked context, or if the bytecode emitter walks initializers
@@ -74,7 +74,7 @@ let p: Point = Point { x: 1, y: 2 };
 *Parser-accepted, semantically uninitialized:*
 
 ```sol
-let flag: bool;       // legal to parse; flag has whatever 0-bits mean as bool
+let flag: bool;       # legal to parse; flag has whatever 0-bits mean as bool
 ```
 
 Avoid the uninitialized form in production code.
@@ -89,7 +89,7 @@ correct way.
 
 The mechanics are documented in detail in [chapter 20 §20.2](./20-implementation-notes.md)
 and tracked as `T9014` in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md#t9014--top-level-let-is-broken-reading-from-a-function-panics-at-runtime).
-The short version: each `function` decl resets the codegen's
+The short version: each `fn` decl resets the codegen's
 local-slot counter, and the function's runtime frame pointer
 sits *above* the top-level slot, so a function-body read of the
 top-level name either panics on out-of-bounds stack access or
@@ -101,12 +101,12 @@ Move every binding into a function body — typically `start` or a
 helper called by `start`.
 
 ```sol
-// BAD — runtime panic when start tries to return g
+# BAD — runtime panic when start tries to return g
 let g: int = 42;
-function start() -> int { return g; }
+fn start() -> int { return g; }
 
-// GOOD
-function start() -> int {
+# GOOD
+fn start() -> int {
     let g: int = 42;
     return g;
 }
@@ -174,16 +174,16 @@ types:
 
 ```sol
 let count: int = 0;
-count = count + 1;       // OK
-count = "string";        // analyzer: cannot assign mismatched types
+count = count + 1;       # OK
+count = "string";        # analyzer: cannot assign mismatched types
 ```
 
 If the LHS is an identifier that isn't in scope:
 
 ```sol
-foo = 5;                 // analyzer: cannot assign mismatched types: ...
-                         // because the type-check of the LHS fails first
-                         // with "variable `foo` could not be found in the current scope"
+foo = 5;                 # analyzer: cannot assign mismatched types: ...
+                         # because the type-check of the LHS fails first
+                         # with "variable `foo` could not be found in the current scope"
 ```
 
 ### Assignment to a struct field
@@ -234,7 +234,7 @@ the block (`Ast::Block`), which the analyzer creates a new
 | `import` statement (top-level or inside function) | No new scope, but **the alias is added to the current scope as a `Void`-typed local** — see chapter 12 §12.3 |
 | Inline expression | No |
 
-A consequence of the empty-block case: `function noop() {}` and
+A consequence of the empty-block case: `fn noop() {}` and
 `{ { { { } } } }` cost nothing at the analyzer level — no scope
 is opened, no `TypeTable` is allocated. The bytecode emitter
 still emits an `Inst::Ret` (for the empty function body) or
@@ -249,14 +249,14 @@ within that block, until the block ends. After the block ends, the
 binding goes out of scope.
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let a: int = 1;
     if (a == 1) {
         let b: int = 2;
-        print(a);      // OK — a is in scope
-        print(b);      // OK — b is in this block
+        print(a);      # OK — a is in scope
+        print(b);      # OK — b is in this block
     }
-    print(b);          // analyzer: variable `b` could not be found
+    print(b);          # analyzer: variable `b` could not be found
     return a;
 }
 ```
@@ -266,8 +266,8 @@ function start() -> int {
 ### Use before declaration
 
 ```sol
-function start() -> int {
-    print(x);           // analyzer: variable `x` could not be found in the current scope
+fn start() -> int {
+    print(x);           # analyzer: variable `x` could not be found in the current scope
     let x: int = 5;
     return x;
 }
@@ -288,9 +288,9 @@ Fixture: `error_semantic1.sol` (which uses `undefined_var` in a
 SOL **does not allow** re-declaring a name in the *same* scope:
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let x: int = 5;
-    let x: int = 10;     // analyzer: redefinition of `x`
+    let x: int = 10;     # analyzer: redefinition of `x`
     return x;
 }
 ```
@@ -306,9 +306,9 @@ name takes precedence inside the inner block:
 let n: int = 1;
 {
     let n: int = 2;
-    print(n);           // 2
+    print(n);           # 2
 }
-print(n);               // 1
+print(n);               # 1
 ```
 
 The analyzer's name lookup (`get_entry`, `analyzer.rs:57–60`)
@@ -333,12 +333,12 @@ The practical consequence: **`x` is still in scope after the loop
 ends.**
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let xs: []int = [1, 2, 3];
     for x in xs {
         print(x);
     }
-    return x;            // analyzer accepts — `x` is still in scope here
+    return x;            # analyzer accepts — `x` is still in scope here
 }
 ```
 
@@ -350,7 +350,7 @@ This is a known quirk. Two reasonable defenses:
    {
        for x in xs { print(x); }
    }
-   // x is out of scope here
+   # x is out of scope here
    ```
 2. Choose iteration-variable names that don't collide with later
    logic.
@@ -363,7 +363,7 @@ Parameters are bound in the function body's outermost scope before
 the body is walked (`analyzer.rs:113–116`):
 
 ```sol
-function greet(name: str) -> int {
+fn greet(name: str) -> int {
     print(name);
     return 0;
 }
@@ -374,8 +374,8 @@ trips the duplicate-name rule, same as any other shadowing in the
 same scope:
 
 ```sol
-function greet(name: str) -> int {
-    let name: str = "anon";        // redefinition of `name`
+fn greet(name: str) -> int {
+    let name: str = "anon";        # redefinition of `name`
     return 0;
 }
 ```

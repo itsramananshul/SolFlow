@@ -42,8 +42,8 @@ next token isn't `{` — that's the mechanism that makes
 Parentheses around the condition are **optional**:
 
 ```sol
-if (x > 5) { ... }      // OK
-if x > 5 { ... }         // also OK — confirmed by test_arith.sol & test_control.sol
+if (x > 5) { ... }      # OK
+if x > 5 { ... }         # also OK — confirmed by test_arith.sol & test_control.sol
 ```
 
 Inside the condition the parser disables struct-literal parsing
@@ -54,8 +54,8 @@ type. Re-enable struct literals inside the condition by wrapping
 in extra parentheses:
 
 ```sol
-if Point { x: 0, y: 0 } { ... }       // parses as `if Point { ... }` (block body!)
-if (Point { x: 0, y: 0 }) { ... }      // explicit grouping — struct literal is the condition
+if Point { x: 0, y: 0 } { ... }       # parses as `if Point { ... }` (block body!)
+if (Point { x: 0, y: 0 }) { ... }      # explicit grouping — struct literal is the condition
 ```
 
 The first form is almost always a bug. Prefer to compute the
@@ -168,7 +168,7 @@ while i < 10 {
 
 ```sol
 while false { print("never"); }
-// continues after the loop normally
+# continues after the loop normally
 ```
 
 Demonstrated by `test_control.sol::test_while_zero`.
@@ -222,10 +222,10 @@ than to the loop body's scope (`analyzer.rs:211`). After the loop
 ends the binding is still in scope:
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let xs: []int = [1, 2, 3];
     for x in xs { print(x); }
-    return x;           // analyzer accepts — x is still bound
+    return x;           # analyzer accepts — x is still bound
 }
 ```
 
@@ -249,7 +249,7 @@ for item in [10, 20, 30] {
 ```sol
 let xs: []int = [];
 for x in xs { return 0; }
-return 1;                // reached — body never executed
+return 1;                # reached — body never executed
 ```
 
 Demonstrated by `test_control.sol::test_for_empty`.
@@ -285,7 +285,7 @@ including arbitrarily nested `if` / `while` / `for-in` bodies.
 Demonstrated by `test_edge.sol::test_nested_return`:
 
 ```sol
-function test_nested_return() -> int {
+fn test_nested_return() -> int {
     if (true) {
         if (true) {
             if (true) {

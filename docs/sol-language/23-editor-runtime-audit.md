@@ -233,10 +233,10 @@ body writes to the same flat object. Two `let`s with the same
 name in different blocks both overwrite the same scope key.
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let x: int = 5;
     if true {
-        let x: int = 10;       // analyzer: redefinition of x
+        let x: int = 10;       # analyzer: redefinition of x
     }
     return x;
 }
@@ -253,9 +253,9 @@ Worse, the inverse pattern fails *in the simulator* even though
 canonical SOL accepts it:
 
 ```sol
-function start() -> int {
+fn start() -> int {
     if true { let inner: int = 5; }
-    return inner;     // canonical: variable `inner` could not be found
+    return inner;     # canonical: variable `inner` could not be found
 }
 ```
 

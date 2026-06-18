@@ -64,7 +64,7 @@ inline expressions, mirroring the emitter's precedence).
 | Data shape | `{ kind: 'trigger', triggerKind, eventName, payloadSchema, samplePayload, webhookPath?, cronExpr?, httpMethod?, httpPath? }` |
 | Input ports | (none) |
 | Output ports | `next` (control, required), `payload` (data, `any`, optional) |
-| Emitted SOL | a comment line, e.g. `// @trigger webhook event="order.received" path="/wh/orders"`, ahead of the function header |
+| Emitted SOL | a comment line, e.g. `# @trigger webhook event="order.received" path="/wh/orders"`, ahead of the function header |
 | Emit position | function preamble |
 | Notes | **Editor extension; NOT canonical SOL.** The comment is parser-tolerated as a comment but carries no language semantics. Logged as `T9001` |
 
@@ -327,7 +327,7 @@ more readable graph; the SOL output is identical either way.
 
 | Editor concept | Canonical SOL equivalent | Status |
 |---|---|---|
-| `trigger` node + `// @trigger …` annotation | (none) | Editor extension; tolerated by the parser as a comment; T9001 |
+| `trigger` node + `# @trigger …` annotation | (none) | Editor extension; tolerated by the parser as a comment; T9001 |
 | `note` / `frame` annotations | (none) | Editor-only; never appear in emitted SOL |
 | `any` type marker on unresolved data edges | (none — SOL has no `any` type) | Editor-only; chapter 04 §4.1 |
 | Per-node `position`, `expressions` metadata | (none) | Stored in the workflow JSON for round-trip into the editor; not part of SOL itself |
@@ -411,7 +411,7 @@ recognize the `if` keyword as a primary form → parser exit with
 **Recommendation:** The validator should at minimum reject inline
 expressions containing SOL keywords that aren't valid in
 expression position (`if`, `else`, `while`, `for`, `let`,
-`return`, `struct`, `enum`, `import`, `function`, `ext`, `as`).
+`return`, `struct`, `enum`, `import`, `fn`, `ext`, `as`).
 A stronger fix would route inline expressions through a real SOL
 expression parser. Logged as **T9018**.
 

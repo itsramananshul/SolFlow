@@ -9,9 +9,9 @@
 A SOL program is a self-contained file: it cannot read other
 `.sol` files at compile time, and there is no module system in the
 language proper. What a SOL program *can* do is declare names that
-the host runtime will supply (`ext function`) and use names that
+the host runtime will supply (`ext fn`) and use names that
 the host runtime will arrange to call back into (the conventional
-`start` function plus any other plain `function`).
+`start` function plus any other plain `fn`).
 
 This chapter has two parts:
 
@@ -23,23 +23,23 @@ This chapter has two parts:
 
 ---
 
-## 12.1 `ext function` — declaring an external function
+## 12.1 `ext fn` — declaring an external function
 
 ```sol
-ext function fetch_orders(query: str) -> str;
-ext function notify(channel: str, body: str);
+ext fn fetch_orders(query: str) -> str;
+ext fn notify(channel: str, body: str);
 ```
 
 Parsed at `parser.rs:250–287`. Syntactic differences from a normal
-`function`:
+`fn`:
 
-- The keyword `ext` precedes `function`.
+- The keyword `ext` precedes `fn`.
 - **No body**; the declaration ends with `;`.
 - Otherwise the parameter list and return type are identical.
 
 ### Analyzer behavior
 
-At the analyzer level (`analyzer.rs:84–89`) an `ext function`
+At the analyzer level (`analyzer.rs:84–89`) an `ext fn`
 declaration is registered in the global type table exactly like a
 regular function — same signature shape, same name lookup, same
 duplicate-name rule. The call-site type checks (chapter 05 §5.2)
@@ -47,10 +47,10 @@ make no distinction between calling an `ext` function and calling
 a local one.
 
 ```sol
-ext function lookup(id: int) -> str;
+ext fn lookup(id: int) -> str;
 
-function start() -> int {
-    let name: str = lookup(42);   // call site is indistinguishable
+fn start() -> int {
+    let name: str = lookup(42);   # call site is indistinguishable
     print(name);
     return 0;
 }
@@ -104,7 +104,7 @@ Logged as **T9012** in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md).
 
 The host runtime supplies a *function-name → endpoint-URL* mapping
 when it constructs the code generator
-(`bytecode.rs:93–96, 457–460`). If an `ext function` is **declared
+(`bytecode.rs:93–96, 457–460`). If an `ext fn` is **declared
 in the source but not in the host's mapping**, the bytecode emitter
 exits at compile time with:
 
@@ -116,12 +116,12 @@ This is a deliberate fail-fast: a program that calls an external
 function with no transport bound to it would otherwise crash at
 runtime with no explanation.
 
-### What `ext function` is *not*
+### What `ext fn` is *not*
 
 - Not asynchronous. The compiled call sites block until the
   runtime returns.
 - Not a typeclass or trait — there is no way to declare multiple
-  `ext function` names with the same signature and a dispatch
+  `ext fn` names with the same signature and a dispatch
   rule.
 - Not an opaque type — the language enforces the declared
   signature on every call site; the host must honor it.
@@ -133,19 +133,19 @@ runtime with no explanation.
 SOL has no `export` keyword. The lexer's keyword table
 (`lexer.rs:341–356`) is fifteen entries; `export` is not among
 them. The host runtime calls back *into* the program by invoking a
-named regular `function`; the convention is `start`. There is no
+named regular `fn`; the convention is `start`. There is no
 language-level mechanism for marking a function as "visible from
-outside" — every top-level `function` is callable by the host that
+outside" — every top-level `fn` is callable by the host that
 loaded the program.
 
-If you encounter a source that uses `export function`, it will fail
+If you encounter a source that uses `export fn`, it will fail
 at parse time with:
 
 ```
 unknown declaration: Ident("export")
 ```
 
-Treat such sources as bugs; rewrite as a plain `function`.
+Treat such sources as bugs; rewrite as a plain `fn`.
 
 ---
 
@@ -281,7 +281,7 @@ for (node, funcs) in [ext]:
 
 The flattened map is what is handed to the SOL bytecode emitter
 via `Codegen::with_ext_endpoints(...)` (chapter 12 §12.1, third
-paragraph). If a SOL source declares `ext function f();` and `f`
+paragraph). If a SOL source declares `ext fn f();` and `f`
 is not present in this map, compilation fails with:
 
 ```
@@ -303,8 +303,8 @@ to have `start` and let the host call it implicitly.
 Everything in §12.4 is host-specific and may change. The pieces of
 behavior that are **language**-level, and therefore stable, are:
 
-- The form `ext function name(…) -> T;`
-- The form `function name(…) -> T { … }` and the convention of
+- The form `ext fn name(…) -> T;`
+- The form `fn name(…) -> T { … }` and the convention of
   using `start` as the host-invoked entry
 - The compile-time fail-fast when an `ext` declaration has no
   configured endpoint (this happens inside the SOL compiler, so it

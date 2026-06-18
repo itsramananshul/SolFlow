@@ -110,7 +110,7 @@ separately for each case.
 | Each function decl resets `self.locals.clear()` and `self.next_slot = 0` | **Current-impl** | `bytecode.rs:401–402`. Drives the top-level-let bug (T9014) |
 | `find_local_offset` auto-creates a fresh local for unknown names, defaulting to `Type::Integer` | **Current-impl** | `bytecode.rs:559–578`. Defensive but masks programmer errors that the analyzer should have caught |
 | Forward calls patched via `pending_calls` after full program emission | **Current-impl** | `bytecode.rs:151–157, 478–481` |
-| Built-in name dispatch happens *before* `ext_functions` and local-function checks (T9016) | **Current-impl** | `bytecode.rs:423–481`. User-declared `ext function rpc_request(...)` is shadowed |
+| Built-in name dispatch happens *before* `ext_functions` and local-function checks (T9016) | **Current-impl** | `bytecode.rs:423–481`. User-declared `ext fn rpc_request(...)` is shadowed |
 | `infer_type` falls back to `Integer` for unknown nodes (T9015) | **Current-impl** | `bytecode.rs:627–629`. Affects `print` of forward-call results and ext-call arg type inference |
 | Bare expression statements emit `<expr>; Pop` (T9013) | **Current-impl** | `bytecode.rs:218–223`. Useful pattern for `f();`-style discards |
 | `active_scopes: Vec<Scope>` is maintained but never read | **Current-impl** | Dead infrastructure; future cleanup |

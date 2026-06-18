@@ -12,11 +12,11 @@ fixture lives in [`EXAMPLES.md`](./EXAMPLES.md).
 ## 16.1 `retest.sol` — minimal viable program
 
 ```sol
-function sub_func(x: int) -> int {
+fn sub_func(x: int) -> int {
     return x * 2;
 }
 
-function start() -> int {
+fn start() -> int {
     let y: int = sub_func(9);
     print(y);
 }
@@ -46,7 +46,7 @@ function start() -> int {
 ## 16.2 `jjsi.sol` — struct + helper + start
 
 ```sol
-function is_high(val: int, limit: int) -> bool {
+fn is_high(val: int, limit: int) -> bool {
     if val > limit {
         return true;
     }
@@ -58,12 +58,12 @@ struct Person {
     age: int,
 }
 
-function print_person(p: Person) {
+fn print_person(p: Person) {
     print(p.name);
     print(p.age);
 }
 
-function start() -> int {
+fn start() -> int {
     let p: Person = Person {
         name: "evan",
         age: 19,
@@ -114,16 +114,16 @@ struct ProcessNode {
     metrics: [4]int,
 }
 
-function start_service(name: str) {
+fn start_service(name: str) {
     print("started service:");
     print(name);
 }
-function stop_service(name: str) {
+fn stop_service(name: str) {
     print("stopped service:");
     print(name);
 }
 
-function verify_capacity(node: ProcessNode, current: float) -> AppHealth {
+fn verify_capacity(node: ProcessNode, current: float) -> AppHealth {
     if current > node.threshold {
         return AppHealth::Overloaded;
     } else {
@@ -135,7 +135,7 @@ function verify_capacity(node: ProcessNode, current: float) -> AppHealth {
     }
 }
 
-function orchestrate_service(request_id: int) -> int {
+fn orchestrate_service(request_id: int) -> int {
     let limit: float = 90.5;
     let identity: char = 'S';
     let label: str = "Inventory_Orchestrator";
@@ -165,11 +165,11 @@ function orchestrate_service(request_id: int) -> int {
     }
 }
 
-function inc(x: int) -> int {
+fn inc(x: int) -> int {
     return x + 1;
 }
 
-function start() {
+fn start() {
     print(orchestrate_service(0));
 }
 ```
@@ -266,7 +266,7 @@ useful patterns:
 - `Point { y: 99, x: 11 }` — field-order doesn't matter
   (`test_field_order`).
 - `p.x = 100;` — field mutation (`test_mutate_field`).
-- `function test_struct_in_func(p: Point) -> int { return p.x + p.y; }`
+- `fn test_struct_in_func(p: Point) -> int { return p.x + p.y; }`
   — struct pass-through (`test_pass_struct`). Mutation
   visibility through the parameter is reference-semantics by
   default (chapter 14 §14.6).

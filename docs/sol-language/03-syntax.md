@@ -52,15 +52,15 @@ The lexer treats a bare `_` as trivia, *outside* of identifiers and
 numeric literals (`lexer.rs:307`). Two practical consequences:
 
 ```sol
-let _x = 5;      // tokenizes as `let x = 5;` — the leading _ is eaten
-let n = 1_000;   // tokenizes as `let n = 1; 000;` — TWO integers
+let _x = 5;      # tokenizes as `let x = 5;` — the leading _ is eaten
+let n = 1_000;   # tokenizes as `let n = 1; 000;` — TWO integers
 ```
 
 Inside an identifier (after the first alphabetic character) `_` is
 allowed as a name character (`lexer.rs:336`):
 
 ```sol
-let order_id: int = 7;   // fine — `_` lies between alphanumerics
+let order_id: int = 7;   # fine — `_` lies between alphanumerics
 ```
 
 Rule of thumb: **never lead an identifier with `_` and never use
@@ -202,8 +202,8 @@ Anything else `panic!`s with "unknown declaration".
 ### Function declaration
 
 ```sol
-function name(p1: T1, p2: T2) -> R {
-    // body
+fn name(p1: T1, p2: T2) -> R {
+    # body
 }
 ```
 
@@ -215,11 +215,11 @@ loop without a comma — `parser.rs:309–312`).
 *Valid:*
 
 ```sol
-function add(a: int, b: int) -> int {
+fn add(a: int, b: int) -> int {
     return a + b;
 }
 
-function announce() {
+fn announce() {
     print("ready");
 }
 ```
@@ -227,7 +227,7 @@ function announce() {
 *Invalid (missing brace):*
 
 ```sol
-function start() -> int
+fn start() -> int
     return 0;
 ```
 
@@ -244,7 +244,7 @@ left curly brace is never closed
 ### External-function declaration
 
 ```sol
-ext function name(p1: T1, …) -> R;
+ext fn name(p1: T1, …) -> R;
 ```
 
 No body; **terminated with a semicolon** (`parser.rs:284`). The
@@ -253,8 +253,8 @@ host runtime supplies the implementation (see [chapter 12](./12-imports-and-cont
 ### Variable declaration (top-level or local)
 
 ```sol
-let name: T;          // declaration with no initializer (parser-accepted)
-let name: T = expr;   // declaration with initializer
+let name: T;          # declaration with no initializer (parser-accepted)
+let name: T = expr;   # declaration with initializer
 ```
 
 The initializer is optional at the parser level (`parser.rs:337`),
@@ -488,8 +488,8 @@ condition, wrap it in parentheses — the `(` re-enables struct
 parsing (`parser.rs:714–716`).
 
 ```sol
-if (Point { x: 0, y: 0 }) { … }   // OK
-if Point { x: 0, y: 0 } { … }      // parses as `if Point { … }` (block as if body)
+if (Point { x: 0, y: 0 }) { … }   # OK
+if Point { x: 0, y: 0 } { … }      # parses as `if Point { … }` (block as if body)
 ```
 
 ### Enum variant reference
@@ -526,9 +526,9 @@ state (`parser.rs:714–716`).
 ### Unary expressions
 
 ```
--expr      // numeric negation (int / float)
-!expr      // logical not (and acts on int/float per the analyzer)
-~expr      // bitwise complement (int only)
+-expr      # numeric negation (int / float)
+!expr      # logical not (and acts on int/float per the analyzer)
+~expr      # bitwise complement (int only)
 ```
 
 Parsed at the unary level (`parser.rs:596–604`). `!` is unusually

@@ -136,7 +136,7 @@ available in the language:
 
 | Asked-for | Status |
 |---|---|
-| `len(array)` / `array.length` | Not exposed at the source level. The bytecode has an `ArrayLen` op but it is only emitted as part of the implicit `for-in` desugar (`bytecode.rs:272–328`); there is no syntax that reaches it. Expose array lengths via the host (`ext function len(a: []T) -> int;`) if you need them. |
+| `len(array)` / `array.length` | Not exposed at the source level. The bytecode has an `ArrayLen` op but it is only emitted as part of the implicit `for-in` desugar (`bytecode.rs:272–328`); there is no syntax that reaches it. Expose array lengths via the host (`ext fn len(a: []T) -> int;`) if you need them. |
 | String slicing / length / concat | Not exposed. `bytecode.rs:681–689` has `ConcatStr` and `EqStr` ops, but `ConcatStr` cannot be reached because the analyzer rejects `str + str` (chapter 04 §4.2.4). `EqStr` is reachable via `str == str`. Anything more complex must go through `ext function`. |
 | Math functions (`sqrt`, `abs`, `min`, `max`, `floor`, …) | Not in the language. Expose via `ext function`. |
 | I/O beyond `print` | Not in the language. Use `ext function`. |

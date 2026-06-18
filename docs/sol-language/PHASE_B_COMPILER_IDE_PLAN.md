@@ -497,7 +497,7 @@ to the binary — useless in a browser.
 - `cargo build --lib` succeeds
 - `cargo build --bin sol` succeeds (binary still works)
 - Existing fixture tests pass via the new library API path
-- A simple Rust test `let tokens = Lexer::from_str("function
+- A simple Rust test `let tokens = Lexer::from_str("fn
   start() {}").tokens();` compiles and runs
 
 **What NOT to do in B.1:**
@@ -700,7 +700,7 @@ milestone is editor-side work consuming the bridge.
 - Memory leaks if not careful with `wasm-bindgen` lifetimes.
 
 **Success criteria:**
-- `await import('@/sol-compiler').then(c => c.compile('function
+- `await import('@/sol-compiler').then(c => c.compile('fn
   start() {}'))` resolves successfully in the editor
 - The returned AST matches what the Rust binary produces for the
   same source

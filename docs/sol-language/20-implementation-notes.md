@@ -551,7 +551,7 @@ the interaction is.
    the function's `next_slot = 0`, and emits `LoadLocal(0)`. At
    runtime that's `stack[fp + 0]` — past the top-level data.
 
-Concrete walk for `let g: int = 42; function start() -> int { return g; }`:
+Concrete walk for `let g: int = 42; fn start() -> int { return g; }`:
 
 ```text
 Codegen emit (in order):
@@ -646,7 +646,7 @@ inside `print` where the return type isn't `int`.
 
 The first six checks are string-equality against built-in names
 and **happen before the `ext_functions` and local-function
-checks**. A user-declared `ext function rpc_request(...) -> ...;`
+checks**. A user-declared `ext fn rpc_request(...) -> ...;`
 is silently shadowed; the bytecode emitter sees the call name as
 the built-in and emits `Inst::SerializeRequest`, ignoring the
 user's host endpoint binding.
@@ -797,9 +797,9 @@ A worked end-to-end trace of a typical workflow through every
 layer. The program:
 
 ```sol
-ext function lookup_user(id: int) -> str;
+ext fn lookup_user(id: int) -> str;
 
-function start() -> int {
+fn start() -> int {
     let name: str = lookup_user(42);
     print(name);
     return 0;
@@ -1009,7 +1009,7 @@ in [`ERROR_REFERENCE.md`](./ERROR_REFERENCE.md) are accurate.
 ### `error_parse1.sol` — empty initializer
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let x: int = ;
     return 0;
 }
@@ -1027,7 +1027,7 @@ post-match `if res.is_none()` check (`parser.rs:746–749`) prints
 ### `error_parse2.sol` — missing semicolon
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let x: int = 5
     return x;
 }
@@ -1047,7 +1047,7 @@ exits.
 ### `error_runtime.sol` — division by zero
 
 ```sol
-function start() -> int {
+fn start() -> int {
     return 1 / 0;
 }
 ```
@@ -1071,7 +1071,7 @@ The host sees an uncaught Rust panic; the session terminates.
 ### `error_semantic1.sol` — undefined variable
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let x: int = 5;
     return undefined_var;
 }
@@ -1097,7 +1097,7 @@ Pass 2 walks `start`'s body block:
 ### `error_semantic2.sol` — duplicate `let`
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let x: int = 5;
     let x: int = 10;
     return x;
@@ -1121,9 +1121,9 @@ The rendered diagnostic includes ANSI red color codes around
 ### `error_semantic3.sol` — duplicate function
 
 ```sol
-function foo() -> int { return 5; }
-function foo() -> int { return 10; }
-function start() -> int { return foo(); }
+fn foo() -> int { return 5; }
+fn foo() -> int { return 10; }
+fn start() -> int { return foo(); }
 ```
 
 Analyzer pass 1 (`analyzer.rs:80–98`) iterates *all* top-level

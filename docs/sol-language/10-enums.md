@@ -49,11 +49,11 @@ So:
 
 ```sol
 enum E {
-    A,        // 0
-    B,        // 1
-    C = 5,    // 5
-    D,        // 6
-    E,        // 7
+    A,        # 0
+    B,        # 1
+    C = 5,    # 5
+    D,        # 6
+    E,        # 7
 }
 ```
 
@@ -119,7 +119,7 @@ enum A { X, Y }
 enum B { X, Y }
 let a: A = A::X;
 let b: B = B::X;
-if a == b { … }    // cannot compare mismatched types
+if a == b { … }    # cannot compare mismatched types
 ```
 
 ### Assignment to an `int` variable
@@ -194,7 +194,7 @@ sit in the AST but are never emitted.
    runtime.**
    ```sol
    enum Status { Active, Aborted }
-   // Status::Active == Status::Aborted  →  true at runtime ('A' % 10 == 'A' % 10)
+   # Status::Active == Status::Aborted  →  true at runtime ('A' % 10 == 'A' % 10)
    ```
    This is a hard implementation bug, not a language feature. Until
    the bytecode is fixed, **make every variant in an enum start

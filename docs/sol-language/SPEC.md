@@ -344,7 +344,7 @@ declarations or built into a host-defined runtime.
 The language commits to two pieces of behavior that any host
 implementation must honor:
 
-1. **`ext function name(params) -> T;`** declares a function whose
+1. **`ext fn name(params) -> T;`** declares a function whose
    implementation the host supplies. The bytecode emitter
    resolves each `ext` name to a host-provided endpoint at
    compile time; an `ext` declaration without a configured

@@ -30,7 +30,7 @@ violation gates the Apply buttons in the Sol Man modal.
 | 4 | Every `return` with `hasValue:true` has a non-empty `value` | `return: missing input "value"` | [05 §5.3](./05-functions.md) |
 | 5 | Every `branch` / `while` has a non-empty `cond` of `bool`-shaped expression | `branch: missing input "condition"` / `while: missing input "condition"` | [07 §7.1, 07 §7.2](./07-control-flow.md) |
 | 6 | Every `forEach` has a non-empty `value` (the array expression) | `forEach: missing input "array"` | [11](./11-arrays.md) |
-| 7 | Every `call` resolves to a known function (`function`, `ext function`, or one declared in the workflow) | `call: no function selected` / `call: target function not found` | [05 §5.2](./05-functions.md), [12 §12.1](./12-imports-and-controllers.md) |
+| 7 | Every `call` resolves to a known function (`fn`, `ext fn`, or one declared in the workflow) | `call: no function selected` / `call: target function not found` | [05 §5.2](./05-functions.md), [12 §12.1](./12-imports-and-controllers.md) |
 | 8 | No declarations duplicate names within the same scope | `error: redefinition of <name>` | [05 §5.1](./05-functions.md), [06 §6.4](./06-variables-and-scope.md) |
 | 9 | Struct literals supply every declared field | (no specific diagnostic today — but field omission yields zero at runtime; see chapter 09 §9.2) | [09 §9.2](./09-structs.md) |
 | 10 | Branch / loop edge ports use the correct `fromPort` ids — `then` / `else` / `body` / `after` | `Edge … referenced port "<id>" which doesn't exist` | [18 §18.2](./18-solflow-mapping.md) |
@@ -69,7 +69,7 @@ These produce *valid* workflows; following them produces
 | 5 | Provide at least one `assumption` per generated workflow when the prompt is under-specified | Makes the LLM's decisions auditable in the preview |
 | 6 | Aim for 5 – 25 nodes; smaller is fine if the intent is genuinely small | Anything larger usually hides clarity problems |
 | 7 | Group related nodes inside `frame` annotations when the workflow has more than ~6 nodes | Visual scannability |
-| 8 | Place every `ext function` declaration at the top of the file (when emitting source) | Convention; chapter 17 §17.7 |
+| 8 | Place every `ext fn` declaration at the top of the file (when emitting source) | Convention; chapter 17 §17.7 |
 
 ---
 
@@ -152,8 +152,8 @@ chapter 19 too — the two should not drift.
 | Branch condition stored as label instead of `cond` | `branch condition amount > 1000` shows on the node but the validator fires "missing input `condition`". | Same as above — prompt now explicit about `branch → cond` mapping. |
 | Multi-arg `print` | LLM generates `print(label, amount)` thinking SOL supports it. | Don't. Use two `print` calls. Documented in chapter 13 §13.1 and the prompt's "actions" section. |
 | Two enum variants starting with the same letter | Compiles, runs, then the comparison silently mismatches due to T9002. | Make first characters distinct (chapter 17 §17.1). The repair pass does not catch this today; flag it in the LLM prompt's quality rules. |
-| Calling an undeclared `ext function` | Compile-time fail-fast in the bytecode emitter (T9004). | Declare the `ext function` at the top of the workflow, or use a `print` placeholder. |
-| String concatenation via `+` | Analyzer rejects (E1006). | The LLM should NOT emit `str + str`. If multiple values need to print together, emit multiple `print` statements (or `ext function format(…) -> str;`). |
+| Calling an undeclared `ext fn` | Compile-time fail-fast in the bytecode emitter (T9004). | Declare the `ext fn` at the top of the workflow, or use a `print` placeholder. |
+| String concatenation via `+` | Analyzer rejects (E1006). | The LLM should NOT emit `str + str`. If multiple values need to print together, emit multiple `print` statements (or `ext fn format(…) -> str;`). |
 
 ---
 
@@ -186,7 +186,7 @@ generator must:
 
 ```text
 trigger (timer, cronExpr: "*/N * * * *")
-  → ext function check_health() -> bool  (declared at top of file)
+  → ext fn check_health() -> bool  (declared at top of file)
   → branch (cond: health == false)
        then  → print("Alert on-call: system unhealthy")
        else  → print("System healthy")
@@ -203,8 +203,8 @@ trigger (event, eventName: "<name>")
        else  → print("Notify finance: validation failed")
 ```
 
-The `ext function update_system(payload: ...) -> ...;` and
-`ext function validate(payload: ...) -> bool;` must be declared at
+The `ext fn update_system(payload: ...) -> ...;` and
+`ext fn validate(payload: ...) -> bool;` must be declared at
 the top of the workflow. If the LLM is unsure of the signatures,
 the repair pass converts unresolved calls into `print`
 placeholders so the workflow still validates.
@@ -261,7 +261,7 @@ The emitted SOL is:
 
 ```sol
 let g: int = 42;
-function start() -> int {
+fn start() -> int {
     return g;
 }
 ```
@@ -327,11 +327,11 @@ supported for type String`. The bytecode has a `ConcatStr` op
 but no syntax reaches it.
 
 **Hard rule:** Don't emit string concatenation. To build a
-composite string, declare an `ext function` that the host can
+composite string, declare an `ext fn` that the host can
 implement:
 
 ```sol
-ext function format_order(prefix: str, id: int) -> str;
+ext fn format_order(prefix: str, id: int) -> str;
 ```
 
 Or — if all you want is print-time interleaving — use multiple
@@ -340,12 +340,12 @@ Or — if all you want is print-time interleaving — use multiple
 ### 19.8.5 Forward calls returning non-int print as numbers (T9015)
 
 ```sol
-function start() -> int {
-    print(get_label());   // forward call
+fn start() -> int {
+    print(get_label());   # forward call
     return 0;
 }
 
-function get_label() -> str { return "hello"; }
+fn get_label() -> str { return "hello"; }
 ```
 
 `print(get_label())` dispatches via `Inst::PrintInt` because
@@ -389,9 +389,9 @@ ternary. No closures. No string interpolation.**
 ### 19.8.7 Misspelled type names (T9009)
 
 ```sol
-let name: string = "evan";          // BAD — `string` is treated as nominal struct ref
-let amount: float64 = 0.0;           // BAD — `float64` is treated as nominal struct ref
-let payload: any = lookup();         // BAD — `any` is treated as nominal struct ref
+let name: string = "evan";          # BAD — `string` is treated as nominal struct ref
+let amount: float64 = 0.0;           # BAD — `float64` is treated as nominal struct ref
+let payload: any = lookup();         # BAD — `any` is treated as nominal struct ref
 ```
 
 The parser silently accepts any unknown identifier in type
@@ -410,7 +410,7 @@ silently degrade to nominal type references.
 
 ```sol
 struct Point { x: int, y: int }
-let p: Point = Point {};            // both x and y default to 0 at runtime
+let p: Point = Point {};            # both x and y default to 0 at runtime
 ```
 
 The validator does not warn about missing fields. The bytecode
@@ -431,7 +431,7 @@ enum A { X, Y }
 enum B { X, Y }
 let a: A = A::X;
 let b: B = B::X;
-if a == b { ... }    // analyzer: cannot compare mismatched types
+if a == b { ... }    # analyzer: cannot compare mismatched types
 ```
 
 The graph passes structural validation because both operands
@@ -441,11 +441,11 @@ exist. The analyzer rejects at compile time with E1008.
 resolve to the same type. The generator should track each
 variable's declared type and refuse to compare across enums.
 
-### 19.8.10 Reserved names for `ext function` (T9016)
+### 19.8.10 Reserved names for `ext fn` (T9016)
 
 ```sol
-ext function print(msg: str);
-ext function rpc_request(payload: str) -> str;
+ext fn print(msg: str);
+ext fn rpc_request(payload: str) -> str;
 ```
 
 Both pass validation and parse cleanly. But the bytecode emitter
@@ -454,7 +454,7 @@ dispatches `print` and `rpc_request` to the built-in handlers
 endpoints are silently shadowed; calls to these names go to the
 built-in implementations and never reach the network.
 
-**Hard rule:** Never name an `ext function` any of: `print`,
+**Hard rule:** Never name an `ext fn` any of: `print`,
 `rpc_request`, `rpc_response`, `rpc_name`, `rpc_args`,
 `rpc_data`. Use a domain-specific name (`emit_log`,
 `call_warehouse_api`, etc.).

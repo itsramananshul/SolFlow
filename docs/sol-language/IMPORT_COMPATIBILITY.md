@@ -25,8 +25,8 @@ across every statement in every function.
 
 | SOL construct | Tier | Notes |
 |---|---|---|
-| `function name(p: T) -> R { ... }` | **full** | Becomes a `FunctionGraph`. Parameters + return type carry. |
-| `ext function name(p: T) -> R;` | **source-only** | Preserved in import report counts; no `extFunction` node kind exists yet in the graph schema. |
+| `fn name(p: T) -> R { ... }` | **full** | Becomes a `FunctionGraph`. Parameters + return type carry. |
+| `ext fn name(p: T) -> R;` | **source-only** | Preserved in import report counts; no `extFunction` node kind exists yet in the graph schema. |
 | `struct Name { f: T, ... }` | **full** | Becomes a `StructDecl`. Field order is **alphabetical** in the imported graph (the AST's HashMap loses insertion order; sorting makes imports deterministic). |
 | `enum Name { V1, V2 }` | **full** | Becomes an `EnumDecl`. Variants ordered by parser-assigned ordinal. |
 | `import "path" as alias;` | **full** | Becomes an `ImportDecl`. Alias defaults to last path segment when omitted. |

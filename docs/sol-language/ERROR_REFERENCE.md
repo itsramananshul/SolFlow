@@ -107,7 +107,7 @@ one of `ext`, `function`, `let`, `struct`, `enum`, `import`.
 **Bad example:**
 
 ```sol
-export function foo() {}
+export fn foo() {}
 ```
 
 **Diagnostic:**
@@ -186,7 +186,7 @@ literal.
 **Bad example:**
 
 ```sol
-let arr: [n]int = [1, 2, 3];     // n is an identifier, not an integer literal
+let arr: [n]int = [1, 2, 3];     # n is an identifier, not an integer literal
 ```
 
 **Diagnostic:**
@@ -251,7 +251,7 @@ visible binding.
 **Bad example:**
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let x: int = 5;
     return undefined_var;
 }
@@ -282,7 +282,7 @@ that's already bound there.
 **Bad example (duplicate `let`):**
 
 ```sol
-function start() -> int {
+fn start() -> int {
     let x: int = 5;
     let x: int = 10;
     return x;
@@ -292,8 +292,8 @@ function start() -> int {
 **Bad example (duplicate `function`):**
 
 ```sol
-function foo() -> int { return 5; }
-function foo() -> int { return 10; }
+fn foo() -> int { return 5; }
+fn foo() -> int { return 10; }
 ```
 
 **Diagnostic:**
@@ -374,7 +374,7 @@ array in which for loop is iterating over must have the known type `Array`
 
 ```sol
 return 5;
-function start() {}
+fn start() {}
 ```
 
 **Diagnostic:**
@@ -623,7 +623,7 @@ function `<name>` expected <T> in position <i> but was passed <S>
 
 ```sol
 let a: []int = [1, 2, 3];
-print(a.length);            // arrays aren't structs; .length doesn't exist
+print(a.length);            # arrays aren't structs; .length doesn't exist
 ```
 
 **Diagnostic:**
@@ -802,7 +802,7 @@ equal to zero.
 **Bad example:**
 
 ```sol
-function start() -> int {
+fn start() -> int {
     return 1 / 0;
 }
 ```
@@ -1186,7 +1186,7 @@ binding. The mechanics:
 
 ```sol
 let g: int = 42;
-function start() -> int {
+fn start() -> int {
     return g;
 }
 ```
@@ -1254,12 +1254,12 @@ string's heap index as a decimal number rather than its contents.
 **Bad example:**
 
 ```sol
-function start() -> int {
-    print(get_name());     // forward call; get_name not yet emitted
+fn start() -> int {
+    print(get_name());     # forward call; get_name not yet emitted
     return 0;
 }
 
-function get_name() -> str {
+fn get_name() -> str {
     return "hello";
 }
 ```
@@ -1290,7 +1290,7 @@ later in source. No fixture in the corpus exercises this pattern.
 **Description:** The call-site dispatch (`bytecode.rs:423–481`)
 matches the function name against the built-in names *before*
 checking the `ext_functions` set. So if a user declares
-`ext function rpc_request(payload: str) -> str;` and the host
+`ext fn rpc_request(payload: str) -> str;` and the host
 endpoint table provides a URL for `rpc_request`, the user's
 declaration is silently ignored — every call to `rpc_request`
 is emitted as the built-in `SerializeRequest` op, not as
