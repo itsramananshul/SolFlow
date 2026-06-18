@@ -13,3 +13,4 @@ export type {
   FunctionImportSummary,
 } from './report';
 export { stringifyExpr } from './expressions';
+export { normalizeImportSource } from './normalize';

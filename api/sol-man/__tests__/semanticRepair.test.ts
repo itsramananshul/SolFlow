@@ -205,10 +205,14 @@ describe('lintSemantics — mirrors editor lint rules', () => {
     expect(issues[0].offender).toBe('Math');
   });
 
-  it('flags method_call for "user.name.toUpperCase()"', () => {
+  it('allows method-call shape (module.func(args) is a valid capability call)', () => {
+    // The new SOL grammar accepts import-qualified capability calls
+    // like `slack.send({ ... })`, so the lint no longer flags the
+    // method-call shape — it can't statically tell a real capability
+    // call from a stray JS-style method.
     const spec = specWithNode({ kind: 'let', value: 'user.name.toUpperCase()' });
     const issues = lintSemantics(spec);
-    expect(issues[0].kind).toBe('method_call');
+    expect(issues.some((i) => i.kind === 'method_call')).toBe(false);
   });
 
   it('flags js_syntax for arrow functions', () => {

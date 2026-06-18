@@ -492,7 +492,16 @@ const runErrorMsg = computed(() => {
   if (mode.value === 'controller-local') {
     const c = controllerRun.value;
     if (c.kind === 'done' && c.record.status === 'Failed') {
-      return 'Run failed on the controller. See the output below for the controller-side reason. Structured runtime-error details (div-by-zero / step-limit / etc.) stream from the controller in Phase C C.5.';
+      // Surface the controller's actual reason rather than a generic
+      // placeholder: prefer structured diagnostics, then any captured
+      // output lines, then a fallback pointer to the Output tab.
+      const diags = (c.record.diagnostics ?? [])
+        .map((d) => d.message)
+        .filter((m): m is string => !!m);
+      const outLines = (c.record.output?.output ?? []).filter((l) => l.trim().length > 0);
+      if (diags.length) return diags.join(' · ');
+      if (outLines.length) return outLines.join('\n');
+      return 'Run failed on the controller. See the Output tab for the controller-side reason (often a capability the controller has no provider for).';
     }
     return null;
   }
@@ -1015,7 +1024,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 
               <!-- Runtime error from canonical VM -->
               <div v-else-if="runErrorMsg" class="error">
-                <strong>Runtime error · {{ runResult?.runtime_error?.kind }}</strong>
+                <strong v-if="mode === 'controller-local'">Run failed on the controller</strong>
+                <strong v-else>Runtime error · {{ runResult?.runtime_error?.kind }}</strong>
                 <div class="error-msg">{{ runErrorMsg }}</div>
                 <!-- B.D c44: source span + optional node link -->
                 <div v-if="runtimeErrorLocation" class="error-where">

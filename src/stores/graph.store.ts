@@ -1009,12 +1009,17 @@ export const useGraphStore = defineStore('graph', () => {
   ): Promise<{ ok: boolean; report: ImportReport }> {
     // Lazy-imported so the importer + WASM bridge stay out of the
     // initial page-load critical path.
-    const [{ parseSource }, { importProgram }] = await Promise.all([
+    const [{ parseSource }, { importProgram, normalizeImportSource }] = await Promise.all([
       import('@/compiler/api'),
       import('@/graph/import'),
     ]);
 
-    const env = await parseSource(source);
+    // Tolerant import: normalize lenient syntax variants (unquoted
+    // workflow names, parens-less if/while) to canonical form before
+    // parsing, so real-world .sol files import cleanly. The graph
+    // re-emits strict canonical source.
+    const normalized = normalizeImportSource(source);
+    const env = await parseSource(normalized);
     if (!env.ok || !env.value) {
       // Surface compiler diagnostics as a report notice so the modal
       // can render them alongside any non-parse warnings.
@@ -1037,7 +1042,7 @@ export const useGraphStore = defineStore('graph', () => {
         name: meta.name ?? workflow.value.meta.name ?? 'Imported workflow',
         description: meta.description ?? workflow.value.meta.description,
       },
-      source, // B.6 c25 — populates FunctionGraph.meta.sourceLine
+      normalized, // populates FunctionGraph.meta.sourceLine
     );
     const loaded = loadWorkflow(imported);
     return { ok: loaded, report };
