@@ -165,7 +165,11 @@ export function buildPayments() {
       kind: 'varGet', varName: 'user_id', resolvedType: { kind: 'int' },
     });
     const fLimit = node(b, 'literal', { x: 80, y: 280 }, {
-      kind: 'literal', litType: 'float', value: '75.0',
+      // Below the 45.5 risk score, so evaluate_payment approves the
+      // transaction and the deploy() path prints, demonstrating a full
+      // helper-call chain (process_transaction -> evaluate_payment +
+      // deploy) end to end.
+      kind: 'literal', litType: 'float', value: '30.0',
     });
     const gw = node(b, 'literal', { x: 80, y: 360 }, {
       kind: 'literal', litType: 'str', value: 'Secure_Payment_Gateway',

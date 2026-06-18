@@ -1,12 +1,32 @@
 use serde::Serialize;
 use crate::value::Value;
 
+/// A compiled user-defined function. Top-level `fn`s are compiled into
+/// the same instruction stream as the workflow body, each starting at
+/// `entry_pc`. A `Call` to a name found here is a real call (push a
+/// frame, bind args, jump to `entry_pc`); names not found fall back to
+/// native functions and built-ins.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FuncInfo {
+    pub name: String,
+    /// First instruction of the function body.
+    pub entry_pc: usize,
+    /// Number of declared parameters (bound to local slots 0..param_count).
+    pub param_count: u16,
+    /// Total locals the function uses (params plus `let` bindings).
+    pub locals_count: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Chunk {
     pub instructions: Vec<Instruction>,
     pub constants: Vec<Value>,
+    /// Locals of the workflow (entry) frame.
     pub locals_count: u16,
+    /// Local names of the workflow (entry) frame.
     pub locals_names: Vec<String>,
+    /// User-defined functions callable from the workflow or each other.
+    pub functions: Vec<FuncInfo>,
 }
 
 impl Chunk {
@@ -16,6 +36,7 @@ impl Chunk {
             constants: Vec::new(),
             locals_count: 0,
             locals_names: Vec::new(),
+            functions: Vec::new(),
         }
     }
 
@@ -23,6 +44,11 @@ impl Chunk {
         let idx = self.constants.len();
         self.constants.push(val);
         idx as u16
+    }
+
+    /// Look up a user-defined function by name.
+    pub fn function(&self, name: &str) -> Option<&FuncInfo> {
+        self.functions.iter().find(|f| f.name == name)
     }
 }
 

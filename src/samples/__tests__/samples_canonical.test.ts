@@ -31,7 +31,18 @@ const require = createRequire(import.meta.url);
 const wasm = require('../../../compiler-wasm/pkg-node/solflow_compiler_wasm.js') as {
   parse_source_json(source: string): string;
   analyze_source_json(source: string): string;
+  run_source_json(source: string): string;
 };
+
+interface RunEnvelope {
+  ok: boolean;
+  diagnostics: Array<{ severity: string; phase: string; message: string }>;
+  run: {
+    return_value: number | null;
+    output: string[];
+    runtime_error: { kind: string } | null;
+  } | null;
+}
 
 describe('Prod c50 — sample workflows compile cleanly via canonical compiler', () => {
   for (const sample of SAMPLES) {
@@ -81,5 +92,30 @@ describe('Prod c50 — sample workflows compile cleanly via canonical compiler',
       }
       expect(errors).toEqual([]);
     });
+
+    // Samples advertised as runnable must actually execute end to end in
+    // the canonical VM (helper-function calls included) and produce
+    // output, with no runtime error and no Runtime-phase diagnostics
+    // (e.g. "function 'x' not found"). This is the regression guard for
+    // the helper-function runtime support.
+    if (sample.runnable) {
+      it(`${sample.id} — runs end to end (output, no runtime error)`, () => {
+        const { source } = emit(sample.build());
+        const env = JSON.parse(wasm.run_source_json(source)) as RunEnvelope;
+        const runtimeDiags = (env.diagnostics ?? []).filter(
+          (d) => d.phase === 'Runtime',
+        );
+        if (env.run?.runtime_error || runtimeDiags.length > 0) {
+          throw new Error(
+            `Runnable sample "${sample.id}" failed at runtime:\n  ` +
+              `${env.run?.runtime_error?.kind ?? ''} ` +
+              `${runtimeDiags.map((d) => d.message).join('; ')}\n\n${source}`,
+          );
+        }
+        expect(env.run).not.toBeNull();
+        expect(env.run!.runtime_error).toBeNull();
+        expect(env.run!.output.length).toBeGreaterThan(0);
+      });
+    }
   }
 });
