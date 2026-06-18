@@ -477,10 +477,24 @@ const compileFailed = computed(() => {
 });
 
 const compileDiagnostics = computed<SolDiagnostic[]>(() => {
-  if (mode.value === 'browser-sim') return runEnvelope.value?.diagnostics ?? [];
+  if (mode.value === 'browser-sim') {
+    // Only the compile-stage diagnostics belong in the "compile failed"
+    // list. Runtime-phase diagnostics are surfaced separately below.
+    return (runEnvelope.value?.diagnostics ?? []).filter((d) => d.phase !== 'Runtime');
+  }
   const c = controllerRun.value;
   return c.kind === 'compile_failed' ? c.diagnostics : [];
 });
+
+// Browser-sim runtime diagnostics. The VM reports some failures (e.g.
+// "function 'x' not found", a step-limit hit) as Warning/Runtime
+// diagnostics rather than a structured `runtime_error`. These are real
+// failures and must be shown, not swallowed as "ran with no output".
+const browserRuntimeDiags = computed<SolDiagnostic[]>(() =>
+  mode.value === 'browser-sim'
+    ? (runEnvelope.value?.diagnostics ?? []).filter((d) => d.phase === 'Runtime')
+    : [],
+);
 
 /**
  * Unified `RunResult`-shaped object. For browser-sim it's the
@@ -537,8 +551,18 @@ const runErrorMsg = computed(() => {
     return null;
   }
   const err = runResult.value?.runtime_error;
-  if (!err) return null;
-  return formatRuntimeError(err);
+  if (err) return formatRuntimeError(err);
+  // Runtime-phase diagnostics without a structured runtime_error. The
+  // most common is a call to a user-defined helper: the runtime executes
+  // the workflow body and built-ins only, not helper-function bodies, so
+  // add an actionable hint for that case.
+  const diags = browserRuntimeDiags.value;
+  if (diags.length === 0) return null;
+  const msg = diags.map((d) => d.message).join('\n');
+  if (/function '.*' not found/.test(msg)) {
+    return `${msg}\n\nThe runtime runs the workflow body plus the built-ins (print, len, to_str, type_name) and imported capabilities. It does not execute user-defined helper functions, so calling one fails. Inline that logic into the workflow body, or expose it as a capability through an import.`;
+  }
+  return msg;
 });
 
 const completedOk = computed(() => {
@@ -548,10 +572,39 @@ const completedOk = computed(() => {
       && runEnvelope.value.ok
       && runResult.value !== null
       && runResult.value.runtime_error === null
+      && browserRuntimeDiags.value.length === 0
     );
   }
   const c = controllerRun.value;
   return c.kind === 'done' && c.record.status === 'Succeeded';
+});
+
+// Classified, human-readable title for the error banner so the user
+// knows WHAT KIND of failure this is: parse/compile, runtime, a blocked
+// external Action, or an unsupported helper-function call.
+const runErrorTitle = computed(() => {
+  if (mode.value === 'controller-local') return 'Run failed on the controller';
+  const err = runResult.value?.runtime_error;
+  if (err) {
+    switch (err.kind) {
+      case 'ExtCallBlocked':
+        return 'External Action blocked in Browser Simulation';
+      case 'ExtCallFailed':
+        return 'External Action failed';
+      case 'StepLimit':
+        return 'Step limit reached (possible infinite loop)';
+      case 'DivByZero':
+        return 'Runtime error: division by zero';
+      case 'IndexOutOfBounds':
+        return 'Runtime error: array index out of bounds';
+      default:
+        return `Runtime error: ${err.kind}`;
+    }
+  }
+  if (browserRuntimeDiags.value.some((d) => /function '.*' not found/.test(d.message))) {
+    return 'Runtime error: unsupported function call';
+  }
+  return 'Runtime error';
 });
 
 // Controller-specific display state.
@@ -1054,8 +1107,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
 
               <!-- Runtime error from canonical VM -->
               <div v-else-if="runErrorMsg" class="error">
-                <strong v-if="mode === 'controller-local'">Run failed on the controller</strong>
-                <strong v-else>Runtime error · {{ runResult?.runtime_error?.kind }}</strong>
+                <strong>{{ runErrorTitle }}</strong>
                 <div class="error-msg">{{ runErrorMsg }}</div>
                 <!-- B.D c44: source span + optional node link -->
                 <div v-if="runtimeErrorLocation" class="error-where">
@@ -1705,6 +1757,8 @@ function formatReturn(v: unknown): string {
 .error-msg {
   font-family: var(--sf-font-mono);
   color: var(--sf-text-0);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .diag-list {
   list-style: none;
