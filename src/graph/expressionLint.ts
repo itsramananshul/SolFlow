@@ -164,7 +164,12 @@ export function lintInlineExpression(expr: string): LintError | null {
 
   // 1. Disallowed SOL keywords. Walk word-tokens looking for any keyword
   //    that doesn't belong in an expression.
-  const wordTokens = trimmed.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? [];
+  // Exclude string/char literal contents so words inside a valid string
+  // (e.g. "reminder for the meeting") are not flagged as keywords.
+  const scan = trimmed
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+  const wordTokens = scan.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? [];
   for (const tok of wordTokens) {
     if (SOL_STATEMENT_KEYWORDS.has(tok)) {
       return {
@@ -187,7 +192,7 @@ export function lintInlineExpression(expr: string): LintError | null {
   }
 
   // 3. Method-call shape.
-  const methodMatch = trimmed.match(METHOD_CALL_PATTERN);
+  const methodMatch = scan.match(METHOD_CALL_PATTERN);
   if (methodMatch) {
     return {
       code: 'lint-method-call',
@@ -198,7 +203,7 @@ export function lintInlineExpression(expr: string): LintError | null {
 
   // 4. JS-only syntax patterns.
   for (const { pattern, offender, description } of JS_SYNTAX_PATTERNS) {
-    if (pattern.test(trimmed)) {
+    if (pattern.test(scan)) {
       return {
         code: 'lint-js-syntax',
         offender,

@@ -360,7 +360,12 @@ function collect(
 ): void {
   const trimmed = expr.trim();
   if (trimmed === '') return;
-  const wordTokens = trimmed.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? [];
+  // Strip string + char literal CONTENTS so words inside them (a valid
+  // string like "reminder for the meeting") are never flagged as keywords.
+  const scan = trimmed
+    .replace(/"(?:[^"\\]|\\.)*"/g, '\"\"')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+  const wordTokens = scan.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? [];
   for (const tok of wordTokens) {
     if (SOL_STATEMENT_KEYWORDS.has(tok)) {
       out.push({
@@ -386,7 +391,7 @@ function collect(
       return;
     }
   }
-  const m = trimmed.match(METHOD_CALL_PATTERN);
+  const m = scan.match(METHOD_CALL_PATTERN);
   if (m) {
     out.push({
       nodeId,
@@ -398,7 +403,7 @@ function collect(
     return;
   }
   for (const p of JS_SYNTAX_PATTERNS) {
-    if (p.re.test(trimmed)) {
+    if (p.re.test(scan)) {
       out.push({
         nodeId,
         field,
