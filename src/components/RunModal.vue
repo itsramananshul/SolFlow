@@ -1277,15 +1277,22 @@ function formatReturn(v: unknown): string {
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.78);
+  /* No dimming overlay: the trace panel + inspector dock on the right and the
+     user wants to watch them live while the dialog is open. A transparent,
+     click-through backdrop keeps the rest of the UI bright and interactive;
+     the dialog stands out on its own shadow + border. */
+  background: transparent;
+  pointer-events: none;
   z-index: var(--sf-z-modal);
   display: flex;
   align-items: center;
-  /* Pin the dialog to the left on wide screens. The trace panel and inspector
-     dock on the right, so a centered dialog covers them. Left-pinning plus the
-     capped modal width below keeps the right side fully visible. */
+  /* Pin the dialog to the left so it never reaches the right-docked panels. */
   justify-content: flex-start;
   padding: 32px clamp(32px, 30vw, 460px) 32px clamp(20px, 4vw, 56px);
+}
+.modal {
+  /* Re-enable interaction on the dialog itself (backdrop is click-through). */
+  pointer-events: auto;
 }
 @media (max-width: 900px) {
   .backdrop {
