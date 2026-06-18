@@ -44,10 +44,15 @@ const runEnvelope = ref<RunEnvelope | null>(null);
 // wire, POSTs to the controller, polls until terminal, and the
 // rendered output below pulls from the resulting RunRecord.
 
+// The run target lives in the controller store (browser-sim | local |
+// cloud) so it persists and the Controller Settings modal stays in
+// sync. Most of this component only needs the binary "browser vs
+// controller" split, so we derive a local `mode` from it and leave the
+// existing branches intact.
 type ExecutionMode = 'browser-sim' | 'controller-local';
-
-const STORAGE_KEY_MODE = 'solflow.run.mode';
-const mode = ref<ExecutionMode>(loadStoredMode());
+const mode = computed<ExecutionMode>(() =>
+  controller.runTarget === 'browser-sim' ? 'browser-sim' : 'controller-local',
+);
 
 type ControllerRunState =
   | { kind: 'idle' }
@@ -97,29 +102,55 @@ function closeLiveStream() {
   liveStreamHandle = null;
 }
 
-function loadStoredMode(): ExecutionMode {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY_MODE);
-    return v === 'controller-local' ? 'controller-local' : 'browser-sim';
-  } catch {
-    return 'browser-sim';
-  }
+type RunTargetId = 'browser-sim' | 'local' | 'cloud';
+
+interface RunTargetOption {
+  id: RunTargetId;
+  label: string;
+  /** A URL is configured (or none is needed, for browser-sim). */
+  configured: boolean;
+  /** Live health: the controller answered /healthz. */
+  connected: boolean;
+  /** A health probe is in flight. */
+  connecting: boolean;
+  title: string;
 }
 
-function setMode(next: ExecutionMode) {
-  if (next === mode.value) return;
-  mode.value = next;
-  try {
-    localStorage.setItem(STORAGE_KEY_MODE, next);
-  } catch {
-    /* ignore */
-  }
-}
+/** The three run targets shown in the header, with live status pulled
+ *  from the controller store. */
+const runTargets = computed<RunTargetOption[]>(() => [
+  {
+    id: 'browser-sim',
+    label: 'Browser Simulation',
+    configured: true,
+    connected: true,
+    connecting: false,
+    title: 'Run in this browser via the canonical SOL VM (WASM). External Actions are blocked.',
+  },
+  {
+    id: 'local',
+    label: 'Local Controller',
+    configured: controller.localUrl.trim().length > 0,
+    connected: controller.localConn.kind === 'connected',
+    connecting: controller.localConn.kind === 'connecting',
+    title: `Run on a controller on this machine (${controller.localUrl || 'set a URL in Controller Settings'}).`,
+  },
+  {
+    id: 'cloud',
+    label: 'Cloud Controller',
+    configured: controller.cloudUrl.trim().length > 0,
+    connected: controller.cloudConn.kind === 'connected',
+    connecting: controller.cloudConn.kind === 'connecting',
+    title:
+      controller.cloudUrl.trim().length > 0
+        ? `Run on the hosted HTTPS controller (${controller.cloudUrl}).`
+        : 'Set a cloud controller URL in Controller Settings to enable.',
+  },
+]);
 
-/** Enabled once a controller URL is set. The real OpenPrem controller
- *  has no `/healthz` probe, so we gate on a URL being present rather
- *  than a prior successful health check. */
-const controllerModeDisabled = computed(() => !controller.url.trim());
+function selectRunTarget(id: RunTargetId) {
+  controller.setRunTarget(id);
+}
 
 // --- Legacy JS-trace path (canvas playback only) -----------
 //
@@ -580,11 +611,14 @@ function formatControllerError(phase: string, e: ControllerClientError): string 
     : phase === 'create'
       ? 'creating run'
       : 'polling run status';
+  const where = controller.runTarget === 'cloud' ? 'Cloud Controller' : 'Local Controller';
   switch (e.kind) {
     case 'network':
-      return `Controller unreachable while ${phaseLabel}. Is solflow-controller still running at ${controller.url}? ${e.message}`;
+      return controller.runTarget === 'cloud'
+        ? `${where} not reachable at ${controller.url}. Check the URL and that the controller is online, or switch to Browser Simulation.`
+        : `Controller not reachable. Start the local controller (${controller.url}) or switch to Browser Simulation.`;
     case 'timeout':
-      return `Controller timed out while ${phaseLabel} (${e.timeoutMs}ms). ${e.message}`;
+      return `${where} timed out after ${e.timeoutMs}ms while ${phaseLabel} at ${controller.url}. The controller may be overloaded or stuck; retry, or switch to Browser Simulation.`;
     case 'http':
       // Phase C C.6 c95 — friendly saturation message when
       // the controller reports its queue is full (HTTP 503 +
@@ -671,12 +705,9 @@ watch(
   (now, prev) => {
     if (now && !prev) {
       trace.value = null;
-      // If the user previously chose controller-local but the
-      // controller is no longer connected, silently fall back to
-      // browser-sim rather than executing in a broken mode.
-      if (mode.value === 'controller-local' && !controller.isConnected) {
-        setMode('browser-sim');
-      }
+      // Keep whatever run target the user chose. If a controller is
+      // unreachable, the run surfaces a clear error rather than
+      // silently falling back to the browser.
       execute();
     } else if (!now) {
       sim.cancel();
@@ -691,14 +722,12 @@ watch(
   },
 );
 
-// If the controller disconnects while the modal is open and the
-// user is on controller-local mode, drop back to browser-sim.
+// Re-run when the user switches run target while the modal is open so
+// the Output reflects the newly selected target immediately.
 watch(
-  () => controller.isConnected,
-  (connected) => {
-    if (!connected && mode.value === 'controller-local' && props.open) {
-      setMode('browser-sim');
-    }
+  () => controller.runTarget,
+  () => {
+    if (props.open) execute();
   },
 );
 
@@ -825,32 +854,33 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
           <div class="header-left">
             <span class="title">Run workflow</span>
             <span class="subtle">
-              <template v-if="mode === 'browser-sim'">canonical SOL VM · WASM</template>
-              <template v-else>canonical SOL VM · controller {{ controller.url }}</template>
+              <template v-if="controller.runTarget === 'browser-sim'">Browser Simulation · WASM</template>
+              <template v-else-if="controller.runTarget === 'local'">Local Controller · {{ controller.url }}</template>
+              <template v-else>Cloud Controller · {{ controller.url }}</template>
             </span>
           </div>
           <div class="header-right">
-            <!-- Phase C C.2 c63: execution-mode selector -->
-            <div class="mode-toggle" role="tablist" aria-label="Execution mode">
+            <!-- Run-target selector: Browser Simulation / Local / Cloud -->
+            <div class="target-toggle" role="tablist" aria-label="Run target">
               <button
-                class="mode-btn"
-                :class="{ active: mode === 'browser-sim' }"
+                v-for="t in runTargets"
+                :key="t.id"
+                class="target-btn"
+                :class="{ active: controller.runTarget === t.id, unconfigured: !t.configured }"
                 role="tab"
-                :aria-selected="mode === 'browser-sim'"
-                @click="setMode('browser-sim')"
-                title="Run in this browser via WASM. External calls blocked."
-              >Browser sim</button>
-              <button
-                class="mode-btn"
-                :class="{ active: mode === 'controller-local', disabled: controllerModeDisabled }"
-                role="tab"
-                :aria-selected="mode === 'controller-local'"
-                :disabled="controllerModeDisabled"
-                @click="setMode('controller-local')"
-                :title="controllerModeDisabled
-                  ? 'Connect a controller from Controller Settings to enable.'
-                  : 'Run via the connected SolFlow controller.'"
-              >Controller-local</button>
+                :aria-selected="controller.runTarget === t.id"
+                :disabled="!t.configured"
+                :title="t.title"
+                @click="selectRunTarget(t.id)"
+              >
+                <span
+                  v-if="t.id !== 'browser-sim'"
+                  class="target-dot"
+                  :class="t.connecting ? 'pending' : t.connected ? 'ok' : 'off'"
+                  :title="t.connecting ? 'Checking…' : t.connected ? 'Connected' : 'Disconnected'"
+                />
+                {{ t.label }}
+              </button>
             </div>
             <button
               class="ghost"
@@ -1181,9 +1211,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
             </template>
             <template v-else-if="mode === 'controller-local'">
               <div class="empty">
-                Execution trace doesn't stream from the controller
-                yet — that lands in Phase C C.5 (event log + live
-                stream). For trace, switch to Browser sim.
+                The step trace is available in Browser Simulation. For
+                controller runs, open the Live tab to follow streamed
+                run events.
               </div>
             </template>
             <template v-else-if="!hasResult || compileFailed">
@@ -1248,16 +1278,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
         <footer class="modal-footer">
           <span class="subtle">
             <template v-if="mode === 'browser-sim'">
-              Output above comes from the canonical SOL VM compiled to WASM.
-              Canvas playback animation uses an approximate JS interpreter for
-              per-node highlighting only — trust the text output for semantics.
-              External calls are blocked in browser simulation.
+              Output comes from the canonical SOL VM compiled to WASM, running
+              in this browser. External Actions are blocked in Browser
+              Simulation. The canvas animation is a visual aid for per node
+              highlighting; trust the text output for exact behavior.
             </template>
             <template v-else>
-              Output above comes from the same canonical SOL VM running inside
-              the connected controller. Run history persists across controller
-              restarts. External calls land in C.4 (HTTP connector); they
-              still produce an honest "blocked" diagnostic for now.
+              Output comes from the same canonical SOL VM running inside the
+              {{ controller.runTarget === 'cloud' ? 'cloud' : 'local' }} controller
+              at {{ controller.url }}. External Actions run through the
+              controller's connectors.
             </template>
           </span>
         </footer>
@@ -1406,8 +1436,8 @@ function formatReturn(v: unknown): string {
   50%      { opacity: 0.45; }
 }
 
-/* Phase C C.2 c63: execution-mode toggle in the header */
-.mode-toggle {
+/* Run-target selector in the header */
+.target-toggle {
   display: inline-flex;
   background: var(--sf-bg-0);
   border: 1px solid var(--sf-border);
@@ -1415,29 +1445,46 @@ function formatReturn(v: unknown): string {
   margin-right: 4px;
   overflow: hidden;
 }
-.mode-btn {
+.target-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: transparent;
   border: none;
   color: var(--sf-text-2);
   font-size: 0.6875rem;
   padding: 4px 10px;
   cursor: pointer;
+  white-space: nowrap;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.mode-btn + .mode-btn { border-left: 1px solid var(--sf-border); }
-.mode-btn:hover:not(.disabled):not(.active) {
+.target-btn + .target-btn { border-left: 1px solid var(--sf-border); }
+.target-btn:hover:not(.unconfigured):not(.active) {
   background: var(--sf-bg-2);
   color: var(--sf-text-0);
 }
-.mode-btn.active {
+.target-btn.active {
   background: var(--sf-accent, #5d8acf);
   color: white;
 }
-.mode-btn.disabled,
-.mode-btn:disabled {
+.target-btn.unconfigured,
+.target-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.target-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.target-dot.ok { background: var(--sf-success); }
+.target-dot.off { background: var(--sf-text-3); }
+.target-dot.pending {
+  background: var(--sf-warning);
+  animation: sf-pulse 1.2s ease-in-out infinite;
+}
+.target-btn.active .target-dot.off { background: rgba(255, 255, 255, 0.6); }
 
 /* Controller-mode status block (mid-run + meta footer) */
 .ctrl-status {

@@ -246,7 +246,6 @@ const triggerErrorMsg = computed(() => formatError(triggerError.value));
         <header class="modal-header">
           <div class="header-left">
             <span class="title">Schedules</span>
-            <span class="phase-tag">Phase C.3</span>
           </div>
           <button class="close" @click="emit('close')" aria-label="Close">✕</button>
         </header>

@@ -136,7 +136,7 @@ const orderedSamples = computed<Sample[]>(() => {
             </div>
           </div>
           <button class="skip-btn" type="button" @click="onSkip">
-            Skip for now →
+            Skip →
           </button>
         </header>
 
@@ -229,7 +229,7 @@ const orderedSamples = computed<Sample[]>(() => {
             rel="noreferrer noopener"
           >GitHub</a>
           <span class="footer-sep">·</span>
-          <span class="footer-version">Phase A · v0.1</span>
+          <span class="footer-version">v0.1</span>
         </footer>
       </div>
     </div>

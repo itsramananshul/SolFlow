@@ -45,19 +45,38 @@ function jsonOk(body: unknown): Response {
 }
 
 describe('useControllerStore — connection state machine', () => {
-  it('starts idle, with empty URL', () => {
+  it('starts idle; local defaults to 127.0.0.1:3939; target is browser-sim', () => {
     const s = useControllerStore();
     expect(s.connection.kind).toBe('idle');
-    expect(s.url).toBe('');
+    expect(s.runTarget).toBe('browser-sim');
+    expect(s.localUrl).toBe('http://127.0.0.1:3939');
+    expect(s.cloudUrl).toBe('');
+    // Active facade points at the local endpoint by default.
+    expect(s.url).toBe('http://127.0.0.1:3939');
     expect(s.isConnected).toBe(false);
   });
 
-  it('setUrl persists + invalidates connection back to idle', () => {
+  it('setUrl persists the active (local) URL + resets its connection', () => {
     const s = useControllerStore();
     s.setUrl('http://x.example');
     expect(s.url).toBe('http://x.example');
+    expect(s.localUrl).toBe('http://x.example');
     expect(s.connection.kind).toBe('idle');
-    expect(localStorage.getItem('solflow.controller.url')).toBe('http://x.example');
+    expect(localStorage.getItem('solflow.controller.local_url')).toBe('http://x.example');
+  });
+
+  it('local and cloud endpoints are independent', () => {
+    const s = useControllerStore();
+    s.setLocalUrl('http://127.0.0.1:3939');
+    s.setCloudUrl('https://controller.example.com');
+    expect(s.localUrl).toBe('http://127.0.0.1:3939');
+    expect(s.cloudUrl).toBe('https://controller.example.com');
+    expect(localStorage.getItem('solflow.controller.cloud_url')).toBe('https://controller.example.com');
+    // Switching the run target moves the active facade to cloud.
+    expect(s.url).toBe('http://127.0.0.1:3939');
+    s.setRunTarget('cloud');
+    expect(s.url).toBe('https://controller.example.com');
+    expect(localStorage.getItem('solflow.run.target')).toBe('cloud');
   });
 
   it('connect → connected on healthy response', async () => {
@@ -72,8 +91,6 @@ describe('useControllerStore — connection state machine', () => {
       expect(s.connection.health.controller_version).toBe('0.1.0');
     }
     expect(s.isConnected).toBe(true);
-    // Auto-reconnect flag set so next reload re-tries.
-    expect(localStorage.getItem('solflow.controller.auto_reconnect')).toBe('1');
   });
 
   it('connect → error{network} when fetch throws', async () => {
@@ -135,7 +152,6 @@ describe('useControllerStore — connection state machine', () => {
     s.disconnect();
     expect(s.connection.kind).toBe('idle');
     expect(s.isConnected).toBe(false);
-    expect(localStorage.getItem('solflow.controller.auto_reconnect')).toBe('0');
   });
 
   it('retry rebuilds connection (alias for connect)', async () => {
@@ -155,13 +171,18 @@ describe('useControllerStore — connection state machine', () => {
     expect(s.connection.kind).toBe('connected');
   });
 
-  it('tryReconnectOnMount no-ops when auto-reconnect was never set', () => {
-    const fetchSpy = vi.fn().mockResolvedValue(jsonOk({}));
+  it('tryReconnectOnMount probes configured controllers, skips empty ones', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonOk({ ok: true, controller_version: '0.1.0', host_spec_major: HOST_SPEC_MAJOR }),
+    );
     vi.stubGlobal('fetch', fetchSpy);
     const s = useControllerStore();
-    s.setUrl('http://x.example'); // setUrl clears auto-reconnect
+    // Local defaults to 127.0.0.1:3939 (non-empty); cloud is empty.
     s.tryReconnectOnMount();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    await Promise.resolve();
+    const probed = fetchSpy.mock.calls.map((c) => String(c[0]));
+    expect(probed.some((u) => u.includes('127.0.0.1:3939'))).toBe(true);
+    expect(probed.some((u) => u.includes('example'))).toBe(false);
   });
 
   it('populates connectors after a successful connect (C.4)', async () => {
@@ -271,13 +292,15 @@ describe('useControllerStore — connection state machine', () => {
 
   it('setAuthToken clears stale error{auth} so the user can retry', () => {
     const s = useControllerStore();
-    s.setUrl('http://x.example');
-    // Hand-set an error state matching what connect→401 produces.
-    (s as unknown as { connection: { kind: string; reason: object } }).connection = {
+    // Hand-set the active (local) endpoint into the auth-error state
+    // that connect→401 produces. `connection` is a computed of the
+    // active endpoint, so we set the underlying endpoint state.
+    s.localConn = {
       kind: 'error',
       reason: { kind: 'auth', status: 401, code: 'auth_missing', message: 'm' },
     };
     s.setAuthToken('new-token');
+    expect(s.localConn.kind).toBe('idle');
     expect(s.connection.kind).toBe('idle');
   });
 

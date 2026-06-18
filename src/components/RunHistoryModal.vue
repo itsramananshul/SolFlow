@@ -214,7 +214,6 @@ const listErrorMsg = computed(() =>
         <header class="modal-header">
           <div class="header-left">
             <span class="title">Run history</span>
-            <span class="phase-tag">Phase C.5</span>
           </div>
           <button class="close" @click="emit('close')" aria-label="Close">✕</button>
         </header>

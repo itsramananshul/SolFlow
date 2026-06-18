@@ -1,26 +1,31 @@
 /**
- * Controller connection store (Phase C C.2 c62).
+ * Controller connection store.
  *
- * One source of truth for the editor's relationship with a SolFlow
- * controller. ControllerSettingsModal manages this; RunModal reads
- * it to decide whether controller-local execution mode is available.
+ * One source of truth for the editor's execution target and its
+ * relationship with SolFlow controllers. SolFlow runs a workflow
+ * against one of three targets:
  *
- * State machine (linear, no surprises):
+ *   - browser-sim:  the canonical SOL VM compiled to WASM, in this
+ *                   browser. No controller. External Actions blocked.
+ *   - local:        a controller on the user's own machine, e.g.
+ *                   http://127.0.0.1:3939.
+ *   - cloud:        a public HTTPS controller, e.g.
+ *                   https://controller.example.com.
  *
- *    idle ──setUrl──> idle
- *    idle ──connect──> connecting ──ok──> connected
- *                              └──err──> error
- *    connected ──disconnect──> idle
- *    connected ──connect──> connecting  (refresh)
- *    error ──retry──> connecting
+ * The two controller endpoints are configured independently, each
+ * with its own URL and live connection status, so the UI can show
+ * both at once (connected / disconnected). The shared bearer token
+ * is sent to whichever controller needs it.
  *
- * URL + last-known-good connection are persisted to localStorage so
- * a page reload reconnects without ceremony (silent reconnect on
- * mount; user sees "connecting" briefly then "connected").
+ * Everything persists to localStorage so a reload restores the same
+ * target and URLs. On mount we probe both configured controllers so
+ * their status is live without the user clicking anything.
  *
- * The `ControllerClient` instance is cached and rebuilt whenever
- * the URL changes — the client itself is stateless so the cost
- * is just URL normalization.
+ * Back-compat: `url`, `connection`, `isConnected`, `getClient`,
+ * `connect`, `disconnect`, and `connectors` resolve against the
+ * ACTIVE controller (the cloud endpoint when the run target is
+ * cloud, otherwise the local endpoint), so existing callers keep
+ * working unchanged.
  */
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
@@ -32,14 +37,22 @@ import {
 import { opremClient, type OpremRunOutcome } from '@/runtime-host/opremClient';
 import type { ConnectorMeta, Health } from '@/runtime-host/types';
 
-const STORAGE_KEY_URL = 'solflow.controller.url';
-const STORAGE_KEY_AUTO = 'solflow.controller.auto_reconnect';
+/** Which controller endpoint a setting refers to. */
+export type ControllerTarget = 'local' | 'cloud';
+/** What a workflow run executes against. */
+export type RunTarget = 'browser-sim' | 'local' | 'cloud';
+
+const DEFAULT_LOCAL_URL = 'http://127.0.0.1:3939';
+
+const STORAGE_KEY_LOCAL_URL = 'solflow.controller.local_url';
+const STORAGE_KEY_CLOUD_URL = 'solflow.controller.cloud_url';
+const STORAGE_KEY_RUN_TARGET = 'solflow.run.target';
+/** Legacy single-URL key (pre run-targets); migrated into local. */
+const STORAGE_KEY_LEGACY_URL = 'solflow.controller.url';
 /**
- * Phase C C.7 c99 — bearer token persisted alongside the URL.
- * The token is intentionally stored in plain localStorage with
- * the URL: this is the editor's "I trust this device" model, the
- * same model as how DevTools cookies are stored. Not appropriate
- * for shared / kiosk environments — that's a Phase D concern.
+ * Bearer token persisted alongside the URLs. Stored in plain
+ * localStorage with the URL: the editor's "I trust this device"
+ * model. Not appropriate for shared / kiosk environments.
  */
 const STORAGE_KEY_TOKEN = 'solflow.controller.auth_token';
 
@@ -61,112 +74,115 @@ export type ConnectionState =
         | { kind: 'decode'; message: string }
         | { kind: 'version'; controllerMajor: number; editorMajor: number; message: string }
         | { kind: 'invalid_url'; message: string }
-        /** Phase C C.7 c99 — controller-side auth rejection. */
         | { kind: 'auth'; status: number; code: string; message: string }
         | { kind: 'unknown'; message: string };
     };
 
 export const useControllerStore = defineStore('controller', () => {
-  // ---- persistent state ----
-  const url = ref<string>(loadStoredUrl());
-  /** Bearer token sent on every request when non-empty. Persists
-   *  across reloads alongside the URL. Phase C C.7 c99. */
+  // ---- persistent settings ----
+  const localUrl = ref<string>(loadStoredUrl(STORAGE_KEY_LOCAL_URL, DEFAULT_LOCAL_URL, true));
+  const cloudUrl = ref<string>(loadStoredUrl(STORAGE_KEY_CLOUD_URL, '', false));
+  const runTarget = ref<RunTarget>(loadStoredRunTarget());
+  /** Bearer token sent on every controller request when non-empty. */
   const authToken = ref<string>(loadStoredToken());
-  /** Did the last successful connection come from this URL? Used to
-   *  decide whether to auto-reconnect on app mount. */
-  const autoReconnect = ref<boolean>(loadAutoReconnectFlag());
 
-  // ---- runtime state ----
-  const connection = ref<ConnectionState>({ kind: 'idle' });
-  /** Connector metadata reported by the controller on connect.
-   *  Empty when not connected; populated by `connect()`. */
+  // ---- runtime state (per controller endpoint) ----
+  const localConn = ref<ConnectionState>({ kind: 'idle' });
+  const cloudConn = ref<ConnectionState>({ kind: 'idle' });
+  /** Connector metadata reported by the active controller on connect. */
   const connectors = ref<ConnectorMeta[]>([]);
 
-  let cachedClient: ControllerClient | null = null;
-  let cachedFor: string | null = null;
-  let cachedForToken: string | null = null;
+  /**
+   * The controller endpoint the back-compat facades resolve to: the
+   * cloud endpoint when running against cloud, otherwise local. When
+   * the run target is browser-sim there is no controller in play, but
+   * we still point at `local` so status panels have something to show.
+   */
+  const activeTarget = computed<ControllerTarget>(() =>
+    runTarget.value === 'cloud' ? 'cloud' : 'local',
+  );
 
-  /** Build / re-use a `ControllerClient` for the current URL + token.
-   *  Throws if the URL is invalid (e.g. missing scheme). */
-  function getClient(): ControllerClient {
-    if (
-      cachedClient
-      && cachedFor === url.value
-      && cachedForToken === authToken.value
-    ) {
-      return cachedClient;
-    }
-    cachedClient = controllerClient(url.value, {
-      authToken: authToken.value,
-    });
-    cachedFor = url.value;
-    cachedForToken = authToken.value;
-    return cachedClient;
+  function urlFor(target: ControllerTarget): string {
+    return target === 'cloud' ? cloudUrl.value : localUrl.value;
+  }
+  function connRef(target: ControllerTarget) {
+    return target === 'cloud' ? cloudConn : localConn;
   }
 
-  /** True when controller-local execution is usable. */
+  // ---- back-compat facades (active controller) ----
+  const url = computed<string>(() => urlFor(activeTarget.value));
+  const connection = computed<ConnectionState>(() => connRef(activeTarget.value).value);
   const isConnected = computed(() => connection.value.kind === 'connected');
-
-  /** The connected controller's reported version, if any. */
   const controllerVersion = computed(() =>
     connection.value.kind === 'connected' ? connection.value.health.controller_version : null,
   );
 
-  function setUrl(next: string): void {
-    if (next === url.value) return;
-    url.value = next;
-    cachedClient = null;
-    cachedFor = null;
-    cachedForToken = null;
-    try {
-      localStorage.setItem(STORAGE_KEY_URL, next);
-    } catch {
-      // Ignore quota / disabled-storage failures — value stays
-      // in-memory for this session.
-    }
-    // URL change invalidates connection. Drop to idle; user must
-    // explicitly re-connect. (Don't auto-fire connect() here —
-    // that would be surprising for typing in the URL field.)
-    connection.value = { kind: 'idle' };
-    autoReconnect.value = false;
-    try {
-      localStorage.setItem(STORAGE_KEY_AUTO, '0');
-    } catch {
-      // ignore
-    }
+  // ---- per-target status (for the settings UI) ----
+  const localConnected = computed(() => localConn.value.kind === 'connected');
+  const cloudConnected = computed(() => cloudConn.value.kind === 'connected');
+
+  /** Build a fresh client for a target's URL + token. The client is
+   *  stateless, so building on demand costs only URL normalization.
+   *  Throws `ControllerClientErr` if the URL is invalid. */
+  function getClient(target: ControllerTarget = activeTarget.value): ControllerClient {
+    return controllerClient(urlFor(target), { authToken: authToken.value });
   }
 
-  /** Update the bearer token. Persists to localStorage. Invalidates
-   *  the cached client so the next request picks up the new value.
-   *  Phase C C.7 c99. */
+  // ---- settings mutations ----
+  function setLocalUrl(next: string): void {
+    if (next === localUrl.value) return;
+    localUrl.value = next;
+    localConn.value = { kind: 'idle' };
+    persist(STORAGE_KEY_LOCAL_URL, next);
+  }
+
+  function setCloudUrl(next: string): void {
+    if (next === cloudUrl.value) return;
+    cloudUrl.value = next;
+    cloudConn.value = { kind: 'idle' };
+    persist(STORAGE_KEY_CLOUD_URL, next);
+  }
+
+  /** Set the URL of the active controller endpoint (back-compat). */
+  function setUrl(next: string): void {
+    if (activeTarget.value === 'cloud') setCloudUrl(next);
+    else setLocalUrl(next);
+  }
+
+  function setRunTarget(next: RunTarget): void {
+    if (next === runTarget.value) return;
+    runTarget.value = next;
+    persist(STORAGE_KEY_RUN_TARGET, next);
+  }
+
   function setAuthToken(next: string): void {
     if (next === authToken.value) return;
     authToken.value = next;
-    cachedClient = null;
-    cachedFor = null;
-    cachedForToken = null;
     try {
-      if (next.length > 0) {
-        localStorage.setItem(STORAGE_KEY_TOKEN, next);
-      } else {
-        localStorage.removeItem(STORAGE_KEY_TOKEN);
-      }
+      if (next.length > 0) localStorage.setItem(STORAGE_KEY_TOKEN, next);
+      else localStorage.removeItem(STORAGE_KEY_TOKEN);
     } catch {
-      // ignore — value stays in-memory for this session
+      // value stays in-memory for this session
     }
-    // Token change doesn't itself drop the connection (it may
-    // still be valid); but if we're in `error{auth}` the user
-    // probably just fixed it, so let them re-try.
-    if (connection.value.kind === 'error' && connection.value.reason.kind === 'auth') {
-      connection.value = { kind: 'idle' };
+    // A fixed token should let the user re-try a previously-rejected
+    // controller without an extra "reset" step.
+    for (const c of [localConn, cloudConn]) {
+      if (c.value.kind === 'error' && c.value.reason.kind === 'auth') {
+        c.value = { kind: 'idle' };
+      }
     }
   }
 
-  /** Attempt a healthz call. Updates `connection` to either
-   *  `connected` or `error`. Safe to call repeatedly. */
-  async function connect(): Promise<void> {
-    if (!url.value.trim()) {
-      connection.value = {
+  /**
+   * Probe a controller's `/healthz`. Updates that endpoint's
+   * connection state to `connected` or `error`. Safe to call
+   * repeatedly; this is what the "Check" button calls.
+   */
+  async function checkHealth(target: ControllerTarget = activeTarget.value): Promise<void> {
+    const conn = connRef(target);
+    const targetUrl = urlFor(target).trim();
+    if (!targetUrl) {
+      conn.value = {
         kind: 'error',
         reason: { kind: 'invalid_url', message: 'controller URL is empty' },
       };
@@ -174,85 +190,55 @@ export const useControllerStore = defineStore('controller', () => {
     }
     let client: ControllerClient;
     try {
-      client = getClient();
+      client = getClient(target);
     } catch (e) {
-      if (
-        e instanceof ControllerClientErr
-        && (e.payload.kind === 'invalid_url' || e.payload.kind === 'decode')
-      ) {
-        connection.value = {
-          kind: 'error',
-          reason: { kind: 'invalid_url', message: e.payload.message },
-        };
-      } else {
-        connection.value = {
-          kind: 'error',
-          reason: { kind: 'unknown', message: errorMessage(e) },
-        };
-      }
+      conn.value = {
+        kind: 'error',
+        reason:
+          e instanceof ControllerClientErr && e.payload.kind === 'invalid_url'
+            ? { kind: 'invalid_url', message: e.payload.message }
+            : { kind: 'unknown', message: errorMessage(e) },
+      };
       return;
     }
-    connection.value = { kind: 'connecting' };
+    conn.value = { kind: 'connecting' };
     try {
       const health = await client.healthzChecked();
-      // Fetch connectors. Don't fail the connect on this — older
-      // controllers without /connectors will 404; leave the
-      // connectors list empty so the editor's connector UX
-      // degrades gracefully ("no connectors reported") instead
-      // of refusing to mark the controller as connected.
-      try {
-        connectors.value = await client.listConnectors({ timeoutMs: 3_000 });
-      } catch {
-        connectors.value = [];
+      // Connectors are best-effort; only the active controller's
+      // connector list is surfaced in the UI.
+      if (target === activeTarget.value) {
+        try {
+          connectors.value = await client.listConnectors({ timeoutMs: 3_000 });
+        } catch {
+          connectors.value = [];
+        }
       }
-      connection.value = {
-        kind: 'connected',
-        health,
-        connectedAt: Date.now(),
-      };
-      autoReconnect.value = true;
-      try {
-        localStorage.setItem(STORAGE_KEY_AUTO, '1');
-      } catch {
-        // ignore
-      }
+      conn.value = { kind: 'connected', health, connectedAt: Date.now() };
     } catch (e) {
-      connection.value = { kind: 'error', reason: connectionErrorFrom(e) };
-      connectors.value = [];
+      conn.value = { kind: 'error', reason: connectionErrorFrom(e) };
+      if (target === activeTarget.value) connectors.value = [];
     }
   }
 
-  function disconnect(): void {
-    connection.value = { kind: 'idle' };
-    connectors.value = [];
-    autoReconnect.value = false;
-    try {
-      localStorage.setItem(STORAGE_KEY_AUTO, '0');
-    } catch {
-      // ignore
-    }
+  /** Back-compat: check the active controller. */
+  function connect(): Promise<void> {
+    return checkHealth(activeTarget.value);
   }
 
-  /** Alias for `connect()` — clearer at call sites in error UIs. */
-  function retry(): Promise<void> {
-    return connect();
+  /** Alias for clearer error-UI call sites. */
+  function retry(target?: ControllerTarget): Promise<void> {
+    return checkHealth(target ?? activeTarget.value);
+  }
+
+  function disconnect(target: ControllerTarget = activeTarget.value): void {
+    connRef(target).value = { kind: 'idle' };
+    if (target === activeTarget.value) connectors.value = [];
   }
 
   /**
-   * Run a SOL workflow on the real OpenPrem controller
-   * (`openprem-controller-v2`) at the configured `url`.
-   *
-   * This uses the source based OpenPrem protocol (POST /workflow +
-   * poll GET /workflow/:id) via `opremClient`, independent of the
-   * legacy `connect()` / `healthz` path above (the real controller
-   * has no `/healthz`). The editor sends the workflow's emitted SOL
-   * source plus the entry workflow name; the controller compiles and
-   * runs it and returns the workflow's return value.
-   *
-   * Verified live against `openprem-controller-v2` (submit -> poll ->
-   * completed/error). Throws `OpremClientErr` on transport / submit
-   * failure; a controller run that fails resolves with
-   * `{ status: 'error', error }`.
+   * Run a SOL workflow on the real OpenPrem controller protocol
+   * (source-based POST /workflow + poll) at the active controller URL.
+   * Independent of the `/healthz` path above.
    */
   function runOnOprem(
     source: string,
@@ -260,37 +246,48 @@ export const useControllerStore = defineStore('controller', () => {
     signal?: AbortSignal,
   ): Promise<OpremRunOutcome> {
     const client = opremClient(url.value);
-    return client.runWorkflow(source, workflow, {
-      signal,
-      overallTimeoutMs: 60_000,
-    });
+    return client.runWorkflow(source, workflow, { signal, overallTimeoutMs: 60_000 });
   }
 
   /**
-   * Best-effort silent reconnect on app mount. Only attempts when
-   * `autoReconnect` is set (i.e. the URL previously succeeded);
-   * never blocks app boot.
+   * Best-effort status probe on app mount. Checks both configured
+   * controllers (any non-empty URL) so the UI shows live status
+   * without the user clicking. Never blocks app boot.
    */
   function tryReconnectOnMount(): void {
-    if (autoReconnect.value && url.value.trim().length > 0) {
-      // Fire-and-forget; the modal subscribes to `connection`.
-      void connect();
-    }
+    if (localUrl.value.trim().length > 0) void checkHealth('local');
+    if (cloudUrl.value.trim().length > 0) void checkHealth('cloud');
   }
 
   return {
-    url,
+    // settings
+    localUrl,
+    cloudUrl,
+    runTarget,
     authToken,
-    autoReconnect,
+    // active-controller facades
+    url,
     connection,
-    connectors,
     isConnected,
     controllerVersion,
+    connectors,
+    activeTarget,
+    // per-target status
+    localConn,
+    cloudConn,
+    localConnected,
+    cloudConnected,
+    // mutations
+    setLocalUrl,
+    setCloudUrl,
     setUrl,
+    setRunTarget,
     setAuthToken,
+    // connection ops
+    checkHealth,
     connect,
-    disconnect,
     retry,
+    disconnect,
     getClient,
     runOnOprem,
     tryReconnectOnMount,
@@ -301,11 +298,32 @@ export const useControllerStore = defineStore('controller', () => {
 //  Helpers
 // =============================================================
 
-function loadStoredUrl(): string {
+function loadStoredUrl(key: string, fallback: string, migrateLegacy: boolean): string {
   try {
-    return localStorage.getItem(STORAGE_KEY_URL) ?? '';
+    const v = localStorage.getItem(key);
+    if (v !== null) return v;
+    // One-time migration: the pre-run-targets build stored a single
+    // controller URL. Fold it into the local endpoint.
+    if (migrateLegacy) {
+      const legacy = localStorage.getItem(STORAGE_KEY_LEGACY_URL);
+      if (legacy !== null && legacy.trim().length > 0) {
+        localStorage.setItem(key, legacy);
+        return legacy;
+      }
+    }
+    return fallback;
   } catch {
-    return '';
+    return fallback;
+  }
+}
+
+function loadStoredRunTarget(): RunTarget {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY_RUN_TARGET);
+    if (v === 'local' || v === 'cloud' || v === 'browser-sim') return v;
+    return 'browser-sim';
+  } catch {
+    return 'browser-sim';
   }
 }
 
@@ -317,11 +335,11 @@ function loadStoredToken(): string {
   }
 }
 
-function loadAutoReconnectFlag(): boolean {
+function persist(key: string, value: string): void {
   try {
-    return localStorage.getItem(STORAGE_KEY_AUTO) === '1';
+    localStorage.setItem(key, value);
   } catch {
-    return false;
+    // Ignore quota / disabled-storage failures.
   }
 }
 
@@ -350,19 +368,11 @@ function connectionErrorFrom(e: unknown): Extract<ConnectionState, { kind: 'erro
         editorMajor: p.editorMajor,
         message: p.message,
       };
-    // Phase C C.7 c99 — bearer-token rejection lands here on
-    // every protected endpoint when token is missing / wrong.
     case 'auth':
       return { kind: 'auth', status: p.status, code: p.code, message: p.message };
-    // Invalid URL surfaces from controllerClient(...) construction
-    // BEFORE any request — but it can also reach connectionErrorFrom
-    // if a caller throws one mid-request, so handle it here too.
     case 'invalid_url':
       return { kind: 'invalid_url', message: p.message };
     case 'aborted':
-      // Treat user-initiated abort during health-check as just
-      // "back to idle" — but we wrap as unknown so the UX shows a
-      // generic message instead of dangling on "connecting".
       return { kind: 'unknown', message: p.message };
   }
 }
