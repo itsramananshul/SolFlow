@@ -7,6 +7,41 @@ SolFlow uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### OpenPrem-native provider system (production commit a48ba48)
+
+SolFlow is now OpenPrem-native. The OpenPrem SDK protocol is the canonical
+provider system; the SolFlow-specific `SOLFLOW_CONNECTORS` registry is demoted
+to an internal/dev/test fallback only.
+
+- **`POST /register` is canonical.** SolFlow's Local Controller plays the role
+  of one OpenPrem controller: real upstream OpenPrem SDK agents register via
+  `POST /register` and SolFlow invokes them directly with the upstream
+  controller-to-agent wire contract (object params flattened with `capability`
+  merged in, scalar params wrapped). `/providers` lists registered OpenPrem
+  agents and their actions; Browser Simulation still blocks external calls
+  clearly; the trace shows EXTCALL then EXTRESULT; missing providers fail with
+  a source-mapped error.
+- **Local/dev mode is unauthenticated by design.** SolFlow omits
+  `controller_public_key` from the `/register` response, so upstream Python and
+  Rust agents register and run without enforcing Ed25519 signatures. Signing is
+  future work.
+- **Canonical sol grammar accepts the upstream example dialect** so the
+  controller runs raw `.sol` verbatim: zero-arg and multi-arg namespace calls,
+  bare-identifier workflow names, unparenthesized `if` / `while`, `x.len()`
+  method desugaring, and native `__system.sleep`.
+- **Upstream examples compatibility suite: 19 of 19 covered.** 18 run end to
+  end with their upstream-shipped agents unchanged (Python and TypeScript/JS
+  SDKs). 1 (`supply-chain/check-inventory`) runs with a clearly labeled SolFlow
+  compatibility fixture (`tools/openprem-compat/central_warehouse_fixture.py`)
+  because the upstream repo ships no provider implementation for it; the
+  upstream `.sol` is unchanged. See `docs/dev/OPENPREM_COMPAT_MATRIX.md` and
+  `docs/dev/OPENPREM_PROVIDERS.md`.
+- **Known caveats.** `diagnostic` is 2 of 4 on Windows because the upstream
+  agent calls Unix-only `os.getloadavg()` (not a SolFlow issue). Four
+  `while(true)` worker examples do not terminate by design; the compatibility
+  harness cancels them after confirming repeated provider invocation. Provider
+  auth runs in unauthenticated local/dev mode.
+
 ### Added — Phase C C.7 (remote controller support)
 
 - **TLS / HTTPS support.** Setting
