@@ -29,7 +29,7 @@ const wasm = require('../../../../compiler-wasm/pkg-node/solflow_compiler_wasm.j
   parse_source_json(source: string): string;
   analyze_source_json(source: string): string;
   compile_source_json(source: string): string;
-  run_source_json(source: string): string;
+  run_source_json(source: string, inputs: string): string;
   version(): string;
 };
 
@@ -132,7 +132,7 @@ interface RunEnvelopeShape {
 }
 
 function runWasm(source: string): RunEnvelopeShape {
-  return JSON.parse(wasm.run_source_json(source)) as RunEnvelopeShape;
+  return JSON.parse(wasm.run_source_json(source, "")) as RunEnvelopeShape;
 }
 
 describe('canonical-VM execution via Node WASM', () => {

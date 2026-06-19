@@ -6,6 +6,7 @@ import { buildOrchestration } from './orchestration';
 import { buildPayments } from './payments';
 import { buildEnterprise } from './enterprise';
 import { buildCapabilityDemo } from './capabilityDemo';
+import { buildWebhookOrder } from './webhookOrder';
 
 export interface Sample {
   id: string;
@@ -27,6 +28,15 @@ export interface Sample {
    * exclusive with `runnable` (which means browser-sim standalone).
    */
   requiresProvider?: boolean;
+  /**
+   * True when the workflow reads event data (`payload`) from a trigger or
+   * webhook, so a manual run needs a test payload. Such a sample ships a
+   * default example payload in `samplePayload` and is badged "Needs test
+   * payload"; the Run panel prefills the payload editor with it.
+   */
+  requiresPayload?: boolean;
+  /** Default example payload (JSON string) for a `requiresPayload` sample. */
+  samplePayload?: string;
   build: () => SolWorkflow;
 }
 
@@ -73,6 +83,15 @@ export const SAMPLES: Sample[] = [
     runnable: false,
     requiresProvider: true,
     build: buildCapabilityDemo,
+  },
+  {
+    id: 'webhook-order',
+    name: 'Webhook Order',
+    description: 'Reads payload.total from a webhook/trigger event. Needs a test payload to run manually; ships one ({ "total": 1200 }) prefilled in the Run panel.',
+    runnable: false,
+    requiresPayload: true,
+    samplePayload: '{\n  "total": 1200\n}',
+    build: buildWebhookOrder,
   },
   {
     id: 'enterprise',

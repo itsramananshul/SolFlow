@@ -5,6 +5,9 @@ import { useSimulationStore } from '@/stores/simulation.store';
 import { useUIStore } from '@/stores/ui.store';
 import { useControllerStore } from '@/stores/controller.store';
 import { useControllerRunHistoryStore } from '@/stores/controller-run-history.store';
+import { useRunInputStore, usesPayload } from '@/stores/runInput.store';
+import { useTracePanelStore } from '@/stores/tracePanel.store';
+import { nextPanelZ } from '@/composables/panelZ';
 import { recordTrace, type Trace } from '@/runtime/simulate';
 import { runSource } from '@/compiler/api';
 import {
@@ -27,6 +30,8 @@ const sim = useSimulationStore();
 const ui = useUIStore();
 const controller = useControllerStore();
 const runHistory = useControllerRunHistoryStore();
+const runInput = useRunInputStore();
+const traceStore = useTracePanelStore();
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -166,6 +171,9 @@ const isRunning = ref(false);
 
 const tabs = ['output', 'live', 'trace', 'sol'] as const;
 type Tab = (typeof tabs)[number];
+// The execution trace lives in its own floating window (TracePanel), so it
+// is no longer a tab here; these are the tabs shown in the Run panel.
+const visibleTabs = ['output', 'live', 'sol'] as const;
 const activeTab = ref<Tab>('output');
 
 function tabLabel(t: Tab): string {
@@ -175,7 +183,20 @@ function tabLabel(t: Tab): string {
   return 'Generated SOL';
 }
 
+/** This workflow reads event data (`payload`) and so needs a test payload
+ *  for a manual run. Drives the Test payload section + run guard. */
+const needsPayload = computed(() => usesPayload(graph.emitted.source));
+/** Set when a run is blocked by invalid test-payload JSON. */
+const payloadBlocked = ref(false);
+
 async function execute() {
+  // Block the run on invalid test-payload JSON rather than failing opaquely.
+  payloadBlocked.value = false;
+  if (needsPayload.value && !runInput.validity.ok) {
+    payloadBlocked.value = true;
+    activeTab.value = 'output';
+    return;
+  }
   isRunning.value = true;
   runEnvelope.value = null;
   trace.value = null;
@@ -188,8 +209,9 @@ async function execute() {
   await new Promise((r) => setTimeout(r, 0));
   try {
     if (mode.value === 'browser-sim') {
-      // Canonical run (the authoritative output) in-browser.
-      runEnvelope.value = await runSource(graph.emitted.source);
+      // Canonical run (the authoritative output) in-browser, injecting the
+      // test payload as `payload` when the workflow needs it.
+      runEnvelope.value = await runSource(graph.emitted.source, runInput.injectable);
       // Legacy JS trace for canvas animation only.
       trace.value = recordTrace(graph.workflow);
       if (trace.value) sim.play(trace.value, { workflow: graph.workflow });
@@ -228,8 +250,14 @@ async function executeControllerLocal() {
       },
       { signal, timeoutMs: 10_000 },
     );
+    // Send the test payload as the run's inputs (the controller binds it
+    // to `payload`), matching what Browser Simulation injects.
+    let runInputs: unknown = {};
+    if (runInput.injectable) {
+      try { runInputs = JSON.parse(runInput.injectable); } catch { runInputs = {}; }
+    }
     const created = await client.createRun(
-      { workflow_id: wf.workflow_id, trigger: { kind: 'Manual' } },
+      { workflow_id: wf.workflow_id, trigger: { kind: 'Manual' }, inputs: runInputs },
       { signal, timeoutMs: 10_000 },
     );
     controllerRun.value = {
@@ -570,6 +598,80 @@ const runErrorMsg = computed(() => {
   return msg;
 });
 
+// ----- Friendly, actionable error classification -----
+const PAYLOAD_LIKE = ['payload', 'event', 'input', 'request', 'body'];
+
+/** Best raw runtime-error text from whichever run target ran. */
+const rawRuntimeErrorText = computed<string>(() => {
+  const diags = browserRuntimeDiags.value.map((d) => d.message).filter((m): m is string => !!m);
+  if (diags.length) return diags.join('\n');
+  if (mode.value === 'controller-local') {
+    const c = controllerRun.value;
+    if (c.kind === 'done' && c.record.status === 'Failed') {
+      const cdiags = (c.record.diagnostics ?? []).map((d) => d.message).filter((m): m is string => !!m);
+      if (cdiags.length) return cdiags.join('\n');
+    }
+  }
+  return '';
+});
+
+interface FriendlyError {
+  kind: 'missing-payload' | 'missing-variable';
+  title: string;
+  explanation: string;
+  howToFix: string[];
+  exampleJson?: string;
+  varName: string;
+  raw: string;
+}
+
+/** Turn a raw "variable 'x' not found" into an actionable explanation. */
+const friendlyError = computed<FriendlyError | null>(() => {
+  const raw = rawRuntimeErrorText.value;
+  const m = raw.match(/variable '([A-Za-z_][A-Za-z0-9_]*)' not found/);
+  if (!m) return null;
+  const name = m[1]!;
+  if (PAYLOAD_LIKE.includes(name)) {
+    return {
+      kind: 'missing-payload',
+      title: 'Missing test payload',
+      explanation: `This workflow uses \`${name}\`, which means it expects event data from a trigger or webhook. You ran it manually, but no test payload was provided.`,
+      howToFix: [
+        'Add a test payload in the Run panel below.',
+        'Use the sample payload if this is a bundled sample.',
+        'Or run this workflow from a real trigger or webhook that provides the event data.',
+      ],
+      exampleJson: runInput.samplePayload || '{\n  "total": 1200\n}',
+      varName: name,
+      raw,
+    };
+  }
+  return {
+    kind: 'missing-variable',
+    title: `Variable "${name}" is not defined`,
+    explanation: `The workflow tried to use \`${name}\`, but it was never defined or provided.`,
+    howToFix: [
+      `Check the spelling of "${name}".`,
+      `Define it first with a Let node (\`let ${name} = …\`).`,
+    ],
+    varName: name,
+    raw,
+  };
+});
+
+/** Prefill the payload editor with the sample/example JSON and focus it. */
+function addTestPayload() {
+  if (runInput.payloadText.trim() === '') {
+    runInput.setPayload(runInput.samplePayload || friendlyError.value?.exampleJson || '{\n  "total": 1200\n}');
+  }
+  payloadBlocked.value = false;
+  void nextTick(() => {
+    const el = document.querySelector<HTMLTextAreaElement>('.payload-editor');
+    el?.focus();
+    el?.scrollIntoView({ block: 'center' });
+  });
+}
+
 const completedOk = computed(() => {
   if (mode.value === 'browser-sim') {
     return (
@@ -865,6 +967,25 @@ const traceRows = computed<TraceRow[]>(() => {
   });
 });
 
+// Feed the standalone Trace window: push the rows whenever a run produces a
+// trace; it opens the floating panel so the trace is visible without
+// covering the Run panel.
+watch(traceRows, (rows) => {
+  traceStore.setTrace(
+    rows.map((r) => ({
+      index: r.index,
+      kind: r.kind,
+      fn: r.fn,
+      depth: r.depth,
+      line: r.line,
+      snippet: r.snippet,
+      nodeId: r.nodeId,
+      fnName: r.fnName,
+    })),
+    { steps: runResult.value?.steps ?? rows.length, truncated: runResult.value?.trace_truncated ?? false },
+  );
+});
+
 const runtimeErrorLocation = computed(() => {
   const r = runResult.value;
   if (!r || !r.runtime_error_source_span) return null;
@@ -908,6 +1029,34 @@ function focusSourceLine(line: number) {
   });
 }
 
+// Push the current run error to the right-side SOL source preview so it
+// highlights + scrolls to the failing line; clear it when the run is clean.
+watch(
+  [runtimeErrorLocation, friendlyError],
+  () => {
+    const loc = runtimeErrorLocation.value;
+    if (loc) {
+      const fe = friendlyError.value;
+      const msg = fe
+        ? `${fe.title}: ${fe.explanation.replace(/`/g, '')}`
+        : (runErrorMsg.value ?? 'Runtime error');
+      ui.setSourceError(loc.line, msg);
+    } else {
+      ui.clearSourceError();
+    }
+  },
+);
+
+/** "Show source": focus the SOL preview (modal SOL tab + right-side editor)
+ *  on the failing line, keeping the explanation available. */
+function showSourceForError() {
+  const loc = runtimeErrorLocation.value;
+  if (!loc) return;
+  const fe = friendlyError.value;
+  ui.setSourceError(loc.line, fe ? fe.title : (runErrorMsg.value ?? 'Runtime error'));
+  focusSourceLine(loc.line);
+}
+
 function close() {
   emit('close');
 }
@@ -938,7 +1087,9 @@ const dragging = ref(false);
 let dragOffset = { x: 0, y: 0 };
 
 function panelWidth(): number {
-  return Math.min(PANEL_W, window.innerWidth - 2 * EDGE);
+  // Leave room on the right for a docked Trace sidebar (matches the CSS
+  // width: min(920px, calc(100vw - 360px))).
+  return Math.min(PANEL_W, window.innerWidth - 360);
 }
 
 /** Live panel size from the rendered element (falls back to the caps).
@@ -949,10 +1100,11 @@ function panelSize(): { w: number; h: number } {
   return { w: panelWidth(), h: Math.min(window.innerHeight - 2 * EDGE, 560) };
 }
 
-/** Centered default that always fits the viewport on every edge. */
+/** Left-biased default so the Run panel sits beside (not under) a docked
+ *  Trace sidebar; always fits the viewport on every edge. */
 function defaultPos(): { x: number; y: number } {
-  const { w, h } = panelSize();
-  const x = Math.round((window.innerWidth - w) / 2);
+  const { h } = panelSize();
+  const x = EDGE + 8;
   const y = Math.round(Math.min(window.innerHeight * 0.07, window.innerHeight - h - EDGE));
   return clampPos(x, y);
 }
@@ -1006,13 +1158,24 @@ function persistPos() {
   }
 }
 
+// Shared z-index so clicking the Run panel brings it above the Trace panel.
+const panelZ = ref(nextPanelZ());
+function bringRunToFront() { panelZ.value = nextPanelZ(); }
+
 const modalStyle = computed(() =>
   pos.value
-    ? { position: 'fixed' as const, left: `${pos.value.x}px`, top: `${pos.value.y}px`, margin: '0' }
+    ? {
+        position: 'fixed' as const,
+        left: `${pos.value.x}px`,
+        top: `${pos.value.y}px`,
+        margin: '0',
+        zIndex: String(panelZ.value),
+      }
     : {},
 );
 
 function onHeaderPointerDown(e: PointerEvent) {
+  bringRunToFront();
   // Never start a drag from an interactive control inside the header.
   const el = e.target as HTMLElement;
   if (el.closest('button, a, input, select, textarea, .target-toggle')) return;
@@ -1047,7 +1210,7 @@ function onResize() {
 
 watch(
   () => props.open,
-  (isOpen) => { if (isOpen) initPos(); },
+  (isOpen) => { if (isOpen) { initPos(); bringRunToFront(); } },
   { immediate: true },
 );
 
@@ -1078,7 +1241,7 @@ onBeforeUnmount(() => {
 <template>
   <Transition name="fade">
     <div v-if="open" class="backdrop" @click="onBackdrop">
-      <div ref="modalEl" class="modal" :class="{ dragging }" :style="modalStyle">
+      <div ref="modalEl" class="modal" :class="{ dragging }" :style="modalStyle" @pointerdown="bringRunToFront">
         <header
           class="modal-header drag-handle"
           @pointerdown="onHeaderPointerDown"
@@ -1157,18 +1320,20 @@ onBeforeUnmount(() => {
 
         <nav class="tabs">
           <button
-            v-for="t in tabs"
+            v-for="t in visibleTabs"
             :key="t"
             class="tab"
             :class="{ active: activeTab === t }"
             @click="activeTab = t"
           >
             {{ tabLabel(t) }}
-            <span
-              v-if="t === 'trace' && traceRows.length > 0"
-              class="tab-badge"
-            >{{ traceRows.length }}</span>
           </button>
+          <button
+            v-if="traceStore.rows.length > 0"
+            class="tab trace-open"
+            @click="traceStore.openPanel()"
+            title="Open the Execution Trace window"
+          >Trace ▸ <span class="tab-badge">{{ traceStore.rows.length }}</span></button>
           <div class="tab-spacer" />
           <div class="status" v-if="controllerPhaseLabel">
             <span
@@ -1206,6 +1371,45 @@ onBeforeUnmount(() => {
         <main class="body">
           <!-- Output tab -->
           <section v-if="activeTab === 'output'" class="pane">
+            <!-- Test payload: shown when the workflow reads event data
+                 (payload). Injected as `payload` for both run targets. -->
+            <div
+              v-if="needsPayload"
+              class="payload-section"
+              :class="{ invalid: !runInput.validity.ok }"
+            >
+              <div class="payload-head">
+                <strong>Test payload</strong>
+                <span class="subtle">injected as <code>payload</code></span>
+                <div class="tab-spacer" />
+                <button
+                  v-if="runInput.hasSamplePayload"
+                  class="ghost"
+                  @click="runInput.resetToSample()"
+                  title="Reset to the sample's example payload"
+                >Reset to sample</button>
+              </div>
+              <p class="payload-help">
+                Payload is the test event data passed into this workflow. In real
+                use it comes from a webhook, trigger, or external event. For manual
+                testing, paste JSON here.
+              </p>
+              <textarea
+                class="payload-editor"
+                :value="runInput.payloadText"
+                @input="runInput.setPayload(($event.target as HTMLTextAreaElement).value)"
+                spellcheck="false"
+                placeholder='{ "total": 1200 }'
+                rows="4"
+              ></textarea>
+              <div v-if="!runInput.validity.ok" class="payload-invalid">
+                Invalid JSON: {{ runInput.validity.message }}
+              </div>
+              <div v-else-if="payloadBlocked" class="payload-invalid">
+                Provide a valid test payload before running.
+              </div>
+            </div>
+
             <!-- Recent controller runs (c64) — collapsed unless any exist -->
             <details
               v-if="mode === 'controller-local' && recentRuns.length > 0"
@@ -1292,7 +1496,41 @@ onBeforeUnmount(() => {
                 </ul>
               </div>
 
-              <!-- Runtime error from canonical VM -->
+              <!-- Friendly, actionable error (missing payload / variable) -->
+              <div v-else-if="friendlyError" class="error friendly-error">
+                <strong>{{ friendlyError.title }}</strong>
+                <div class="error-msg">{{ friendlyError.explanation }}</div>
+                <div class="howto">
+                  <div class="howto-title">How to fix</div>
+                  <ul>
+                    <li v-for="(h, i) in friendlyError.howToFix" :key="i">{{ h }}</li>
+                  </ul>
+                  <pre v-if="friendlyError.exampleJson" class="howto-example">{{ friendlyError.exampleJson }}</pre>
+                </div>
+                <div class="error-actions">
+                  <button
+                    v-if="friendlyError.kind === 'missing-payload'"
+                    class="primary-action"
+                    @click="addTestPayload"
+                  >Add test payload</button>
+                  <button
+                    v-if="runtimeErrorLocation"
+                    class="link"
+                    @click="showSourceForError"
+                  >Show source (line {{ runtimeErrorLocation.line }})</button>
+                  <button
+                    v-if="runtimeErrorLocation?.nodeId"
+                    class="link"
+                    @click="jumpToNode(runtimeErrorLocation.fnName, runtimeErrorLocation.nodeId)"
+                  >Show on canvas</button>
+                </div>
+                <details class="raw-details">
+                  <summary>Technical details</summary>
+                  <code>{{ friendlyError.raw }}</code>
+                </details>
+              </div>
+
+              <!-- Runtime error from canonical VM (generic) -->
               <div v-else-if="runErrorMsg" class="error">
                 <strong>{{ runErrorTitle }}</strong>
                 <div class="error-msg">{{ runErrorMsg }}</div>
@@ -1302,7 +1540,7 @@ onBeforeUnmount(() => {
                   ·
                   <button
                     class="link"
-                    @click="focusSourceLine(runtimeErrorLocation.line)"
+                    @click="showSourceForError"
                   >show source</button>
                   <template v-if="runtimeErrorLocation.nodeId">
                     ·
@@ -1594,11 +1832,10 @@ function formatReturn(v: unknown): string {
   border: 1px solid var(--sf-border-strong);
   border-radius: var(--sf-radius-lg);
   box-shadow: var(--sf-shadow-3);
-  /* Always fit the viewport: cap to the available width and height with
-     a small margin so the dialog is never clipped. Wide enough that the
-     header controls (run-target toggle + actions) fit; the header also
-     wraps + truncates as a safety net so it can never clip horizontally. */
-  width: min(920px, calc(100vw - 32px));
+  /* Fit the viewport and leave room on the right for a docked Trace
+     sidebar so the two panels do not collide. The header wraps + truncates
+     as a safety net so it can never clip horizontally regardless of width. */
+  width: min(920px, calc(100vw - 360px));
   max-width: calc(100vw - 32px);
   max-height: min(82vh, calc(100vh - 32px));
   display: flex;
@@ -1992,6 +2229,110 @@ function formatReturn(v: unknown): string {
   color: var(--sf-text-0);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ----- Test payload section ----- */
+.payload-section {
+  border: 1px solid var(--sf-border);
+  border-left: 3px solid var(--sf-accent);
+  border-radius: var(--sf-radius-sm);
+  background: var(--sf-bg-2);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.payload-section.invalid {
+  border-left-color: var(--sf-error);
+}
+.payload-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.payload-head strong { font-size: 0.75rem; color: var(--sf-text-0); }
+.payload-help {
+  margin: 6px 0 8px;
+  font-size: 0.6875rem;
+  color: var(--sf-text-2);
+  line-height: 1.4;
+}
+.payload-editor {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--sf-bg-0);
+  border: 1px solid var(--sf-border);
+  border-radius: var(--sf-radius-sm);
+  color: var(--sf-text-0);
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+  padding: 8px;
+  resize: vertical;
+  min-height: 64px;
+}
+.payload-editor:focus { outline: none; border-color: var(--sf-accent); }
+.payload-invalid {
+  margin-top: 6px;
+  font-size: 0.6875rem;
+  color: var(--sf-error);
+  font-family: var(--sf-font-mono);
+}
+
+/* ----- Friendly error block ----- */
+.friendly-error .howto { margin-top: 8px; }
+.friendly-error .howto-title {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--sf-text-1);
+  margin-bottom: 2px;
+}
+.friendly-error .howto ul {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  color: var(--sf-text-1);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+}
+.friendly-error .howto-example {
+  background: var(--sf-bg-0);
+  border: 1px solid var(--sf-border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-family: var(--sf-font-mono);
+  font-size: 0.6875rem;
+  color: var(--sf-text-0);
+  white-space: pre;
+  overflow-x: auto;
+  margin: 0 0 6px;
+}
+.error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 6px;
+}
+.primary-action {
+  background: var(--sf-accent);
+  border: none;
+  color: #fff;
+  font-size: 0.6875rem;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.primary-action:hover { filter: brightness(1.08); }
+.raw-details {
+  margin-top: 8px;
+  font-size: 0.625rem;
+}
+.raw-details summary {
+  cursor: pointer;
+  color: var(--sf-text-3);
+}
+.raw-details code {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--sf-font-mono);
+  color: var(--sf-text-2);
 }
 .diag-list {
   list-style: none;

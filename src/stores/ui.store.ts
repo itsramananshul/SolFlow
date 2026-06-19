@@ -37,6 +37,31 @@ export const useUIStore = defineStore('ui', () => {
     focusRequest.value = null;
   }
 
+  /**
+   * A runtime error pinned to a source line, for the SOL source preview to
+   * highlight (gutter marker + line decoration) and scroll to. `line` is
+   * 1-based; `message` is the friendly explanation shown on hover. Cleared
+   * when a run succeeds or the source changes.
+   */
+  const sourceError = ref<{ line: number; message: string; bumpId: number } | null>(null);
+  let errBump = 0;
+  function setSourceError(line: number, message: string) {
+    errBump += 1;
+    sourceError.value = { line, message, bumpId: errBump };
+  }
+  function clearSourceError() {
+    sourceError.value = null;
+  }
+
+  /** Neutral request to scroll the SOL preview to a line (e.g. clicking a
+   *  trace row), without the red error decoration. */
+  const sourceFocus = ref<{ line: number; bumpId: number } | null>(null);
+  let focusBump = 0;
+  function focusSourceLine(line: number) {
+    focusBump += 1;
+    sourceFocus.value = { line, bumpId: focusBump };
+  }
+
   function selectNode(id: string | null) {
     selectedNodeId.value = id;
   }
@@ -70,5 +95,10 @@ export const useUIStore = defineStore('ui', () => {
     setSidebarTab,
     requestFocus,
     clearFocusRequest,
+    sourceError,
+    setSourceError,
+    clearSourceError,
+    sourceFocus,
+    focusSourceLine,
   };
 });

@@ -31,7 +31,7 @@ const require = createRequire(import.meta.url);
 const wasm = require('../../../compiler-wasm/pkg-node/solflow_compiler_wasm.js') as {
   parse_source_json(source: string): string;
   analyze_source_json(source: string): string;
-  run_source_json(source: string): string;
+  run_source_json(source: string, inputs: string): string;
 };
 
 interface RunEnvelope {
@@ -103,7 +103,7 @@ describe('Prod c50 — sample workflows compile cleanly via canonical compiler',
     if (sample.runnable) {
       it(`${sample.id} — runs end to end (output, no runtime error)`, () => {
         const { source } = emit(sample.build());
-        const env = JSON.parse(wasm.run_source_json(source)) as RunEnvelope;
+        const env = JSON.parse(wasm.run_source_json(source, "")) as RunEnvelope;
         const runtimeDiags = (env.diagnostics ?? []).filter(
           (d) => d.phase === 'Runtime',
         );
@@ -125,7 +125,7 @@ describe('Prod c50 — sample workflows compile cleanly via canonical compiler',
     if (sample.requiresProvider) {
       it(`${sample.id} — blocks its external call in Browser Simulation`, () => {
         const { source } = emit(sample.build());
-        const env = JSON.parse(wasm.run_source_json(source)) as RunEnvelope;
+        const env = JSON.parse(wasm.run_source_json(source, "")) as RunEnvelope;
         expect(env.ok).toBe(true);
         expect(env.run).not.toBeNull();
         expect(env.run!.runtime_error?.kind).toBe('ExtCallBlocked');
@@ -136,14 +136,37 @@ describe('Prod c50 — sample workflows compile cleanly via canonical compiler',
       });
     }
 
-    // A "structure demo" (neither flag) is not wired for execution: it
-    // compiles cleanly but produces no output and no return value. This
-    // guards the category — if a future edit wires it up, this fails and
-    // the sample must be re-labeled runnable.
-    if (!sample.runnable && !sample.requiresProvider) {
+    // A payload-driven sample ships a default test payload. Without it the
+    // run fails clearly (missing `payload`); with it, it runs end to end.
+    if (sample.requiresPayload) {
+      it(`${sample.id} — ships a payload and runs with it`, () => {
+        expect(sample.samplePayload, 'requiresPayload sample must ship samplePayload').toBeTruthy();
+        // The example payload is valid JSON.
+        expect(() => JSON.parse(sample.samplePayload!)).not.toThrow();
+        const { source } = emit(sample.build());
+        // Without a payload: a clear missing-payload runtime error.
+        const miss = JSON.parse(wasm.run_source_json(source, "")) as RunEnvelope;
+        const missMsg = [
+          miss.run?.runtime_error?.kind ?? '',
+          ...(miss.diagnostics ?? []).map((d) => d.message),
+        ].join(' ');
+        expect(missMsg).toMatch(/payload/i);
+        // With the sample payload injected: runs and produces output.
+        const ok = JSON.parse(wasm.run_source_json(source, sample.samplePayload!)) as RunEnvelope;
+        expect(ok.ok).toBe(true);
+        expect(ok.run).not.toBeNull();
+        expect(ok.run!.runtime_error).toBeNull();
+        expect(ok.run!.output.length).toBeGreaterThan(0);
+      });
+    }
+
+    // A "structure demo" (no flags) is not wired for execution: it compiles
+    // cleanly but produces no output and no return value. Guards the
+    // category — wiring one up later fails this and forces a re-label.
+    if (!sample.runnable && !sample.requiresProvider && !sample.requiresPayload) {
       it(`${sample.id} — is an inert structure demo (no output)`, () => {
         const { source } = emit(sample.build());
-        const env = JSON.parse(wasm.run_source_json(source)) as RunEnvelope;
+        const env = JSON.parse(wasm.run_source_json(source, "")) as RunEnvelope;
         expect(env.ok).toBe(true);
         expect(env.run).not.toBeNull();
         expect(env.run!.output.length).toBe(0);

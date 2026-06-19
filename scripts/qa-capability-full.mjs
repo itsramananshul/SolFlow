@@ -78,15 +78,14 @@ try {
   await page.getByRole('button', { name: /Re-run|Running/ }).click().catch(() => {});
   await page.waitForFunction(() => !document.body.innerText.includes('Running…'), { timeout: 20000 }).catch(() => {});
   await page.waitForTimeout(800);
-  await page.locator('.tab', { hasText: 'Trace' }).click();
-  await page.waitForTimeout(400);
-  const kinds = (await page.locator('.trace-kind').allInnerTexts().catch(() => [])).map((k) => k.trim().toLowerCase());
+  // The trace now lives in the standalone Execution Trace window.
+  const kinds = (await page.locator('.trace-window .tw-kind').allInnerTexts().catch(() => [])).map((k) => k.trim().toLowerCase());
   const order = kinds.filter((k) => ['extcall', 'extresult', 'stmt'].includes(k));
   const iExt = order.indexOf('extcall'), iRes = order.indexOf('extresult'), iStmt = order.lastIndexOf('stmt');
   results['5. controller runs (extresult present)'] = kinds.includes('extresult');
   results['6. trace order EXTCALL<EXTRESULT<STMT'] = iExt >= 0 && iRes > iExt && iStmt > iRes;
-  // Output value.
-  await page.locator('.tab', { hasText: 'Output' }).first().click().catch(() => {});
+  // Output value (Output tab in the Run panel).
+  await page.locator('.modal .tab', { hasText: 'Output' }).first().click().catch(() => {});
   await page.waitForTimeout(300);
   results['5b. shows return 42'] = /\b42\b/.test(await text());
 

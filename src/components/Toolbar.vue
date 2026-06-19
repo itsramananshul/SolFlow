@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useGraphStore } from '@/stores/graph.store';
+import { useRunInputStore } from '@/stores/runInput.store';
 import { useUIStore } from '@/stores/ui.store';
 import { useTheme } from '@/composables/useTheme';
 import { useToastStore } from '@/stores/toast.store';
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 }>();
 
 const graph = useGraphStore();
+const runInput = useRunInputStore();
 const ui = useUIStore();
 const toasts = useToastStore();
 const { theme, toggleTheme } = useTheme();
@@ -189,6 +191,9 @@ function loadSample(id: string) {
   const sample = SAMPLES.find((s) => s.id === id);
   if (!sample) return;
   graph.loadWorkflow(sample.build());
+  // Seed the Run panel's test payload from the sample (cleared for samples
+  // that take no payload), so payload-driven samples are runnable as loaded.
+  runInput.loadSamplePayload(sample.samplePayload);
   sampleMenuOpen.value = false;
 }
 
@@ -310,13 +315,15 @@ function toggleSampleMenu() {
               <span class="menu-title">{{ s.name }}</span>
               <span
                 class="menu-runnable"
-                :class="s.runnable ? 'runs' : s.requiresProvider ? 'provider' : 'demo'"
+                :class="s.runnable ? 'runs' : s.requiresProvider ? 'provider' : s.requiresPayload ? 'payload' : 'demo'"
                 :title="s.runnable
                   ? 'Runs end to end with no providers'
                   : s.requiresProvider
                     ? 'Runs on a controller with a matching provider registered; blocked in Browser Simulation'
-                    : 'Uses helper functions or capabilities the runtime does not execute on its own'"
-              >{{ s.runnable ? 'Runs standalone' : s.requiresProvider ? 'Needs provider' : 'Structure demo' }}</span>
+                    : s.requiresPayload
+                      ? 'Reads event data (payload) from a trigger/webhook; ships a test payload prefilled in the Run panel'
+                      : 'Uses helper functions or capabilities the runtime does not execute on its own'"
+              >{{ s.runnable ? 'Runs standalone' : s.requiresProvider ? 'Needs provider' : s.requiresPayload ? 'Needs test payload' : 'Structure demo' }}</span>
               <span
                 v-if="metaFor(s.id).nodeCount > 0"
                 class="menu-size"
@@ -642,6 +649,7 @@ function toggleSampleMenu() {
 }
 .menu-runnable.runs { color: var(--sf-success); background: rgba(0, 204, 136, 0.12); }
 .menu-runnable.provider { color: #e8bf7a; background: rgba(220, 170, 90, 0.14); }
+.menu-runnable.payload { color: #8fb8e8; background: rgba(98, 154, 220, 0.14); }
 .menu-runnable.demo { color: var(--sf-text-2);  background: var(--sf-bg-3); }
 .menu-title {
   flex: 1;
