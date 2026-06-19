@@ -921,15 +921,158 @@ function onBackdrop(e: MouseEvent) {
 function onKey(e: KeyboardEvent) {
   if (props.open && e.key === 'Escape') close();
 }
-onMounted(() => document.addEventListener('keydown', onKey));
-onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
+
+// ===== Draggable floating panel =====================================
+// The Run panel is a movable floating window. Position is fixed (left/top)
+// and clamped so the panel can never be dragged fully off-screen; the last
+// position is remembered for the session. Drag starts only from the header
+// (and never from a button/tab/input inside it), so all controls stay
+// clickable and internal scroll areas are untouched.
+const PANEL_W = 640;
+const POS_KEY = 'solflow.runpanel.pos';
+const MIN_VISIBLE_X = 160; // keep at least this much of the panel on screen
+const HEADER_VISIBLE_Y = 36;
+
+const pos = ref<{ x: number; y: number } | null>(null);
+const dragging = ref(false);
+let dragOffset = { x: 0, y: 0 };
+
+function panelWidth(): number {
+  return Math.min(PANEL_W, window.innerWidth - 32);
+}
+
+/** Centered, near-top default that always fits the viewport. */
+function defaultPos(): { x: number; y: number } {
+  const w = panelWidth();
+  return {
+    x: Math.max(16, Math.round((window.innerWidth - w) / 2)),
+    y: Math.max(16, Math.round(window.innerHeight * 0.08)),
+  };
+}
+
+/** Clamp so the panel keeps a usable slice on screen on every edge. */
+function clampPos(x: number, y: number): { x: number; y: number } {
+  const w = panelWidth();
+  const minX = MIN_VISIBLE_X - w; // may go partly off the left, keep MIN_VISIBLE_X on screen
+  const maxX = window.innerWidth - MIN_VISIBLE_X;
+  const minY = 8;
+  const maxY = window.innerHeight - HEADER_VISIBLE_Y;
+  return {
+    x: Math.min(Math.max(x, minX), maxX),
+    y: Math.min(Math.max(y, minY), maxY),
+  };
+}
+
+/** A position is "reachable" if the panel opens comfortably on screen
+ *  (its draggable header area is visible, not stranded in a corner). A
+ *  remembered-but-stranded position recenters on reopen so the panel is
+ *  never lost. */
+function isReachable(x: number, y: number): boolean {
+  return (
+    x >= -40 &&
+    x <= window.innerWidth - 200 &&
+    y >= 0 &&
+    y <= window.innerHeight - 80
+  );
+}
+
+/** Set the initial position when the panel opens: a remembered comfortable
+ *  position, otherwise the centered default. Always re-clamped to the
+ *  current viewport so a shrunk window can't strand it. */
+function initPos() {
+  let next: { x: number; y: number } | null = null;
+  try {
+    const raw = sessionStorage.getItem(POS_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (typeof p?.x === 'number' && typeof p?.y === 'number' && isReachable(p.x, p.y)) {
+        next = clampPos(p.x, p.y);
+      }
+    }
+  } catch { /* ignore bad storage */ }
+  pos.value = next ?? defaultPos();
+}
+
+/** Recenter the panel (double-click header, or after a viewport resize that
+ *  would otherwise strand it). */
+function recenter() {
+  pos.value = defaultPos();
+  persistPos();
+}
+
+function persistPos() {
+  if (pos.value) {
+    try { sessionStorage.setItem(POS_KEY, JSON.stringify(pos.value)); } catch { /* ignore */ }
+  }
+}
+
+const modalStyle = computed(() =>
+  pos.value
+    ? { position: 'fixed' as const, left: `${pos.value.x}px`, top: `${pos.value.y}px`, margin: '0' }
+    : {},
+);
+
+function onHeaderPointerDown(e: PointerEvent) {
+  // Never start a drag from an interactive control inside the header.
+  const el = e.target as HTMLElement;
+  if (el.closest('button, a, input, select, textarea, .target-toggle')) return;
+  if (e.button !== 0) return;
+  dragging.value = true;
+  const cur = pos.value ?? defaultPos();
+  dragOffset = { x: e.clientX - cur.x, y: e.clientY - cur.y };
+  window.addEventListener('pointermove', onHeaderPointerMove);
+  window.addEventListener('pointerup', onHeaderPointerUp);
+  // Prevent stray text selection across the page while dragging without
+  // calling preventDefault() (which would suppress the header's click /
+  // double-click-to-recenter events).
+  document.body.style.userSelect = 'none';
+}
+function onHeaderPointerMove(e: PointerEvent) {
+  if (!dragging.value) return;
+  pos.value = clampPos(e.clientX - dragOffset.x, e.clientY - dragOffset.y);
+}
+function onHeaderPointerUp() {
+  if (!dragging.value) return;
+  dragging.value = false;
+  window.removeEventListener('pointermove', onHeaderPointerMove);
+  window.removeEventListener('pointerup', onHeaderPointerUp);
+  document.body.style.userSelect = '';
+  persistPos();
+}
+
+// Re-clamp on viewport resize so the panel never strands off-screen.
+function onResize() {
+  if (pos.value) pos.value = clampPos(pos.value.x, pos.value.y);
+}
+
+watch(
+  () => props.open,
+  (isOpen) => { if (isOpen) initPos(); },
+  { immediate: true },
+);
+
+onMounted(() => {
+  document.addEventListener('keydown', onKey);
+  window.addEventListener('resize', onResize);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKey);
+  window.removeEventListener('resize', onResize);
+  window.removeEventListener('pointermove', onHeaderPointerMove);
+  window.removeEventListener('pointerup', onHeaderPointerUp);
+});
 </script>
 
 <template>
   <Transition name="fade">
     <div v-if="open" class="backdrop" @click="onBackdrop">
-      <div class="modal">
-        <header class="modal-header">
+      <div class="modal" :class="{ dragging }" :style="modalStyle">
+        <header
+          class="modal-header drag-handle"
+          @pointerdown="onHeaderPointerDown"
+          @dblclick="recenter"
+          title="Drag to move · double-click to recenter"
+        >
           <div class="header-left">
             <span class="title">Run workflow</span>
             <span class="subtle">
@@ -980,6 +1123,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey));
             </button>
             <button class="ghost" @click="execute" :disabled="isRunning">
               {{ isRunning ? 'Running…' : 'Re-run' }}
+            </button>
+            <button class="ghost icon-only" @click="recenter" title="Recenter panel">
+              <svg viewBox="0 0 14 14" width="13" height="13" fill="none">
+                <rect x="3" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3" />
+                <circle cx="7" cy="7" r="1.4" fill="currentColor" />
+              </svg>
             </button>
             <button class="ghost" @click="close" title="Close (Esc)">
               <svg viewBox="0 0 12 12" width="12" height="12" fill="none">
@@ -1448,6 +1597,20 @@ function formatReturn(v: unknown): string {
   padding: 12px 16px;
   border-bottom: 1px solid var(--sf-border);
   background: var(--sf-bg-0);
+}
+/* The header is the drag handle. Buttons/toggles inside keep their own
+   pointer cursor and clickability (drag bails on interactive targets). */
+.modal-header.drag-handle {
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+.modal-header.drag-handle button,
+.modal-header.drag-handle .target-toggle {
+  cursor: pointer;
+}
+.modal.dragging {
+  user-select: none;
 }
 .header-left {
   display: flex;
