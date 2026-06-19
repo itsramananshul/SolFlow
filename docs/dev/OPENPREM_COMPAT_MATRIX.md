@@ -6,10 +6,18 @@ compatibility suite. Every `.sol` file is imported, rendered, compiled,
 run in Browser Simulation, and run on the SolFlow Local Controller
 against its real, unchanged OpenPrem SDK agents.
 
-**Result: 18 of 19 `.sol` files run on the Local Controller with their
-shipped agents** (Python and TypeScript/JS SDKs). The one exception ships
-no provider agent. The two `diagnostic` workflows that fail do so because
-the agent itself is Unix-only on Windows, not because of SolFlow.
+**Result: all 19 `.sol` files run on the Local Controller.** 18 run with
+their upstream-shipped agents unchanged (Python and TypeScript/JS SDKs).
+The 19th, `supply-chain/check-inventory`, runs with a SolFlow
+**compatibility fixture** because the upstream repo ships no provider
+implementation for it (see the note below). The two `diagnostic`
+workflows that fail do so because the agent itself is Unix-only on
+Windows, not because of SolFlow.
+
+Provenance is explicit: every provider is either an **upstream-shipped
+agent** (run unchanged) or, for `check-inventory` only, a
+**SolFlow compatibility fixture** under `tools/openprem-compat/`. No
+upstream `.sol` file was modified to make it pass.
 
 Reproduce with `node tools/openprem-compat/harness.mjs [example-id]`
 (starts the controller, launches the real agents pointed at SolFlow, and
@@ -43,7 +51,7 @@ real agents.
 | simple-demo/workflow | yes | yes | yes | **Succeeded** | app.py echo (x2) |
 | supply-chain-demo/workflow | yes | yes | yes | **Runs (worker)** | app_brick_store.py, app_logistics.py |
 | three-node/workflow | yes | yes | yes | **Runs (worker)** | app_b1.py, app_b2.py, app_c1.py |
-| supply-chain/check-inventory | yes | yes | yes | **Blocked: no agent shipped** | (none in repo) |
+| supply-chain/check-inventory | yes | yes | yes | **Succeeded (fixture)** | central-warehouse (SolFlow compat fixture) |
 
 ## Notes per status
 
@@ -69,13 +77,21 @@ Unix-only). SolFlow surfaces the agent's error faithfully as an
 limitation, not a SolFlow protocol gap; the same workflows would run
 against the agent on Linux/macOS.
 
-**check-inventory — Blocked (no agent shipped)** — the
-`central-warehouse.inventory` / `.purchase` capabilities are declared
-only in the example's controller TOML pointing at warehouse apps that are
-not present in the repository. The `.sol` imports, renders, compiles, and
-blocks cleanly in Browser Simulation; it cannot run on the Local
-Controller because the example ships no provider to start. Writing one
-would be a one-off connector, which is out of scope.
+**check-inventory — runs with a SolFlow compatibility fixture** — the
+upstream example declares `central-warehouse.inventory` / `.purchase`
+only in its controller TOML (`ctrl-east.toml`, `[apps.central-warehouse]`
+→ `http://localhost:9201`) and ships **no provider implementation**.
+SolFlow supplies one as a clearly-labeled compatibility fixture:
+`tools/openprem-compat/central_warehouse_fixture.py`. It is NOT an
+unchanged upstream agent; it is a genuine OpenPrem SDK provider (uses
+`openprem.Application`, registers via `POST /register`, is invoked with
+the upstream request shape, and does not use `SOLFLOW_CONNECTORS`). Its
+behavior is inferred from the `.sol` and the TOML: `inventory({})`
+returns the stock as an int, `purchase({shop, brick_type, count})` adds
+the units and returns a confirmation string. With it registered,
+`check-inventory.sol` runs end to end (inventory 50, the `50 < 100`
+purchase branch fires, and the confirmation string flows back into the
+output). The upstream `.sol` is unchanged.
 
 ## Dialects exercised
 

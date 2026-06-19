@@ -818,4 +818,129 @@ mod openprem_e2e_tests {
         }
         assert!(out.error_span.is_some(), "blocked error carries a source span");
     }
+
+    // ---- supply-chain compatibility fixture (central-warehouse) ----
+    //
+    // The upstream `supply-chain` example ships no provider implementation, so
+    // SolFlow adds a `central-warehouse` compatibility fixture (a real OpenPrem
+    // SDK agent under tools/openprem-compat/). These tests mirror the fixture's
+    // contract so `check-inventory.sol` runs without spawning Python.
+
+    /// The exact upstream `supply-chain/check-inventory.sol`, inlined so the
+    /// test does not depend on the (gitignored) reference tree.
+    const CHECK_INVENTORY_SRC: &str = r#"workflow "check-inventory" {
+    let inv: int = call("central-warehouse.inventory", {});
+    print("Central warehouse stock:");
+    print(inv);
+    if (inv < 100) {
+        print("Low stock! Purchasing more...");
+        let result: str = call("central-warehouse.purchase", {shop: "Corner-Shop", brick_type: "red", count: 50});
+        print(result);
+    } else {
+        print("Stock is sufficient.");
+    }
+    print("Workflow complete.");
+}"#;
+
+    /// A mock central-warehouse agent matching the fixture: `inventory` returns
+    /// an int, `purchase` returns a confirmation string. `fail_inventory`
+    /// forces the inventory call to return an `{"error"}` envelope.
+    async fn spawn_warehouse(stock: i64, fail_inventory: bool) -> String {
+        let app = axum::Router::new().fallback(axum::routing::post(
+            move |axum::extract::Json(body): axum::extract::Json<serde_json::Value>| async move {
+                let cap = body.get("capability").and_then(|c| c.as_str()).unwrap_or("");
+                let resp = if cap.ends_with("inventory") {
+                    if fail_inventory {
+                        serde_json::json!({ "error": "warehouse offline" })
+                    } else {
+                        serde_json::json!(stock)
+                    }
+                } else if cap.ends_with("purchase") {
+                    let count = body.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let shop = body.get("shop").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    serde_json::json!(format!("Purchased {count} bricks for {shop}"))
+                } else {
+                    serde_json::json!({ "error": format!("unknown capability: {cap}") })
+                };
+                axum::extract::Json(resp)
+            },
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// Register the warehouse fixture under its literal name (the `.sol` calls
+    /// `central-warehouse.inventory` / `.purchase` verbatim).
+    fn register_warehouse(endpoint: &str) {
+        let body = serde_json::json!({
+            "name": "central-warehouse",
+            "actions": [{ "name": "inventory" }, { "name": "purchase" }],
+            "endpoint": endpoint,
+        });
+        crate::openprem::register_from_json(body).expect("registration succeeds");
+    }
+
+    async fn run_named(src: String, workflow: &'static str) -> CanonicalOutcome {
+        let handle = tokio::runtime::Handle::current();
+        let providers = ProviderConfig { endpoints: HashMap::new(), timeout_ms: 5_000 };
+        tokio::task::spawn_blocking(move || {
+            run_canonical(
+                &src,
+                workflow,
+                1_000_000,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                handle,
+                &providers,
+                &serde_json::Value::Null,
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Both the happy path and the provider-failure path for `check-inventory`.
+    /// Combined into one test (run sequentially) because both register the
+    /// literal global name `central-warehouse`, which the `.sol` calls verbatim
+    /// — separate parallel tests would race on the shared global registry.
+    #[tokio::test]
+    async fn check_inventory_end_to_end_and_provider_failure() {
+        // --- happy path: inventory + purchase against the fixture contract ---
+        let url = spawn_warehouse(50, false).await;
+        register_warehouse(&url);
+        let out = run_named(CHECK_INVENTORY_SRC.to_string(), "check-inventory").await;
+        assert!(out.error.is_none(), "expected success, got {:?}", out.error);
+        // The 50 < 100 branch runs both inventory and purchase.
+        let extcalls: Vec<_> = out.trace.iter().filter(|s| s.kind == "extcall").collect();
+        assert_eq!(extcalls.len(), 2, "inventory + purchase EXTCALLs");
+        assert_eq!(extcalls[0].detail.as_deref(), Some("central-warehouse.inventory"));
+        assert_eq!(extcalls[1].detail.as_deref(), Some("central-warehouse.purchase"));
+        assert!(extcalls.iter().all(|s| s.line.is_some()), "ext calls carry source lines");
+        assert_eq!(out.trace.iter().filter(|s| s.kind == "extresult").count(), 2);
+        assert!(
+            out.output.iter().any(|l| l.contains("Purchased 50 bricks for Corner-Shop")),
+            "purchase result printed: {:?}",
+            out.output
+        );
+        assert!(out.output.iter().any(|l| l == "50"), "inventory value printed");
+
+        // --- failure path: provider error carries a source line/span ---
+        let bad = spawn_warehouse(50, true).await;
+        register_warehouse(&bad); // re-register replaces the route in place
+        let fail = run_named(CHECK_INVENTORY_SRC.to_string(), "check-inventory").await;
+        match fail.error {
+            Some(RuntimeErrorView::ExtCallFailed { ref function_name, ref message, .. }) => {
+                assert_eq!(function_name, "inventory");
+                assert!(message.contains("warehouse offline"), "surfaces agent error: {message}");
+            }
+            other => panic!("expected ExtCallFailed, got {other:?}"),
+        }
+        assert!(fail.error_span.is_some(), "provider failure carries a source span");
+        let err = fail.trace.iter().find(|s| s.kind == "error").expect("error step");
+        assert!(err.line.is_some(), "error step carries a source line");
+    }
 }

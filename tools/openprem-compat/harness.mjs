@@ -151,7 +151,9 @@ function startAgent(dir, file, args, logBuf, opts = {}) {
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',
   };
-  const cwd = join(ROOT, 'examples', dir);
+  // Fixture agents (SolFlow compatibility providers) live under tools/, not
+  // under the upstream examples tree.
+  const cwd = opts.fixture ? join(REPO, 'tools', 'openprem-compat') : join(ROOT, 'examples', dir);
   let p;
   if (opts.node) {
     // TypeScript/JS SDK agent through the Node shim.
@@ -380,6 +382,17 @@ const MANIFEST = [
     note: 'echo app declared via /register (upstream uses controller TOML [apps.*]).',
   },
   {
+    // The upstream supply-chain example ships NO provider implementation
+    // (central-warehouse caps are declared only in its controller TOML). This
+    // entry uses SolFlow's compatibility fixture, a real OpenPrem SDK agent
+    // under tools/openprem-compat/. See OPENPREM_COMPAT_MATRIX.md.
+    id: 'supply-chain',
+    proxies: [],
+    agents: [{ fixture: true, file: 'central_warehouse_fixture.py' }],
+    sols: [{ path: 'supply-chain/check-inventory.sol', run: 'all' }],
+    note: 'central-warehouse provider is a SolFlow compatibility fixture; upstream ships no implementation.',
+  },
+  {
     id: 'supply-chain-demo',
     proxies: [8082, 8083],
     agents: [
@@ -436,7 +449,7 @@ async function runExample(ex) {
     for (const a of ex.agents ?? []) {
       const buf = [];
       logs.push({ file: a.file + (a.args?.[0] ? ` ${a.args[0]}` : ''), buf });
-      procs.push(startAgent(a.dir, a.file, a.args ?? [], buf, { raw: a.raw, node: a.node }));
+      procs.push(startAgent(a.dir, a.file, a.args ?? [], buf, { raw: a.raw, node: a.node, fixture: a.fixture }));
     }
     // Give agents time to boot + register (registration loop retries every 3s).
     await sleep(4500);
