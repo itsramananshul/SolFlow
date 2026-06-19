@@ -156,6 +156,13 @@ impl WorkflowExecutor {
         self.vm.register_native(name, func);
     }
 
+    /// Bind a top-level input value (e.g. `payload`) so the workflow's
+    /// references to that free name resolve. Used to inject test event
+    /// data for manual runs and real trigger/webhook payloads.
+    pub fn bind_input(&mut self, name: &str, value: Value) {
+        self.vm.bind_input(name, value);
+    }
+
     /// Turn on execution tracing. Events accumulate on the VM as it runs and
     /// can be read back with [`trace`](Self::trace).
     pub fn enable_trace(&mut self) {

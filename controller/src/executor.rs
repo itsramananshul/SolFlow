@@ -174,6 +174,9 @@ pub async fn execute_run(
     let run_name = workflow_name.clone();
     let task_cancel = user_cancel.clone();
     let task_timeout = timeout_flag.clone();
+    // The run's inputs (from the trigger/webhook or a manual run) are bound
+    // as `payload` so the workflow's event-data references resolve.
+    let run_inputs = record.inputs.clone();
     // Resolve providers from the environment for this run.
     let providers = crate::canonical_exec::ProviderConfig::from_env();
     // Captured on the async side so the blocking VM thread can drive
@@ -188,6 +191,7 @@ pub async fn execute_run(
             task_timeout,
             rt_handle,
             &providers,
+            &run_inputs,
         )
     });
     // Race the VM against the wall-clock budget. On timeout: flip
