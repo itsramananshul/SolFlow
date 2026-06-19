@@ -928,69 +928,69 @@ function onKey(e: KeyboardEvent) {
 // position is remembered for the session. Drag starts only from the header
 // (and never from a button/tab/input inside it), so all controls stay
 // clickable and internal scroll areas are untouched.
-const PANEL_W = 640;
+const PANEL_W = 920;
 const POS_KEY = 'solflow.runpanel.pos';
-const MIN_VISIBLE_X = 160; // keep at least this much of the panel on screen
-const HEADER_VISIBLE_Y = 36;
+const EDGE = 8; // keep this gap between the panel and every viewport edge
 
+const modalEl = ref<HTMLElement | null>(null);
 const pos = ref<{ x: number; y: number } | null>(null);
 const dragging = ref(false);
 let dragOffset = { x: 0, y: 0 };
 
 function panelWidth(): number {
-  return Math.min(PANEL_W, window.innerWidth - 32);
+  return Math.min(PANEL_W, window.innerWidth - 2 * EDGE);
 }
 
-/** Centered, near-top default that always fits the viewport. */
+/** Live panel size from the rendered element (falls back to the caps).
+ *  Used to keep the WHOLE panel inside the viewport, not just its header. */
+function panelSize(): { w: number; h: number } {
+  const el = modalEl.value;
+  if (el) return { w: el.offsetWidth, h: el.offsetHeight };
+  return { w: panelWidth(), h: Math.min(window.innerHeight - 2 * EDGE, 560) };
+}
+
+/** Centered default that always fits the viewport on every edge. */
 function defaultPos(): { x: number; y: number } {
-  const w = panelWidth();
-  return {
-    x: Math.max(16, Math.round((window.innerWidth - w) / 2)),
-    y: Math.max(16, Math.round(window.innerHeight * 0.08)),
-  };
+  const { w, h } = panelSize();
+  const x = Math.round((window.innerWidth - w) / 2);
+  const y = Math.round(Math.min(window.innerHeight * 0.07, window.innerHeight - h - EDGE));
+  return clampPos(x, y);
 }
 
-/** Clamp so the panel keeps a usable slice on screen on every edge. */
+/** Clamp so the ENTIRE panel stays inside the viewport: left>=EDGE,
+ *  top>=EDGE, right<=innerWidth-EDGE, bottom<=innerHeight-EDGE. The panel's
+ *  own max-width/max-height keep it smaller than the viewport, so a valid
+ *  position always exists. */
 function clampPos(x: number, y: number): { x: number; y: number } {
-  const w = panelWidth();
-  const minX = MIN_VISIBLE_X - w; // may go partly off the left, keep MIN_VISIBLE_X on screen
-  const maxX = window.innerWidth - MIN_VISIBLE_X;
-  const minY = 8;
-  const maxY = window.innerHeight - HEADER_VISIBLE_Y;
+  const { w, h } = panelSize();
+  const maxX = Math.max(EDGE, window.innerWidth - w - EDGE);
+  const maxY = Math.max(EDGE, window.innerHeight - h - EDGE);
   return {
-    x: Math.min(Math.max(x, minX), maxX),
-    y: Math.min(Math.max(y, minY), maxY),
+    x: Math.min(Math.max(x, EDGE), maxX),
+    y: Math.min(Math.max(y, EDGE), maxY),
   };
 }
 
-/** A position is "reachable" if the panel opens comfortably on screen
- *  (its draggable header area is visible, not stranded in a corner). A
- *  remembered-but-stranded position recenters on reopen so the panel is
- *  never lost. */
-function isReachable(x: number, y: number): boolean {
-  return (
-    x >= -40 &&
-    x <= window.innerWidth - 200 &&
-    y >= 0 &&
-    y <= window.innerHeight - 80
-  );
+/** Re-clamp the current position against the live panel size (after the
+ *  panel renders / its content height changes / the viewport resizes). */
+function reclamp() {
+  if (pos.value) pos.value = clampPos(pos.value.x, pos.value.y);
 }
 
-/** Set the initial position when the panel opens: a remembered comfortable
- *  position, otherwise the centered default. Always re-clamped to the
- *  current viewport so a shrunk window can't strand it. */
+/** Set the initial position when the panel opens: a remembered position
+ *  (always re-clamped inside the viewport) or the centered default. */
 function initPos() {
   let next: { x: number; y: number } | null = null;
   try {
     const raw = sessionStorage.getItem(POS_KEY);
     if (raw) {
       const p = JSON.parse(raw);
-      if (typeof p?.x === 'number' && typeof p?.y === 'number' && isReachable(p.x, p.y)) {
-        next = clampPos(p.x, p.y);
-      }
+      if (typeof p?.x === 'number' && typeof p?.y === 'number') next = { x: p.x, y: p.y };
     }
   } catch { /* ignore bad storage */ }
   pos.value = next ?? defaultPos();
+  // Clamp once the element is measured so the whole panel is inside.
+  void nextTick(() => reclamp());
 }
 
 /** Recenter the panel (double-click header, or after a viewport resize that
@@ -1040,9 +1040,9 @@ function onHeaderPointerUp() {
   persistPos();
 }
 
-// Re-clamp on viewport resize so the panel never strands off-screen.
+// Re-clamp on viewport resize so the whole panel stays inside the viewport.
 function onResize() {
-  if (pos.value) pos.value = clampPos(pos.value.x, pos.value.y);
+  reclamp();
 }
 
 watch(
@@ -1050,6 +1050,17 @@ watch(
   (isOpen) => { if (isOpen) initPos(); },
   { immediate: true },
 );
+
+// Keep the whole panel contained when its content height changes (e.g.
+// switching to a tall Trace tab) by re-clamping whenever it resizes.
+let resizeObs: ResizeObserver | null = null;
+watch(modalEl, (el) => {
+  resizeObs?.disconnect();
+  if (el && typeof ResizeObserver !== 'undefined') {
+    resizeObs = new ResizeObserver(() => reclamp());
+    resizeObs.observe(el);
+  }
+});
 
 onMounted(() => {
   document.addEventListener('keydown', onKey);
@@ -1060,13 +1071,14 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize);
   window.removeEventListener('pointermove', onHeaderPointerMove);
   window.removeEventListener('pointerup', onHeaderPointerUp);
+  resizeObs?.disconnect();
 });
 </script>
 
 <template>
   <Transition name="fade">
     <div v-if="open" class="backdrop" @click="onBackdrop">
-      <div class="modal" :class="{ dragging }" :style="modalStyle">
+      <div ref="modalEl" class="modal" :class="{ dragging }" :style="modalStyle">
         <header
           class="modal-header drag-handle"
           @pointerdown="onHeaderPointerDown"
@@ -1583,8 +1595,11 @@ function formatReturn(v: unknown): string {
   border-radius: var(--sf-radius-lg);
   box-shadow: var(--sf-shadow-3);
   /* Always fit the viewport: cap to the available width and height with
-     a small margin so the dialog is never clipped. */
-  width: min(640px, calc(100vw - 32px));
+     a small margin so the dialog is never clipped. Wide enough that the
+     header controls (run-target toggle + actions) fit; the header also
+     wraps + truncates as a safety net so it can never clip horizontally. */
+  width: min(920px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
   max-height: min(82vh, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
@@ -1594,6 +1609,10 @@ function formatReturn(v: unknown): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Wrap the action cluster below the title rather than clip it when the
+     header is too narrow for everything on one line. */
+  flex-wrap: wrap;
+  row-gap: 8px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--sf-border);
   background: var(--sf-bg-0);
@@ -1616,10 +1635,30 @@ function formatReturn(v: unknown): string {
   display: flex;
   align-items: baseline;
   gap: 10px;
+  /* Allow the title row to shrink so the long subtitle truncates with an
+     ellipsis instead of pushing the action cluster off the right edge. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.title {
+  flex: 0 0 auto;
+}
+/* The run-target subtitle (e.g. "Local Controller · http://127.0.0.1:3939")
+   can be long; truncate it rather than letting it widen the header. */
+.header-left .subtle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .header-right {
   display: flex;
   gap: 4px;
+  /* Never clip the actions: wrap them when they cannot fit on one line. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  min-width: 0;
 }
 .title {
   font-size: 0.8125rem;

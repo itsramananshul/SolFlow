@@ -9,7 +9,7 @@ const SIZES = [
   { w: 1366, h: 768 },
   { w: 1280, h: 720 },
   { w: 1440, h: 900 },
-  { w: 1120, h: 720 }, // narrow-ish
+  { w: 1100, h: 700 }, // narrow-ish
 ];
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });
@@ -30,7 +30,13 @@ for (const { w, h } of SIZES) {
     const r = el.getBoundingClientRect();
     return { x: r.x, y: r.y, w: r.width, h: r.height, right: r.right, bottom: r.bottom };
   });
-  const fits = (r) => r.x >= -2 && r.y >= -2 && r.right <= w + 2 && r.bottom <= h + 2;
+  // Strict viewport containment: left>=0, top>=0, right<=innerWidth,
+  // bottom<=innerHeight (1px tolerance for sub-pixel rounding).
+  const fits = (r) => r.x >= -1 && r.y >= -1 && r.right <= w + 1 && r.bottom <= h + 1;
+  // No hidden horizontal overflow in the panel chrome (header/tabs): the
+  // element must not scroll wider than its client box.
+  const noHOverflow = (sel) =>
+    page.locator(sel).first().evaluate((el) => el.scrollWidth <= el.clientWidth + 1).catch(() => false);
 
   try {
     await page.goto(URL, { waitUntil: 'networkidle' });
@@ -52,10 +58,16 @@ for (const { w, h } of SIZES) {
 
     const center = (r) => Math.abs(r.x - (w - r.w) / 2) < 24;
 
-    // 1. Not clipped at open.
-    results['not clipped on open'] = fits(await rect('.modal'));
+    // 1. Strict viewport containment on open (left>=0, top>=0,
+    // right<=innerWidth, bottom<=innerHeight) and no header overflow.
+    const onOpen = await rect('.modal');
+    results['contained on open (all 4 edges)'] = fits(onOpen);
+    results['never wider than viewport'] = onOpen.w <= w;
+    results['header no horizontal overflow'] = await noHOverflow('.modal .modal-header');
+    results['tabs no horizontal overflow'] = await noHOverflow('.modal .tabs');
 
-    // 2. Draggable: grab the header (empty title area) and move by a delta.
+    // 2. Draggable: grab the header (empty title area) and move by a delta;
+    // the panel moves AND stays fully contained.
     const before = await rect('.modal');
     const handle = await rect('.modal .drag-handle');
     const startX = handle.x + 16, startY = handle.y + handle.h / 2;
@@ -65,7 +77,11 @@ for (const { w, h } of SIZES) {
     await page.mouse.up();
     await page.waitForTimeout(150);
     const after = await rect('.modal');
-    results['draggable (panel moved)'] = Math.abs(after.x - (before.x + 120)) < 14 && Math.abs(after.y - (before.y + 90)) < 14;
+    // The panel moved meaningfully (exact delta may be clamped when the
+    // wide panel nearly fills a narrow viewport) AND stays fully contained.
+    results['draggable (panel moved)'] = (Math.abs(after.x - before.x) > 20 || Math.abs(after.y - before.y) > 20);
+    results['contained after drag (all 4 edges)'] = fits(after);
+    results['header no overflow after drag'] = await noHOverflow('.modal .modal-header');
 
     // 3. Recenter button brings it back to center.
     await page.locator('.modal button[title="Recenter panel"]').click();
@@ -104,21 +120,33 @@ for (const { w, h } of SIZES) {
     const visTL = clampedTL.right > 80 && clampedTL.bottom > 20 && clampedTL.y >= -2;
     results['clamps inside viewport'] = visBR && visTL;
 
-    // 6. Recover a stranded panel by closing + reopening (initPos recenters
-    // a remembered-but-stranded position so the panel is never lost).
+    // 6. Reopen restores a fully-contained position (a remembered position
+    // is always re-clamped inside the viewport, so the panel is never lost).
     await page.keyboard.press('Escape').catch(() => {});
     await page.waitForTimeout(200);
     await page.locator('.run-btn').click();
     await page.waitForSelector('.modal', { timeout: 10000 });
-    await page.waitForTimeout(300);
-    results['reopen recovers a lost panel'] = center(await rect('.modal')) && fits(await rect('.modal'));
+    await page.waitForTimeout(400);
+    results['reopen restores a contained panel'] = fits(await rect('.modal'));
 
     // 7. Controls still work: switch to the Trace tab.
     await page.locator('.modal .tab', { hasText: 'Trace' }).click();
     await page.waitForTimeout(200);
     results['tabs clickable after drag'] = (await page.locator('.trace-row').count()) > 0;
 
-    // 8. Internal scroll still configured (overflow-y auto on the pane).
+    // 8. Trace view (a tab in this panel): dragging it keeps the panel
+    // contained inside the viewport with no header overflow.
+    const th = await rect('.modal .drag-handle');
+    await page.mouse.move(th.x + 16, th.y + th.h / 2);
+    await page.mouse.down();
+    await page.mouse.move(th.x + 16 - 200, th.y + th.h / 2 + 120, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const traceDragged = await rect('.modal');
+    results['trace draggable + contained'] =
+      fits(traceDragged) && (await noHOverflow('.modal .modal-header'));
+
+    // 9. Internal scroll still configured (overflow-y auto on the pane).
     results['trace pane scrollable'] = await page.locator('.modal section.pane').first().evaluate((el) => {
       const o = getComputedStyle(el).overflowY; return o === 'auto' || o === 'scroll';
     }).catch(() => false);
