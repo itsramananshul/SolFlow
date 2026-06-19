@@ -171,7 +171,19 @@ impl Parser {
     /// Parse a workflow declaration: `workflow "name" { body }`
     fn parse_workflow(&mut self) -> Result<WorkflowDecl, String> {
         self.expect(&Token::Workflow)?;
-        let name = self.expect_str_lit()?;
+        // The name may be a quoted string (`workflow "session1"`) or a bare
+        // identifier (`workflow show_number`). Upstream OpenPrem examples use
+        // both forms, so the canonical parser accepts either.
+        let name = match self.peek() {
+            Some(Token::StrLit(_)) => self.expect_str_lit()?,
+            Some(Token::Ident(_)) => self.expect_ident()?,
+            other => {
+                return Err(format!(
+                    "expected a workflow name (string literal or identifier), got {:?}",
+                    other
+                ))
+            }
+        };
         let body = self.parse_block()?;
         Ok(WorkflowDecl { name, body })
     }
@@ -264,9 +276,11 @@ impl Parser {
             }
             Some(Token::If) => {
                 self.next_token();
-                self.expect(&Token::LParen)?;
+                // The condition may be parenthesized (`if (x)`) or bare
+                // (`if x`); both appear in upstream examples. Parens are
+                // handled as ordinary expression grouping, so parsing the
+                // condition as an expression accepts either form.
                 let condition = self.parse_expr()?;
-                self.expect(&Token::RParen)?;
                 let then = self.parse_block()?;
                 let else_ = if matches!(self.peek(), Some(Token::Else)) {
                     self.next_token();
@@ -276,9 +290,8 @@ impl Parser {
             }
             Some(Token::While) => {
                 self.next_token();
-                self.expect(&Token::LParen)?;
+                // Parenthesized or bare condition, as with `if` above.
                 let condition = self.parse_expr()?;
-                self.expect(&Token::RParen)?;
                 let body = self.parse_block()?;
                 Ok(Stmt::While { condition, body })
             }
@@ -594,6 +607,30 @@ mod tests {
             }
         }
         Err("could not extract expression".into())
+    }
+
+    #[test]
+    fn workflow_name_accepts_string_or_bare_identifier() {
+        // Quoted name (auth-demo style).
+        let q = parse(r#"workflow "session1" { print("hi"); }"#).expect("quoted");
+        match &q.items[0] {
+            TopLevel::Workflow(w) => assert_eq!(w.name, "session1"),
+            _ => panic!("expected workflow"),
+        }
+        // Bare identifier name (my-first-network style).
+        let b = parse(r#"workflow show_number { print("hi"); }"#).expect("bare");
+        match &b.items[0] {
+            TopLevel::Workflow(w) => assert_eq!(w.name, "show_number"),
+            _ => panic!("expected workflow"),
+        }
+    }
+
+    #[test]
+    fn if_and_while_accept_parenthesized_or_bare_conditions() {
+        // Parenthesized (canonical) and bare (global-sensor style) both parse.
+        parse(r#"workflow "x" { if (1 < 2) { print("a"); } }"#).expect("paren if");
+        parse(r#"workflow "x" { let i = 0; if i < 2 { print("a"); } }"#).expect("bare if");
+        parse(r#"workflow "x" { let i = 0; while i < 2 { i = i + 1; } }"#).expect("bare while");
     }
 
     #[test]

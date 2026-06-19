@@ -820,6 +820,36 @@ mod function_call_tests {
     }
 
     #[test]
+    fn len_method_returns_array_length() {
+        // `.len()` desugars to the `len` builtin with the receiver as arg.
+        let (out, r) = run(r#"workflow "x" { let a = [10, 20, 30]; print(a.len()); }"#);
+        assert!(r.is_ok(), "run failed: {r:?}");
+        assert_eq!(out, vec!["3".to_string()]);
+    }
+
+    #[test]
+    fn bare_workflow_name_and_upstream_aggregation() {
+        // Upstream dialect: a bare-identifier workflow name, an unparenthesized
+        // `if`, a `for ... in`, reassignment, `.len()` and division — the
+        // load-balanced-ingest pattern, minus the external sensor calls.
+        let (out, r) = run(
+            r#"workflow aggregate {
+                let temps = [20, 30, 10, 40];
+                let sum = 0;
+                let mx = 0;
+                for t in temps {
+                    sum = sum + t;
+                    if t > mx { mx = t; }
+                }
+                print(sum / temps.len());
+                print(mx);
+            }"#,
+        );
+        assert!(r.is_ok(), "run failed: {r:?}");
+        assert_eq!(out, vec!["25".to_string(), "40".to_string()]);
+    }
+
+    #[test]
     fn single_helper_call_returns_value() {
         let (_out, r) = run(r#"
             fn dbl(x: int) <- int { return x * 2; }

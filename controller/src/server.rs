@@ -104,6 +104,9 @@ pub fn router(controller: LocalController) -> Router {
         .route("/connectors", get(get_connectors))
         // Phase 3 — real providers the controller resolves call(...) against
         .route("/providers", get(get_providers))
+        // OpenPrem-native provider registration. Real upstream SDK agents
+        // POST here to register; SolFlow then invokes them directly.
+        .route("/register", post(post_register))
         // Phase C C.5 — SSE run-event stream
         .route("/runs/:id/events", get(get_run_events))
         // Phase C C.6 — orchestration introspection
@@ -286,6 +289,39 @@ async fn get_connectors(
 /// block. Empty when no providers are configured.
 async fn get_providers() -> Json<Vec<solflow_host_spec::ProviderInfo>> {
     Json(crate::canonical_exec::provider_list())
+}
+
+/// `POST /register` — OpenPrem-native provider registration. Accepts the
+/// upstream SDK registration body (`{ name, actions, endpoint, endpoints,
+/// public_key }`) and records the agent so workflow capability calls resolve
+/// to it.
+///
+/// SolFlow deliberately does NOT return a `controller_public_key`: upstream
+/// Python/Rust agents only enforce Ed25519 request signatures once they
+/// receive a controller public key, so omitting it keeps real agents running
+/// unauthenticated in local/dev mode (the documented mode for OpenPrem
+/// providers). Signing is future work.
+async fn post_register(Json(body): Json<serde_json::Value>) -> Response {
+    match crate::openprem::register_from_json(body) {
+        Ok(reg) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "name": reg.name,
+                "registered_actions": reg.actions.len(),
+                "actions": reg.actions,
+                "endpoint": reg.endpoint,
+            })),
+        )
+            .into_response(),
+        Err(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": { "code": "register_invalid", "message": message }
+            })),
+        )
+            .into_response(),
+    }
 }
 
 // =============================================================
@@ -953,6 +989,101 @@ mod tests {
         let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let list: serde_json::Value = serde_json::from_slice(&rb).unwrap();
         assert!(list.is_array(), "providers must be a JSON array: {list}");
+    }
+
+    // =============================================================
+    //  OpenPrem-native provider registration
+    // =============================================================
+
+    #[tokio::test]
+    async fn register_accepts_sdk_body_and_omits_controller_public_key() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({
+                        "name": "srv_printer",
+                        "actions": [{ "name": "print" }],
+                        "endpoint": "http://127.0.0.1:9301",
+                        "endpoints": { "http": { "url": "http://127.0.0.1:9301" } },
+                        "public_key": "AAAA"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["name"], "srv_printer");
+        assert_eq!(v["registered_actions"], 1);
+        // Critical: SolFlow must NOT return a controller public key, so real
+        // agents stay unauthenticated in local/dev mode.
+        assert!(
+            v.get("controller_public_key").is_none(),
+            "response must omit controller_public_key, got {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_then_providers_lists_the_agent() {
+        let app = test_app().await;
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({
+                        "name": "srv_reporter",
+                        "actions": [{ "name": "report" }],
+                        "endpoint": "http://127.0.0.1:9302"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(Request::builder().uri("/providers").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rb = axum::body::to_bytes(resp.into_body(), 8192).await.unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        let arr = list.as_array().expect("array");
+        let found = arr.iter().find(|p| p["module"] == "srv_reporter").expect("agent listed");
+        assert_eq!(found["url"], "http://127.0.0.1:9302");
+        assert_eq!(found["kind"], "openprem");
+        assert_eq!(found["actions"][0], "report");
+    }
+
+    #[tokio::test]
+    async fn register_rejects_body_without_endpoint() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header("content-type", "application/json")
+                    .body(body_from_json(serde_json::json!({
+                        "name": "srv_broken",
+                        "actions": [{ "name": "x" }]
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let rb = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&rb).unwrap();
+        assert_eq!(v["error"]["code"], "register_invalid");
     }
 
     // =============================================================

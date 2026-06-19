@@ -34,6 +34,7 @@ pub mod connector;
 pub mod event_sink;
 pub mod executor;
 pub mod local;
+pub mod openprem;
 pub mod persistence;
 pub mod run_manager;
 pub mod scheduler;
