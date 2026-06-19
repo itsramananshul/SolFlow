@@ -197,6 +197,15 @@ function dataFor(
       const fn = ctx.functions.find((f) => f.name === (g.callTarget ?? ''));
       return { data: { kind: 'call', functionId: fn?.id ?? '' } };
     }
+    case 'action': {
+      // External capability call. `callTarget` carries the
+      // "module.function" capability; `value` (if any) is the params expr.
+      return {
+        data: { kind: 'action', capability: g.callTarget ?? 'module.function' },
+        inlinePort: g.value ? 'params' : undefined,
+        inlineExpr: g.value,
+      };
+    }
   }
 }
 

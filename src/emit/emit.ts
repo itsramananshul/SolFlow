@@ -304,6 +304,11 @@ function emitStatement(ctx: EmitCtx, node: GraphNode, indent: number): string {
         .join(', ');
       return `${pad}${fname}(${args});\n`;
     }
+    case 'action': {
+      // External capability: call("module.function", params).
+      const params = emitActionParams(ctx, node.id);
+      return `${pad}call(${JSON.stringify(data.capability)}, ${params});\n`;
+    }
     case 'trigger':
       // Trigger nodes are entry markers; their annotation is emitted at the
       // function header, not as an inline statement.
@@ -337,6 +342,21 @@ function emitDataInput(ctx: EmitCtx, nodeId: string, portId: string): string {
   const src = ctx.nodeMap.get(edge.source.node);
   if (!src) return '__UNRESOLVED_INPUT__';
   return emitExpression(ctx, src, edge.source.port);
+}
+
+/**
+ * Params expression for an `action` (capability) node. The `params` port
+ * is optional: when nothing is wired and there is no inline expression,
+ * default to an empty struct `{}` rather than emitting an unresolved
+ * placeholder, since a capability call with no params is valid.
+ */
+function emitActionParams(ctx: EmitCtx, nodeId: string): string {
+  const node = ctx.nodeMap.get(nodeId);
+  const inline = node?.expressions?.['params'];
+  if (inline !== undefined && inline.trim() !== '') return inline.trim();
+  const edge = ctx.incoming.get(key(nodeId, 'params'));
+  if (!edge) return '{}';
+  return emitDataInput(ctx, nodeId, 'params');
 }
 
 function emitExpression(ctx: EmitCtx, node: GraphNode, outPort: string): string {
@@ -397,6 +417,14 @@ function emitExpression(ctx: EmitCtx, node: GraphNode, outPort: string): string 
         .map((p) => emitDataInput(ctx, node.id, `arg:${p.name}`))
         .join(', ');
       return `${fname}(${args})`;
+    }
+    case 'action': {
+      // Capability call used as a value: call("module.fn", params).
+      if (outPort !== 'return') {
+        ctx.warnings.push(`action node used in expression position via non-return port`);
+      }
+      const params = emitActionParams(ctx, node.id);
+      return `call(${JSON.stringify(data.capability)}, ${params})`;
     }
     case 'forEach': {
       if (outPort === 'item') return data.iteratorName;

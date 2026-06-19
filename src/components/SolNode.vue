@@ -242,6 +242,8 @@ function explainKind(d: NodeData): string {
       return 'A specific value of an enum (e.g. Status::Active).';
     case 'call':
       return 'Calls another function defined in this workflow.';
+    case 'action':
+      return 'Calls an external provider via call("module.fn", params). Runs on a controller; blocked in Browser Simulation.';
   }
 }
 
@@ -355,6 +357,7 @@ function wiredSourceLabel(portId: string): string {
     case 'binaryOp':    return d.op;
     case 'enumVariant': return `${d.enumName}::${d.variantName}`;
     case 'call':        return 'fn()';
+    case 'action':      return d.capability;
     case 'trigger':     return 'payload';
     case 'let':         return d.varName;
     case 'forEach':     return d.iteratorName;
@@ -489,6 +492,8 @@ function labelForKind(data: NodeData): string {
       const fn = graph.workflow.functions.find((f) => f.id === data.functionId);
       return `${fn?.name ?? 'call'}()`;
     }
+    case 'action':
+      return `call("${data.capability}")`;
   }
 }
 

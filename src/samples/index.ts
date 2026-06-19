@@ -5,6 +5,7 @@ import { buildMonitor } from './monitor';
 import { buildOrchestration } from './orchestration';
 import { buildPayments } from './payments';
 import { buildEnterprise } from './enterprise';
+import { buildCapabilityDemo } from './capabilityDemo';
 
 export interface Sample {
   id: string;
@@ -19,6 +20,13 @@ export interface Sample {
    * program.
    */
   runnable: boolean;
+  /**
+   * True when the program makes an external capability `call(...)` and so
+   * runs end to end only on a controller with a matching provider
+   * registered. In Browser Simulation it is intentionally blocked. Mutually
+   * exclusive with `runnable` (which means browser-sim standalone).
+   */
+  requiresProvider?: boolean;
   build: () => SolWorkflow;
 }
 
@@ -57,6 +65,14 @@ export const SAMPLES: Sample[] = [
     description: 'Runs: a full helper chain (process_transaction calls evaluate_payment, returns a PaymentStatus enum, then deploys on approval).',
     runnable: true,
     build: buildPayments,
+  },
+  {
+    id: 'capability-demo',
+    name: 'Capability Call',
+    description: 'Calls an external provider: call("demo.add", { a: 20, b: 22 }). Runs for real on a controller with the demo provider registered; blocked in Browser Simulation.',
+    runnable: false,
+    requiresProvider: true,
+    build: buildCapabilityDemo,
   },
   {
     id: 'enterprise',

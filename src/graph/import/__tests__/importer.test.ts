@@ -136,8 +136,8 @@ describe('importProgram — structs + enums', () => {
   });
 });
 
-describe('importProgram — Actions + emit (honest placeholders)', () => {
-  it('preserves capability calls and emit as classified placeholders', () => {
+describe('importProgram — Actions + emit', () => {
+  it('imports a capability call as an action node and the rest as placeholders', () => {
     const program = loadFixture('actions_emit');
     const { workflow, report } = importProgram(program, { name: 'a' });
 
@@ -146,22 +146,24 @@ describe('importProgram — Actions + emit (honest placeholders)', () => {
     expect(workflow.imports[0]!.alias).toBe('send');
     expect(workflow.imports[0]!.from).toBe('slack');
 
-    // slack.send(...), call("alert.fire", ...), emit "done" all land as
-    // placeholders — nothing dropped, all flagged.
     const fn = workflow.functions.find((f) => f.name === 'notify')!;
+
+    // call("alert.fire", ...) is now a first class action node.
+    const action = fn.nodes.find((n) => n.data.kind === 'action');
+    expect(action).toBeDefined();
+    expect(action!.data.kind === 'action' && action!.data.capability).toBe('alert.fire');
+
+    // slack.send(...) and emit "done" still land as honest placeholders
+    // (no first class node for those forms yet) — nothing dropped.
     const placeholders = fn.nodes.filter(
       (n) => n.data.kind === 'print' && n.id !== fn.nodes[0]!.id,
     );
-    expect(placeholders.length).toBe(3);
-
-    // The Action text is preserved verbatim on a placeholder.
     const values = placeholders.map((p) => p.expressions?.value ?? '');
     expect(values.some((v) => v.includes('slack.send'))).toBe(true);
-    expect(values.some((v) => v.includes('call('))).toBe(true);
     expect(values.some((v) => v.includes('emit'))).toBe(true);
 
     // Notices surface every degradation.
-    expect(report.notices.length).toBeGreaterThanOrEqual(3);
+    expect(report.notices.length).toBeGreaterThanOrEqual(2);
     expect(report.counts.partial).toBeGreaterThan(0);
   });
 });

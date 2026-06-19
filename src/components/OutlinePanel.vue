@@ -80,6 +80,7 @@ function describe(n: GraphNode): { label: string; detail: string } {
     case 'indexSet':    return { label: 'arr[i] =',         detail: '' };
     case 'enumVariant': return { label: `${d.enumName}::${d.variantName}`, detail: '' };
     case 'call':        return { label: 'call()',           detail: 'function call' };
+    case 'action':      return { label: `call("${d.capability}")`, detail: 'capability call' };
     case 'note':        return { label: 'note',             detail: d.text.slice(0, 40) };
     case 'frame':       return { label: d.title || 'Section', detail: 'group' };
   }
