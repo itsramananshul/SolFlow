@@ -451,10 +451,9 @@ function downloadEdited() {
       </div>
     </div>
     <!--
-      Edit-mode banner. Phase B.4 wired up real compiler-backed
-      diagnostics (the lexer + parser + analyzer now run in-browser
-      via WASM), but the AST → graph importer is still pending, so
-      edits don't yet flow back into nodes.
+      Edit-mode banner. Compiler diagnostics run in-browser via WASM, and
+      "Import to graph" parses the edited source back into nodes through the
+      AST to graph importer (partial/unsupported constructs preserved).
     -->
     <div v-if="isEditing" class="edit-banner" :class="{ dirty: isDetached }">
       <svg viewBox="0 0 16 16" width="11" height="11" fill="none" class="banner-icon">

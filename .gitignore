@@ -48,3 +48,4 @@ _qa*.mjs
 dev-server.log
 
 scripts/qa-trace*.png
+scripts/qa-*.png
