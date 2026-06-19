@@ -108,12 +108,23 @@ export type TraceStepKind =
   | 'extresult'
   | 'error';
 
-/** A registered provider the controller resolves `call(...)` against. */
+/** A registered provider the controller resolves external calls against. */
 export interface ProviderInfo {
-  /** SOL module name (the `module` in `call("module.fn", …)`), or `"*"`. */
+  /** OpenPrem agent name, SOL module name, or `"*"` for a wildcard connector. */
   module: string;
-  /** Base HTTP URL the controller POSTs invocations to. */
+  /** Endpoint URL the controller POSTs invocations to. */
   url: string;
+  /**
+   * For OpenPrem-registered agents, the bare action names exposed (e.g.
+   * `["print"]`). Empty for legacy dev connectors. Optional for wire
+   * back-compat with older controllers.
+   */
+  actions?: string[];
+  /**
+   * Provider source: `"openprem"` for an SDK agent registered via
+   * `POST /register`, `"connector"` for a `SOLFLOW_CONNECTORS` dev entry.
+   */
+  kind?: string;
 }
 
 /**

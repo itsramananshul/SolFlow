@@ -177,53 +177,82 @@ pub fn run_canonical(
                 }
             }
             Ok(StepResult::RemoteCall { capability, params }) => {
-                // External Action. Resolve the module to a registered
-                // connector endpoint and execute it for real. A module
-                // with no registered endpoint stays honestly blocked.
+                // `sleep(ms)` compiles to the `__system.sleep` capability. No
+                // agent serves it, so honor it natively (bounded) — this lets
+                // timed `while(true) { ...; sleep(n); }` workers run without a
+                // provider. The cap keeps the run responsive to cancellation.
+                if capability == "__system.sleep" {
+                    let ms = match &params {
+                        Value::Int(n) => (*n).max(0) as u64,
+                        _ => 0,
+                    };
+                    std::thread::sleep(std::time::Duration::from_millis(ms.min(2_000)));
+                    if let Err(e) = exec.resolve_remote_call(&capability, Value::Unit) {
+                        error = Some(classify(e));
+                        break;
+                    }
+                    continue;
+                }
+
+                // External Action. Resolution order:
+                //   1. OpenPrem registry (the canonical provider path) — agents
+                //      that registered via `POST /register`.
+                //   2. `SOLFLOW_CONNECTORS` (internal/dev/test fallback) — the
+                //      legacy `{module, function, params}` connector contract.
+                //   3. Otherwise the call stays honestly blocked.
                 let (module, func) = split_capability(&capability);
-                // Resolve the module to an endpoint; fall back to a "*"
-                // wildcard connector that catches every Action regardless
-                // of module name (handy for demos / a single gateway).
-                let endpoint = providers.resolve(&module);
-                match endpoint {
-                    Some(base_url) => {
-                        info!("action {capability}: calling connector {base_url}");
-                        match invoke_connector(
+
+                let invoke: Option<Result<Value, String>> =
+                    if let Some((cap, endpoint)) = crate::openprem::resolve(&module, &func) {
+                        info!("action {capability}: invoking OpenPrem agent at {endpoint} as `{cap}`");
+                        Some(crate::openprem::invoke_agent(
+                            &handle,
+                            &endpoint,
+                            &cap,
+                            &params,
+                            providers.timeout_ms,
+                        ))
+                    } else if let Some(base_url) = providers.resolve(&module) {
+                        info!("action {capability}: calling dev connector {base_url}");
+                        Some(invoke_connector(
                             &handle, base_url, &module, &func, &params, providers.timeout_ms,
-                        ) {
-                            Ok(result) => {
-                                if let Err(e) = exec.resolve_remote_call(&capability, result) {
-                                    exec.trace_ext_error(format!(
-                                        "provider '{module}' returned a value '{func}' could not accept: {e}"
-                                    ));
-                                    error = Some(classify(e));
-                                    break;
-                                }
-                                // resumed — keep stepping the workflow
-                            }
-                            Err(message) => {
-                                // Tie the provider failure to its call site
-                                // in the trace, then surface it structurally.
-                                exec.trace_ext_error(format!(
-                                    "provider '{module}' failed calling '{func}': {message}"
-                                ));
-                                error = Some(RuntimeErrorView::ExtCallFailed {
-                                    connector: module,
-                                    function_name: func,
-                                    message,
-                                });
-                                break;
-                            }
+                        ))
+                    } else {
+                        None
+                    };
+
+                match invoke {
+                    Some(Ok(result)) => {
+                        if let Err(e) = exec.resolve_remote_call(&capability, result) {
+                            exec.trace_ext_error(format!(
+                                "provider '{module}' returned a value '{func}' could not accept: {e}"
+                            ));
+                            error = Some(classify(e));
+                            break;
                         }
+                        // resumed — keep stepping the workflow
+                    }
+                    Some(Err(message)) => {
+                        // Tie the provider failure to its call site in the
+                        // trace, then surface it structurally.
+                        exec.trace_ext_error(format!(
+                            "provider '{module}' failed calling '{func}': {message}"
+                        ));
+                        error = Some(RuntimeErrorView::ExtCallFailed {
+                            connector: module,
+                            function_name: func,
+                            message,
+                        });
+                        break;
                     }
                     None => {
                         info!(
-                            "action {capability}: no provider registered (module `{module}`, no `*` fallback) — blocked"
+                            "action {capability}: no provider registered (module `{module}`) — blocked"
                         );
                         // Record a clear, source mapped error at the call site:
-                        // which module/function had no provider.
+                        // which module/function had no provider, and how to fix.
                         exec.trace_ext_error(format!(
-                            "no provider registered for module '{module}' (capability '{capability}'); register a connector or switch to a target that has one"
+                            "no provider registered for '{capability}'; start its OpenPrem agent and register it (POST /register), or run on a target that has the provider"
                         ));
                         error = Some(RuntimeErrorView::ExtCallBlocked {
                             function_name: capability,
@@ -348,14 +377,29 @@ fn load_connectors() -> HashMap<String, String> {
     }
 }
 
-/// The providers the controller will actually resolve `call(...)` against,
-/// for `GET /providers`. Reads the same `SOLFLOW_CONNECTORS` registry the
-/// execution path uses, so the listing reflects reality. Sorted by module.
+/// The providers the controller will actually resolve external calls against,
+/// for `GET /providers`. Lists OpenPrem agents that registered via
+/// `POST /register` (the canonical path) first, then any `SOLFLOW_CONNECTORS`
+/// dev/test entries, so the listing reflects exactly what will run. Sorted by
+/// module name.
 pub fn provider_list() -> Vec<solflow_host_spec::ProviderInfo> {
-    let mut out: Vec<solflow_host_spec::ProviderInfo> = load_connectors()
+    let mut out: Vec<solflow_host_spec::ProviderInfo> = crate::openprem::list_agents()
         .into_iter()
-        .map(|(module, url)| solflow_host_spec::ProviderInfo { module, url })
+        .map(|a| solflow_host_spec::ProviderInfo {
+            module: a.name,
+            url: a.endpoint,
+            actions: a.actions,
+            kind: Some("openprem".to_string()),
+        })
         .collect();
+    for (module, url) in load_connectors() {
+        out.push(solflow_host_spec::ProviderInfo {
+            module,
+            url,
+            actions: Vec::new(),
+            kind: Some("connector".to_string()),
+        });
+    }
     out.sort_by(|a, b| a.module.cmp(&b.module));
     out
 }
@@ -418,8 +462,8 @@ fn invoke_connector(
     Ok(json_to_value(resp))
 }
 
-/// Convert a SOL `Value` to plain JSON for a connector request body.
-fn value_to_json(v: &Value) -> serde_json::Value {
+/// Convert a SOL `Value` to plain JSON for a provider request body.
+pub(crate) fn value_to_json(v: &Value) -> serde_json::Value {
     use serde_json::Value as J;
     match v {
         Value::Bool(b) => J::Bool(*b),
@@ -438,8 +482,8 @@ fn value_to_json(v: &Value) -> serde_json::Value {
     }
 }
 
-/// Convert a connector's plain JSON response back into a SOL `Value`.
-fn json_to_value(j: serde_json::Value) -> Value {
+/// Convert a provider's plain JSON response back into a SOL `Value`.
+pub(crate) fn json_to_value(j: serde_json::Value) -> Value {
     use serde_json::Value as J;
     match j {
         J::Null => Value::Unit,
@@ -634,5 +678,144 @@ mod provider_tests {
             }
             other => panic!("expected ExtCallFailed (timeout), got {other:?}"),
         }
+    }
+}
+
+/// End-to-end coverage of the OpenPrem-native provider path: a workflow that
+/// invokes an agent which registered through the global registry (exactly as
+/// `POST /register` does), with NO `SOLFLOW_CONNECTORS` configured. Uses
+/// process-unique agent names so the shared global registry stays collision
+/// free under parallel tests.
+#[cfg(test)]
+mod openprem_e2e_tests {
+    use super::*;
+    use axum::{extract::Json as AxJson, routing::post, Router};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    /// A faithful mock OpenPrem agent: accepts POST at any path, reads the
+    /// `capability` + flattened params exactly like the SDK, and returns JSON.
+    /// `mode` selects the response shape.
+    async fn spawn_agent(mode: &'static str) -> String {
+        let app = Router::new().fallback(post(move |AxJson(body): AxJson<serde_json::Value>| async move {
+            // The controller flattens object params and merges `capability`.
+            let cap = body.get("capability").and_then(|c| c.as_str()).unwrap_or("");
+            let resp = match mode {
+                // Echo the capability and a count, like printer.print.
+                "ok" => serde_json::json!({ "ok": true, "printed": cap }),
+                // Bare integer result, to exercise return narrowing.
+                "int" => serde_json::json!(42),
+                // The SDK failure envelope at HTTP 200.
+                "error" => serde_json::json!({ "error": "capability rejected the params" }),
+                _ => serde_json::json!(null),
+            };
+            AxJson(resp)
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// Monotonic suffix so each test registers a uniquely-named agent in the
+    /// process-global registry.
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    fn unique(base: &str) -> String {
+        format!("{base}{}", SEQ.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn register(name: &str, action: &str, endpoint: &str) {
+        let body = serde_json::json!({
+            "name": name,
+            "actions": [{ "name": action }],
+            "endpoint": endpoint,
+            "public_key": "AAAA",
+        });
+        crate::openprem::register_from_json(body).expect("registration succeeds");
+    }
+
+    async fn run_src(src: String) -> CanonicalOutcome {
+        let handle = tokio::runtime::Handle::current();
+        // Empty provider config: the OpenPrem registry is the only path.
+        let providers = ProviderConfig { endpoints: HashMap::new(), timeout_ms: 5_000 };
+        tokio::task::spawn_blocking(move || {
+            run_canonical(
+                &src,
+                "start",
+                1_000_000,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                handle,
+                &providers,
+                &serde_json::Value::Null,
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn registered_agent_runs_end_to_end_with_trace() {
+        let url = spawn_agent("int").await;
+        let agent = unique("calc");
+        register(&agent, "run", &url);
+        // Namespace member call -> capability `agent.run`.
+        let src = format!(
+            "import {agent};\nworkflow \"start\" {{ let r: int = {agent}.run({{}}); return r; }}"
+        );
+        let out = run_src(src).await;
+        assert!(out.error.is_none(), "expected success, got {:?}", out.error);
+        assert_eq!(out.return_value, Some(42));
+        // Trace carries EXTCALL (with the capability) and EXTRESULT.
+        let call = out.trace.iter().find(|s| s.kind == "extcall").expect("extcall");
+        assert_eq!(call.detail.as_deref(), Some(format!("{agent}.run").as_str()));
+        assert!(call.line.is_some(), "ext call carries a source line");
+        assert!(out.trace.iter().any(|s| s.kind == "extresult"), "extresult recorded");
+    }
+
+    #[tokio::test]
+    async fn zero_arg_namespace_call_invokes_agent() {
+        // Regression for the compiler fix: `agent.get()` (no args) must lower
+        // to a real remote call rather than underflow.
+        let url = spawn_agent("int").await;
+        let agent = unique("numbers");
+        register(&agent, "get", &url);
+        let src = format!(
+            "import {agent};\nworkflow \"start\" {{ let n: int = {agent}.get(); return n; }}"
+        );
+        let out = run_src(src).await;
+        assert!(out.error.is_none(), "zero-arg call should run, got {:?}", out.error);
+        assert_eq!(out.return_value, Some(42));
+    }
+
+    #[tokio::test]
+    async fn agent_error_envelope_is_a_clear_failure() {
+        let url = spawn_agent("error").await;
+        let agent = unique("flaky");
+        register(&agent, "act", &url);
+        let src = format!("import {agent};\nworkflow \"start\" {{ {agent}.act({{}}); return 0; }}");
+        let out = run_src(src).await;
+        match out.error {
+            Some(RuntimeErrorView::ExtCallFailed { ref message, .. }) => {
+                assert!(message.contains("rejected the params"), "surfaces the agent error: {message}");
+            }
+            other => panic!("expected ExtCallFailed for the error envelope, got {other:?}"),
+        }
+        assert!(out.trace.iter().any(|s| s.kind == "error"), "error step recorded");
+    }
+
+    #[tokio::test]
+    async fn unregistered_capability_blocks_clearly() {
+        let src = "import ghost;\nworkflow \"start\" { ghost.act({}); return 0; }".to_string();
+        let out = run_src(src).await;
+        match out.error {
+            Some(RuntimeErrorView::ExtCallBlocked { ref function_name, .. }) => {
+                assert!(function_name.contains("ghost"), "names the capability: {function_name}");
+            }
+            other => panic!("expected ExtCallBlocked, got {other:?}"),
+        }
+        assert!(out.error_span.is_some(), "blocked error carries a source span");
     }
 }

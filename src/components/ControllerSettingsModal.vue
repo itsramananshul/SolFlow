@@ -307,20 +307,28 @@ function selectRunTarget(id: 'browser-sim' | 'local' | 'cloud') {
             </label>
           </section>
 
-          <!-- Registered providers on the active controller. These are
-               the modules `call("module.fn", …)` actually resolves to. -->
+          <!-- Registered providers on the active controller: the OpenPrem SDK
+               agents (and any dev connectors) capability calls resolve to. -->
           <section v-if="ctrl.isConnected" class="settings-section">
             <h3>Registered providers ({{ ctrl.activeTarget === 'cloud' ? 'cloud' : 'local' }})</h3>
             <div v-if="ctrl.providers.length === 0" class="subtle">
-              No providers registered. External <code>call(...)</code>
-              capabilities will fail with a clear "no provider" error. Start a
-              connector and register it via the <code>SOLFLOW_CONNECTORS</code>
-              environment variable, then reconnect.
+              No providers registered. External capability calls will fail with
+              a clear "no provider" error. Start an OpenPrem SDK agent pointed
+              at this controller (it self-registers via <code>POST /register</code>),
+              then reconnect.
             </div>
             <ul v-else class="connectors-list">
               <li v-for="p in ctrl.providers" :key="p.module" class="connector-row">
                 <span class="conn-name">{{ p.module === '*' ? '* (any module)' : p.module }}</span>
                 <span class="conn-desc">→ {{ p.url }}</span>
+                <span
+                  v-if="p.actions && p.actions.length"
+                  class="conn-actions"
+                >{{ p.actions.join(', ') }}</span>
+                <span
+                  class="conn-kind"
+                  :class="p.kind === 'connector' ? 'kind-dev' : 'kind-openprem'"
+                >{{ p.kind === 'connector' ? 'dev connector' : 'OpenPrem agent' }}</span>
               </li>
             </ul>
           </section>
@@ -596,4 +604,8 @@ function selectRunTarget(id: 'browser-sim' | 'local' | 'cloud') {
 .conn-desc { color: var(--sf-text-1); grid-row: 1; grid-column: 2; }
 .conn-version { grid-row: 1; grid-column: 3; font-family: var(--sf-font-mono); }
 .conn-policy { grid-row: 2; grid-column: 1 / -1; font-style: italic; margin-top: 2px; }
+.conn-actions { grid-row: 2; grid-column: 1 / 3; font-family: var(--sf-font-mono); color: var(--sf-text-2); margin-top: 2px; }
+.conn-kind { grid-row: 1; grid-column: 3; font-size: 0.625rem; padding: 1px 6px; border-radius: 999px; }
+.conn-kind.kind-openprem { color: var(--sf-success); background: rgba(0, 204, 136, 0.12); }
+.conn-kind.kind-dev { color: var(--sf-text-2); background: var(--sf-bg-3); }
 </style>

@@ -525,10 +525,21 @@ pub struct SourceSpan {
 /// of `"*"` is a wildcard that catches every Action regardless of name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderInfo {
-    /// SOL module name (the `module` in `call("module.fn", …)`), or `"*"`.
+    /// SOL module name (the `module` in `call("module.fn", …)`), an OpenPrem
+    /// agent name, or `"*"` for a wildcard dev connector.
     pub module: String,
-    /// Base HTTP URL the controller POSTs invocations to.
+    /// Endpoint URL the controller POSTs invocations to.
     pub url: String,
+    /// For OpenPrem-registered agents, the bare action names the agent
+    /// exposes (e.g. `["print"]`). Empty for legacy connectors. Additive;
+    /// older editors ignore it.
+    #[serde(default)]
+    pub actions: Vec<String>,
+    /// Provider source: `"openprem"` for an SDK agent that registered via
+    /// `POST /register`, `"connector"` for a `SOLFLOW_CONNECTORS` dev entry.
+    /// Optional/additive for wire back-compat.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// One step of a run's execution trace. Mirrors the browser-sim

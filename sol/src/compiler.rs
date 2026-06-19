@@ -275,6 +275,29 @@ impl Compiler {
         }
     }
 
+    /// Push exactly one params value for a positional capability call so the
+    /// `WorkflowCall` instruction (which pops `[capability, params]`) is always
+    /// balanced. Zero args become an empty struct, one arg passes through, and
+    /// several args fold into an array.
+    fn compile_call_params(
+        &mut self,
+        args: &[Expr],
+        chunk: &mut Chunk,
+        locals: &[String],
+    ) -> Result<(), String> {
+        match args.len() {
+            0 => chunk.instructions.push(Instruction::MakeStruct(0)),
+            1 => self.compile_expr(&args[0], chunk, locals)?,
+            _ => {
+                for arg in args {
+                    self.compile_expr(arg, chunk, locals)?;
+                }
+                chunk.instructions.push(Instruction::MakeArray(args.len() as u16));
+            }
+        }
+        Ok(())
+    }
+
     fn compile_expr(&mut self, expr: &Expr, chunk: &mut Chunk, locals: &[String]) -> Result<(), String> {
         match expr {
             Expr::Int(n) => {
@@ -370,17 +393,33 @@ impl Compiler {
                             chunk.instructions.push(Instruction::PushStr(idx));
                         }
                     }
-                    for arg in args {
-                        self.compile_expr(arg, chunk, locals)?;
-                    }
+                    // `WorkflowCall` consumes exactly [capability, params]. An
+                    // import-qualified call carries its args positionally, so
+                    // collapse them into a single params value: no args -> an
+                    // empty struct (the OpenPrem agents expect a JSON object),
+                    // one arg -> that value, many -> an array. Without this,
+                    // a zero-arg call like `numbers.get()` underflows the stack
+                    // and a multi-arg call mis-binds.
+                    self.compile_call_params(args, chunk, locals)?;
                     chunk.instructions.push(Instruction::WorkflowCall);
                 } else if is_sleep {
                     let idx = chunk.add_constant(Value::Str("__system.sleep".into()));
                     chunk.instructions.push(Instruction::PushStr(idx));
+                    self.compile_call_params(args, chunk, locals)?;
+                    chunk.instructions.push(Instruction::WorkflowCall);
+                } else if let Expr::MemberAccess(obj, method) = callee.as_ref() {
+                    // Method-style builtin call on a value the importer did not
+                    // flag as a module: `arr.len()` -> `len(arr)`,
+                    // `s.to_str()` -> `to_str(s)`. The receiver becomes the
+                    // first argument. Upstream examples use `.len()` this way.
+                    self.compile_expr(obj, chunk, locals)?;
                     for arg in args {
                         self.compile_expr(arg, chunk, locals)?;
                     }
-                    chunk.instructions.push(Instruction::WorkflowCall);
+                    let name_idx = chunk.add_constant(Value::Str(method.clone()));
+                    chunk
+                        .instructions
+                        .push(Instruction::Call(name_idx, (args.len() + 1) as u8));
                 } else {
                     for arg in args {
                         self.compile_expr(arg, chunk, locals)?;

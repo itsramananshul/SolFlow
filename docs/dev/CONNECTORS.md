@@ -1,4 +1,12 @@
-# Connectors
+# Connectors (internal/dev/test fallback)
+
+> **Not the product provider model.** The canonical provider system is
+> the OpenPrem SDK protocol: agents register via `POST /register` and
+> SolFlow invokes them directly. See `OPENPREM_PROVIDERS.md`. The
+> `SOLFLOW_CONNECTORS` registry described below is retained only as an
+> internal/dev/test fallback (a simple `{module, function, params}` HTTP
+> contract). External calls resolve the OpenPrem registry first, then
+> fall back to `SOLFLOW_CONNECTORS`, then block.
 
 **Phase C C.4 (shipped 2026-05-27).** Connectors are how the
 SolFlow controller takes a SOL `ext function` call and turns it
