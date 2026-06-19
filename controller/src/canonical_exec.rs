@@ -121,6 +121,7 @@ pub fn run_canonical(
     timeout: Arc<AtomicBool>,
     handle: Handle,
     providers: &ProviderConfig,
+    inputs: &serde_json::Value,
 ) -> CanonicalOutcome {
     // Clear any print residue left on this pooled blocking thread
     // by a previous run (the output buffer is thread-local).
@@ -145,6 +146,12 @@ pub fn run_canonical(
         }
     };
     exec.enable_trace();
+    // Bind the run's inputs as `payload` so the workflow's event-data
+    // references resolve. Empty/null inputs bind nothing (an unprovided
+    // payload then fails clearly at the reference site).
+    if !inputs.is_null() {
+        exec.bind_input("payload", json_to_value(inputs.clone()));
+    }
 
     let mut total_steps: u64 = 0;
     let mut error: Option<RuntimeErrorView> = None;
@@ -512,6 +519,14 @@ mod provider_tests {
 
     /// Run a workflow that makes one external call through `providers`.
     async fn run_with(providers: ProviderConfig, src: &str) -> CanonicalOutcome {
+        run_with_inputs(providers, src, serde_json::Value::Null).await
+    }
+
+    async fn run_with_inputs(
+        providers: ProviderConfig,
+        src: &str,
+        inputs: serde_json::Value,
+    ) -> CanonicalOutcome {
         let handle = tokio::runtime::Handle::current();
         let src = src.to_string();
         tokio::task::spawn_blocking(move || {
@@ -523,6 +538,7 @@ mod provider_tests {
                 Arc::new(AtomicBool::new(false)),
                 handle,
                 &providers,
+                &inputs,
             )
         })
         .await
@@ -536,6 +552,21 @@ mod provider_tests {
             return r;
         }
     "#;
+
+    const PAYLOAD_SRC: &str =
+        r#"workflow "start" { let t: int = payload.total; print(t); return t; }"#;
+
+    #[tokio::test]
+    async fn payload_injected_from_run_inputs() {
+        let providers = cfg("none", "http://127.0.0.1:1", 5_000);
+        // No inputs -> the payload reference fails clearly.
+        let miss = run_with_inputs(providers.clone(), PAYLOAD_SRC, serde_json::Value::Null).await;
+        assert!(miss.error.is_some(), "expected a missing-payload failure");
+        // Inputs bound as payload -> resolves and returns the value.
+        let ok = run_with_inputs(providers, PAYLOAD_SRC, serde_json::json!({ "total": 1200 })).await;
+        assert!(ok.error.is_none(), "expected success, got {:?}", ok.error);
+        assert_eq!(ok.return_value, Some(1200));
+    }
 
     #[tokio::test]
     async fn provider_success_runs_end_to_end_and_traces_extcall() {

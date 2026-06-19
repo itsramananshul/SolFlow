@@ -118,6 +118,24 @@ impl Vm {
         self.native_funcs.insert(name.to_string(), func);
     }
 
+    /// Bind a top-level input value (e.g. `payload`) so an identifier of
+    /// that name resolves at runtime. Workflow code references `payload`
+    /// as a free name; without a binding `LoadName` fails with "variable
+    /// 'payload' not found". This registers the name + value so manual
+    /// runs (and trigger/webhook runs) can inject test event data.
+    pub fn bind_input(&mut self, name: &str, value: Value) {
+        if let Some(pos) = self.chunk.locals_names.iter().position(|n| n == name) {
+            if pos >= self.locals.len() {
+                self.locals.resize(pos + 1, Value::Unit);
+            }
+            self.locals[pos] = value;
+        } else {
+            self.chunk.locals_names.push(name.to_string());
+            self.chunk.locals_count = self.chunk.locals_names.len() as u16;
+            self.locals.push(value);
+        }
+    }
+
     /// Turn on execution tracing and name the entry (workflow) frame.
     pub fn enable_trace(&mut self, workflow_name: &str) {
         self.trace_enabled = true;
@@ -808,6 +826,47 @@ mod function_call_tests {
             workflow "w" { return dbl(21); }
         "#);
         assert_eq!(r, Ok(Value::Int(42)));
+    }
+
+    /// Drive a program to completion after binding `payload`.
+    fn run_with_payload(src: &str, payload: Value) -> Result<Value, String> {
+        let prog = Parser::new(src).parse().expect("parse");
+        let chunk = Compiler::new().compile(&prog).expect("compile");
+        let mut vm = Vm::new(chunk);
+        vm.bind_input("payload", payload);
+        let _ = take_output();
+        let r = loop {
+            match vm.step(1_000_000) {
+                Ok(StepResult::Completed(v)) => break Ok(v),
+                Ok(StepResult::Yielded(_)) => continue,
+                Ok(StepResult::Failed(e)) => break Err(e),
+                Err(e) => break Err(e),
+                _ => break Err("unexpected".into()),
+            }
+        };
+        let _ = take_output();
+        r
+    }
+
+    #[test]
+    fn unbound_payload_fails_clearly() {
+        let (_o, r) = run(r#"workflow "w" { return payload.total; }"#);
+        match r {
+            Err(e) => assert!(e.contains("variable 'payload' not found"), "got: {e}"),
+            Ok(v) => panic!("expected failure, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn bound_payload_resolves_and_member_access_works() {
+        use std::collections::HashMap;
+        let mut fields = HashMap::new();
+        fields.insert("total".to_string(), Value::Int(1200));
+        let r = run_with_payload(
+            r#"workflow "w" { return payload.total; }"#,
+            Value::Struct(fields),
+        );
+        assert_eq!(r, Ok(Value::Int(1200)));
     }
 
     #[test]

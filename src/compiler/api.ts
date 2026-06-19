@@ -161,9 +161,12 @@ export async function compileSource(
  * Infinite loops are bounded by a step limit (default 1M) on the
  * Rust side; surfaces as `{ kind: 'StepLimit' }`.
  */
-export async function runSource(source: string): Promise<RunEnvelope> {
+export async function runSource(
+  source: string,
+  inputsJson = '',
+): Promise<RunEnvelope> {
   const mod = await loadModule();
-  return JSON.parse(mod.run_source_json(source)) as RunEnvelope;
+  return JSON.parse(mod.run_source_json(source, inputsJson)) as RunEnvelope;
 }
 
 /**

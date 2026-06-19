@@ -55,8 +55,14 @@ for (const { w, h } of SIZES) {
     await page.waitForSelector('.modal', { timeout: 10000 });
     await page.waitForFunction(() => !document.body.innerText.includes('Running…'), { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(300);
+    // Close the Trace window so this test exercises the Run panel in
+    // isolation (the Trace panel has its own QA in qa-panels.mjs).
+    await page.locator('.trace-window .tw-btn[title="Close trace"]').click().catch(() => {});
+    await page.waitForTimeout(150);
 
-    const center = (r) => Math.abs(r.x - (w - r.w) / 2) < 24;
+    // The Run panel default/recenter position is left-biased (so it coexists
+    // with the docked Trace sidebar): x near the left edge, fully contained.
+    const center = (r) => r.x <= 32 && fits(r);
 
     // 1. Strict viewport containment on open (left>=0, top>=0,
     // right<=innerWidth, bottom<=innerHeight) and no header overflow.
@@ -129,25 +135,13 @@ for (const { w, h } of SIZES) {
     await page.waitForTimeout(400);
     results['reopen restores a contained panel'] = fits(await rect('.modal'));
 
-    // 7. Controls still work: switch to the Trace tab.
-    await page.locator('.modal .tab', { hasText: 'Trace' }).click();
+    // 7. Controls still work after dragging: switch to the Generated SOL tab.
+    await page.locator('.modal .tab', { hasText: 'Generated SOL' }).click();
     await page.waitForTimeout(200);
-    results['tabs clickable after drag'] = (await page.locator('.trace-row').count()) > 0;
+    results['tabs clickable after drag'] = await page.locator('.modal .tab.active', { hasText: 'Generated SOL' }).count() > 0;
 
-    // 8. Trace view (a tab in this panel): dragging it keeps the panel
-    // contained inside the viewport with no header overflow.
-    const th = await rect('.modal .drag-handle');
-    await page.mouse.move(th.x + 16, th.y + th.h / 2);
-    await page.mouse.down();
-    await page.mouse.move(th.x + 16 - 200, th.y + th.h / 2 + 120, { steps: 6 });
-    await page.mouse.up();
-    await page.waitForTimeout(120);
-    const traceDragged = await rect('.modal');
-    results['trace draggable + contained'] =
-      fits(traceDragged) && (await noHOverflow('.modal .modal-header'));
-
-    // 9. Internal scroll still configured (overflow-y auto on the pane).
-    results['trace pane scrollable'] = await page.locator('.modal section.pane').first().evaluate((el) => {
+    // 8. Internal scroll still configured (overflow-y auto on the pane).
+    results['pane scrollable'] = await page.locator('.modal section.pane').first().evaluate((el) => {
       const o = getComputedStyle(el).overflowY; return o === 'auto' || o === 'scroll';
     }).catch(() => false);
 

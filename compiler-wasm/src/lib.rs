@@ -182,9 +182,27 @@ fn to_trace_steps(src: &str, events: &[TraceEvent]) -> Vec<TraceStep> {
         .collect()
 }
 
+/// Convert plain JSON into a SOL `Value` for input/payload injection.
+fn json_to_value(j: &serde_json::Value) -> Value {
+    use serde_json::Value as J;
+    match j {
+        J::Null => Value::Unit,
+        J::Bool(b) => Value::Bool(*b),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() { Value::Int(i) }
+            else if let Some(f) = n.as_f64() { Value::Float(f) }
+            else { Value::Unit }
+        }
+        J::String(s) => Value::Str(s.clone()),
+        J::Array(a) => Value::Array(a.iter().map(json_to_value).collect()),
+        J::Object(m) => Value::Struct(m.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect()),
+    }
+}
+
 #[wasm_bindgen]
-pub fn run_source_json(source: &str) -> String {
+pub fn run_source_json(source: &str, inputs_json: &str) -> String {
     let src = source.to_string();
+    let inputs = inputs_json.to_string();
     guarded(move || {
         // parse + compile (for instruction_count and compile-stage diagnostics)
         let prog = match Parser::new(&src).parse() { Ok(p) => p, Err(e) => return run_fail(err("Parser", "E_PARSE", e)) };
@@ -192,6 +210,14 @@ pub fn run_source_json(source: &str) -> String {
         let name = match workflow_names(&prog).into_iter().next() { Some(n) => n, None => return run_fail(err("Analyzer", "E_NO_WORKFLOW", "no workflow declaration found".into())) };
         let mut exec = match WorkflowExecutor::new(&src, &name) { Ok(e) => e, Err(e) => return run_fail(err("Codegen", "E_CODEGEN", e)) };
         exec.enable_trace();
+        // Inject the test payload (if any) as `payload`. Browser Simulation
+        // has no trigger/webhook, so this is the manual event data the user
+        // provides in the Run panel. Invalid/empty input simply binds nothing.
+        if !inputs.trim().is_empty() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&inputs) {
+                exec.bind_input("payload", json_to_value(&v));
+            }
+        }
 
         let _ = take_output();
         let mut diagnostics: Vec<Diag> = vec![];

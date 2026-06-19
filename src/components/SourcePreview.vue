@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
-import { EditorState, Compartment } from '@codemirror/state';
-import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view';
+import { EditorState, Compartment, StateEffect, StateField } from '@codemirror/state';
+import { EditorView, keymap, lineNumbers, highlightActiveLine, Decoration, GutterMarker, gutter } from '@codemirror/view';
+import type { DecorationSet } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { HighlightStyle, syntaxHighlighting, StreamLanguage } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
 import { useGraphStore } from '@/stores/graph.store';
+import { useUIStore } from '@/stores/ui.store';
 import { useToastStore } from '@/stores/toast.store';
 import { analyzeSource } from '@/compiler/api';
 import type { SolDiagnostic } from '@/compiler/types';
@@ -14,10 +16,59 @@ import ImportReportModal from './ImportReportModal.vue';
 import CompilerDiagnosticPanel from './CompilerDiagnosticPanel.vue';
 
 const graph = useGraphStore();
+const ui = useUIStore();
 
 const editorContainer = ref<HTMLDivElement | null>(null);
 let view: EditorView | null = null;
 const editableCompartment = new Compartment();
+
+// ----- Runtime-error line decoration (gutter marker + line highlight) -----
+// A failed run pins the failing source line via the ui store; the editor
+// marks it with a red gutter dot, a tinted line, and a hover title.
+const setErrorLine = StateEffect.define<{ line: number; message: string } | null>();
+const errorLineDeco = Decoration.line({ class: 'cm-error-line' });
+class ErrorGutterMarker extends GutterMarker {
+  constructor(private msg: string) { super(); }
+  override toDOM() {
+    const el = document.createElement('div');
+    el.className = 'cm-error-gutter-dot';
+    el.title = this.msg;
+    el.textContent = '●';
+    return el;
+  }
+}
+const errorState = StateField.define<{ deco: DecorationSet; line: number; message: string } | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setErrorLine)) {
+        if (!e.value) return null;
+        const line = Math.min(Math.max(1, e.value.line), tr.state.doc.lines);
+        const from = tr.state.doc.line(line).from;
+        return {
+          deco: Decoration.set([errorLineDeco.range(from)]),
+          line,
+          message: e.value.message,
+        };
+      }
+    }
+    if (value && tr.docChanged) {
+      // Map through edits so the decoration follows the line.
+      return { ...value, deco: value.deco.map(tr.changes) };
+    }
+    return value;
+  },
+  provide: (f) => EditorView.decorations.from(f, (v) => v?.deco ?? Decoration.none),
+});
+const errorGutter = gutter({
+  class: 'cm-error-gutter',
+  lineMarker(viewArg, lineBlock) {
+    const st = viewArg.state.field(errorState, false);
+    if (!st) return null;
+    const ln = viewArg.state.doc.lineAt(lineBlock.from).number;
+    return ln === st.line ? new ErrorGutterMarker(st.message) : null;
+  },
+});
 
 /**
  * Edit mode is HONESTLY DETACHED. Phase A has no SOL parser, so any
@@ -321,6 +372,20 @@ const baseTheme = EditorView.theme(
     '.cm-activeLineGutter': {
       backgroundColor: 'rgba(255, 255, 255, 0.025)',
     },
+    '.cm-error-line': {
+      backgroundColor: 'rgba(232, 110, 110, 0.14)',
+      boxShadow: 'inset 2px 0 0 var(--sf-error, #e86e6e)',
+    },
+    '.cm-error-gutter': {
+      width: '12px',
+    },
+    '.cm-error-gutter-dot': {
+      color: 'var(--sf-error, #e86e6e)',
+      fontSize: '9px',
+      lineHeight: '1.4',
+      cursor: 'help',
+      textAlign: 'center',
+    },
   },
   { dark: true },
 );
@@ -336,6 +401,8 @@ onMounted(() => {
       keymap.of([...defaultKeymap, ...historyKeymap]),
       solLang,
       syntaxHighlighting(solHighlight),
+      errorState,
+      errorGutter,
       baseTheme,
       editableCompartment.of(EditorState.readOnly.of(true)),
       // Track buffer changes while editing so the "detached vs graph"
@@ -348,9 +415,42 @@ onMounted(() => {
   });
   view = new EditorView({ state, parent: editorContainer.value });
 
+  // Highlight + scroll to a runtime-error line pinned by a failed run, and
+  // clear it when the run is clean (or the source changes).
+  watch(
+    () => ui.sourceError,
+    (err) => {
+      if (!view) return;
+      if (err) {
+        const line = Math.min(Math.max(1, err.line), view.state.doc.lines);
+        const pos = view.state.doc.line(line).from;
+        view.dispatch({
+          effects: [setErrorLine.of({ line, message: err.message }), EditorView.scrollIntoView(pos, { y: 'center' })],
+        });
+      } else {
+        view.dispatch({ effects: setErrorLine.of(null) });
+      }
+    },
+    { deep: true },
+  );
+
+  // Neutral scroll-to-line (trace row clicks): scroll, no error decoration.
+  watch(
+    () => ui.sourceFocus,
+    (f) => {
+      if (!view || !f) return;
+      const line = Math.min(Math.max(1, f.line), view.state.doc.lines);
+      const pos = view.state.doc.line(line).from;
+      view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
+    },
+    { deep: true },
+  );
+
   watch(
     () => graph.emitted.source,
     (newSrc) => {
+      // A new emit means the previous error location is stale.
+      ui.clearSourceError();
       if (!view) return;
       // CRITICAL: when the user is editing manually, never overwrite
       // their buffer with the live graph output. They'd lose changes

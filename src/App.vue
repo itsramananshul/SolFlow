@@ -10,6 +10,7 @@ import Inspector from '@/components/Inspector.vue';
 import SourcePreview from '@/components/SourcePreview.vue';
 import DiagnosticsDrawer from '@/components/DiagnosticsDrawer.vue';
 import RunModal from '@/components/RunModal.vue';
+import TracePanel from '@/components/TracePanel.vue';
 import StatusBar from '@/components/StatusBar.vue';
 import HelpModal from '@/components/HelpModal.vue';
 import ControllerSettingsModal from '@/components/ControllerSettingsModal.vue';
@@ -413,6 +414,7 @@ function downloadSol() {
       </button>
     </Transition>
     <RunModal :open="runOpen" @close="runOpen = false" />
+    <TracePanel />
     <HelpModal :open="helpOpen" @close="helpOpen = false" />
     <ControllerSettingsModal
       :open="controllerSettingsOpen"

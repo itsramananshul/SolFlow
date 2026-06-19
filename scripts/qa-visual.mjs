@@ -63,24 +63,16 @@ try {
   results['run modal fits viewport'] = await fitsViewport('.modal');
   await page.screenshot({ path: 'scripts/qa-visual-runmodal.png' });
 
-  // Trace tab — should render rows and the list should scroll if tall.
-  await page.locator('.tab', { hasText: 'Trace' }).click();
-  await page.waitForTimeout(400);
-  const rows = await page.locator('.trace-row').count();
-  results['trace has rows'] = rows > 0;
-  // The trace list (or its pane) must be scrollable OR fully fit; either is fine,
-  // but it must not overflow the modal. Check the pane fits and the list scrolls
-  // when content exceeds it.
-  results['trace pane fits modal'] = await fitsViewport('.modal');
-  // The pane must be allowed to scroll (overflow-y auto) so a long trace
-  // scrolls rather than clipping or pushing the modal off-screen.
-  results['trace pane can scroll (overflow-y auto)'] = await canScroll('section.pane');
-  const tallEnough = await isScrollable('section.pane');
-  log(`trace rows: ${rows}, currently scrolling: ${tallEnough}`);
+  // The trace now lives in the standalone Execution Trace window.
+  const rows = await page.locator('.trace-window .tw-row').count();
+  results['trace window has rows'] = rows > 0;
+  results['trace window fits viewport'] = await fitsViewport('.trace-window');
+  // The trace body must scroll (overflow-y auto) so a long trace scrolls.
+  results['trace body can scroll (overflow-y auto)'] = await canScroll('.trace-window .tw-body');
   await page.screenshot({ path: 'scripts/qa-visual-trace.png' });
 
   // Output pane scrollable check (long output).
-  await page.locator('.tab', { hasText: 'Output' }).first().click().catch(() => {});
+  await page.locator('.modal .tab', { hasText: 'Output' }).first().click().catch(() => {});
   await page.waitForTimeout(300);
   results['output pane fits modal'] = await fitsViewport('.modal');
 
