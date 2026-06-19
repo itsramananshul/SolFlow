@@ -135,5 +135,20 @@ describe('Prod c50 — sample workflows compile cleanly via canonical compiler',
         expect(env.run!.trace.some((s) => s.kind === 'extcall')).toBe(true);
       });
     }
+
+    // A "structure demo" (neither flag) is not wired for execution: it
+    // compiles cleanly but produces no output and no return value. This
+    // guards the category — if a future edit wires it up, this fails and
+    // the sample must be re-labeled runnable.
+    if (!sample.runnable && !sample.requiresProvider) {
+      it(`${sample.id} — is an inert structure demo (no output)`, () => {
+        const { source } = emit(sample.build());
+        const env = JSON.parse(wasm.run_source_json(source)) as RunEnvelope;
+        expect(env.ok).toBe(true);
+        expect(env.run).not.toBeNull();
+        expect(env.run!.output.length).toBe(0);
+        expect(env.run!.return_value).toBeNull();
+      });
+    }
   }
 });

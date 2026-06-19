@@ -15,7 +15,15 @@ const results = {};
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-page.on('pageerror', (e) => log('PAGE ERROR:', e.message));
+const consoleErrors = [];
+page.on('pageerror', (e) => { consoleErrors.push(`pageerror: ${e.message}`); log('PAGE ERROR:', e.message); });
+page.on('console', (m) => {
+  if (m.type() === 'error') {
+    const t = m.text();
+    // Ignore benign network-failed noise from probing an absent controller.
+    if (!/Failed to load resource|net::ERR|favicon/i.test(t)) consoleErrors.push(`console: ${t}`);
+  }
+});
 
 const text = async () => (await page.locator('body').innerText()).replace(/\s+/g, ' ');
 
@@ -89,6 +97,9 @@ try {
 } finally {
   await browser.close();
 }
+
+results['7. no console errors'] = consoleErrors.length === 0;
+if (consoleErrors.length) log('console errors:', JSON.stringify(consoleErrors.slice(0, 5)));
 
 let allOk = true;
 for (const [k, v] of Object.entries(results)) {

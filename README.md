@@ -49,10 +49,10 @@ reimplementation of language semantics owns user-displayed output.
 |---|---|
 | Editor | Vue 3 (Composition API + TS strict), Vue Flow, Pinia, CodeMirror 6 |
 | Build | Vite 5 + `vite-plugin-wasm` + `vite-plugin-top-level-await` |
-| Compiler | `compiler/` — Rust crate (lexer, parser, analyzer, codegen) |
-| VM | `runtime/` — Rust crate (canonical bytecode interpreter) |
-| Bridge | `compiler-wasm/` — wasm-bindgen WASM bundle |
-| Tests | vitest (TS, 158 tests) + cargo workspace (Rust, 181 tests) |
+| Language | `sol/` — the canonical Rust crate (lexer, parser, AST, compiler, bytecode VM, execution trace) |
+| Bridge | `compiler-wasm/` — wasm-bindgen WASM bundle over `sol/` |
+| Controller | `controller/` — run host (HTTP API, persistence, providers); `host-spec/` — wire types |
+| Tests | vitest (TS) + cargo workspace (sol, compiler-wasm, host-spec, controller) |
 
 ## Run it
 
@@ -94,6 +94,39 @@ Rebuild the WASM bundle (after Rust changes — requires
 ```bash
 npm run build:wasm
 ```
+
+## Run targets
+
+The Run modal offers three places to execute a workflow. The same canonical
+SOL VM runs in all three, so semantics are identical; what differs is whether
+external `call("module.function", payload)` capabilities can reach a provider.
+
+| Target | Where it runs | External `call(...)` |
+|---|---|---|
+| **Browser Simulation** | This browser, via the WASM build of the canonical VM. Always available, nothing to install. | Blocked. The run reports a structured `ExtCallBlocked` error pointing at the exact call site. Use it for logic, helpers, and trace. |
+| **Local Controller** | A controller process on your machine (`127.0.0.1:3939`). | Executed for real when a provider is registered for the module; otherwise blocked with a clear "no provider" error naming the module and function. |
+| **Cloud Controller** | The same controller binary reached over HTTPS (set its URL and bearer token in Controller Settings). | Executed for real against the providers that controller has registered. |
+
+Browser Simulation needs no setup. To run capability workflows for real, start
+a Local Controller and register a provider:
+
+```bash
+# 1. Build + run the controller (binds 127.0.0.1:3939).
+cargo run -p solflow_controller --bin solflow-controller
+
+# 2. (optional) Run the bundled demo connector + register it so demo.* resolves.
+cargo run -p solflow_controller --bin demo-connector            # :8099
+SOLFLOW_CONNECTORS='{"demo":"http://127.0.0.1:8099"}' \
+  cargo run -p solflow_controller --bin solflow-controller
+```
+
+Then pick **Local Controller** in the editor's Run modal (it shows a connection
+dot and the registered providers in Controller Settings) and run. The bundled
+"Capability Call" sample calls `demo.add` and returns 42 against this setup.
+
+See `docs/dev/CONTROLLER_LOCAL.md` (local controller), `docs/dev/CONNECTORS.md`
+(providers + demo connector), and `docs/dev/REMOTE_CONTROLLER.md` (running it
+over HTTPS as a Cloud Controller).
 
 ## Repository layout
 

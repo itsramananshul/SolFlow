@@ -48,8 +48,16 @@ What it **doesn't** give you yet (deferred to later C milestones):
 
 ## Boot the controller
 
+From a fresh checkout (compiles on first run):
+
 ```bash
 # default config: 127.0.0.1:3939, ./solflow.db
+cargo run -p solflow_controller --bin solflow-controller
+```
+
+Or run a pre-built release binary:
+
+```bash
 ./target/release/solflow-controller
 ```
 
