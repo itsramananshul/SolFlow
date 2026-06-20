@@ -517,16 +517,27 @@ function downloadSol() {
   background: var(--sf-bg-2);
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
+  /* Fallback: if the pane is too short for both panels' minimums
+     (very short / embedded windows), scroll the column rather than
+     crushing the SOL editor into an unusable sliver. */
+  overflow-y: auto;
 }
 .inspector-slot,
 .source-slot {
   flex-grow: 0;
   flex-shrink: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+/* Keep each panel usable when height is tight: the inspector body and
+   the SOL editor both scroll internally, but the panels themselves must
+   not collapse below a workable size. */
+.inspector-slot {
+  min-height: 150px;
+}
+.source-slot {
+  min-height: 240px;
 }
 </style>
 

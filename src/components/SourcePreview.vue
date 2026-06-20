@@ -561,11 +561,8 @@ function downloadEdited() {
         <path d="M8 5 V8.5 M8 10.5 V11.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
       </svg>
       <span class="banner-text">
-        <strong>Editing in detached mode.</strong>
-        Compiler diagnostics below are live. Click <em>Import to graph</em>
-        to parse this source and replace the visual graph with what
-        you typed — partial/unsupported constructs are preserved
-        explicitly. Or copy/download/reset without importing.
+        <strong>Detached edit.</strong>
+        Diagnostics below are live — click <em>Import to graph</em> to apply.
       </span>
     </div>
     <!--
@@ -681,14 +678,15 @@ function downloadEdited() {
 }
 .edit-banner {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 6px 14px;
   background: rgba(232, 166, 87, 0.08);
   border-bottom: 1px solid rgba(232, 166, 87, 0.22);
   color: var(--sf-text-1);
   font-size: 0.6875rem;
-  line-height: 1.45;
+  line-height: 1.4;
+  flex-shrink: 0;
 }
 .edit-banner.dirty {
   background: rgba(232, 166, 87, 0.14);
@@ -705,7 +703,9 @@ function downloadEdited() {
 }
 .editor {
   flex: 1;
-  min-height: 0;
+  /* Never let the editor collapse to an unusable sliver when the right
+     pane is short (embedded / laptop). CodeMirror scrolls internally. */
+  min-height: 140px;
   overflow: auto;
 }
 
