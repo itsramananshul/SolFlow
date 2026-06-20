@@ -21,6 +21,7 @@ import Splitter from '@/components/Splitter.vue';
 import SolManModal from '@/components/SolManModal.vue';
 import WelcomeScreen from '@/components/WelcomeScreen.vue';
 import Toast from '@/components/Toast.vue';
+import { isEmbed, setupEmbedBridge } from '@/embed/bridge';
 import { useSimulationStore } from '@/stores/simulation.store';
 import { useBlocksStore } from '@/stores/blocks.store';
 import { useSolManConfigStore } from '@/stores/sol-man-config.store';
@@ -155,8 +156,14 @@ onMounted(() => {
   // Initial measure after the layout has settled.
   requestAnimationFrame(measureRightPane);
   // Welcome screen check runs AFTER bootstrap so the localStorage read
-  // and dismissed-flag both have the same lifecycle.
-  maybeShowWelcomeOnMount();
+  // and dismissed-flag both have the same lifecycle. When embedded
+  // (?embed=1) we skip the welcome and start the host bridge instead, so
+  // the parent (the OpenPrem Platform) gets a clean, driveable canvas.
+  if (isEmbed()) {
+    setupEmbedBridge(graph);
+  } else {
+    maybeShowWelcomeOnMount();
+  }
   // Phase C C.2 c62: silently reconnect to a previously-known
   // controller URL. Fire-and-forget — the modal reflects state via
   // its store subscription, and a failed reconnect surfaces in the
